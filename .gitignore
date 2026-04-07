@@ -1,0 +1,46 @@
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs / temp
+*.log
+runlogs/
+tmp/
+.tmp/
+
+# Node
+node_modules/
+front/dist/
+
+# Java
+**/target/
+**/.mvn/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local runtime / env
+.env
+.env.*
+
+# Large installers / binaries not for source control
+*.exe
+*.msi
+*.zip
+*.7z
+
+# Large local datasets / media (keep local, do not push to GitHub)
+english_book/
+tool/audio/
+
+# Local caches
+Microsoft/
+**/Microsoft/
+
+# Local DB/package artifacts
+backend/user-service/postgresql-*.tar.gz

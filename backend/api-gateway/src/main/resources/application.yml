@@ -1,0 +1,53 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials RETAIN_FIRST
+      routes:
+        # User Service Routes
+        - id: user-service
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/users/**
+        - id: user-service-stores
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/stores/**
+        - id: user-service-lexicon
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/lexicon/**
+        - id: user-service-auth-alias
+          uri: http://localhost:8081
+          predicates:
+            - Path=/api/login,/api/me
+        
+        # Learning Content Service Routes
+        - id: learning-content-service
+          uri: http://localhost:8082
+          predicates:
+            - Path=/api/learning/**
+        
+        # Test Service Routes
+        - id: test-service
+          uri: http://localhost:8083
+          predicates:
+            - Path=/api/tests/**
+
+# Eureka Client Configuration
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://localhost:8888/eureka/
+
+# Actuator Configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

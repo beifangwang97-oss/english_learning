@@ -1,0 +1,24 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: learning-content-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/kineticscholar
+    username: postgres
+    password: 123456
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+  redis:
+    host: localhost
+    port: 6379
+
+# Eureka Client Configuration
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://localhost:8888/eureka/

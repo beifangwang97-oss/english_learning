@@ -1,0 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-surface-variant: #cde2d4;
+  --color-secondary-fixed: #a4d8ff;
+  --color-on-tertiary-container: #69000f;
+  --color-on-primary-fixed-variant: #665500;
+  --color-secondary-dim: #00557b;
+  --color-on-secondary: #e9f4ff;
+  --color-on-primary-container: #5b4b00;
+  --color-secondary: #00618c;
+  --color-secondary-container: #a4d8ff;
+  --color-on-error: #ffefec;
+  --color-on-secondary-container: #004c6f;
+  --color-secondary-fixed-dim: #82ccff;
+  --color-surface-container-low: #e4f5e9;
+  --color-inverse-surface: #05110b;
+  --color-tertiary-container: #ff928e;
+  --color-on-secondary-fixed: #003853;
+  --color-surface-tint: #6c5a00;
+  --color-on-primary: #fff2cd;
+  --color-primary: #6c5a00;
+  --color-surface-dim: #c3dacb;
+  --color-surface-container-highest: #cde2d4;
+  --color-primary-fixed-dim: #efc900;
+  --color-inverse-on-surface: #92a097;
+  --color-outline: #6c7a71;
+  --color-surface-container: #daede0;
+  --color-on-background: #25312a;
+  --color-on-tertiary-fixed: #3a0005;
+  --color-surface-bright: #ebfaef;
+  --color-on-secondary-fixed-variant: #00567c;
+  --color-inverse-primary: #ffd709;
+  --color-on-error-container: #520c00;
+  --color-error: #b02500;
+  --color-primary-dim: #5e4e00;
+  --color-surface-container-high: #d4e7da;
+  --color-surface: #ebfaef;
+  --color-on-surface: #25312a;
+  --color-background: #ebfaef;
+  --color-outline-variant: #a2b1a7;
+  --color-primary-container: #ffd709;
+  --color-on-surface-variant: #515f56;
+  --color-tertiary: #aa2c32;
+  --color-primary-fixed: #ffd709;
+  --color-on-tertiary: #ffefee;
+  --color-tertiary-fixed-dim: #ff7a79;
+  --color-tertiary-dim: #992027;
+  --color-error-container: #f95630;
+  --color-on-primary-fixed: #453900;
+  --color-tertiary-fixed: #ff928e;
+  --color-error-dim: #b92902;
+  --color-on-tertiary-fixed-variant: #790214;
+  --color-surface-container-lowest: #ffffff;
+
+  --font-headline: "Plus Jakarta Sans", sans-serif;
+  --font-body: "Be Vietnam Pro", sans-serif;
+  --font-label: "Plus Jakarta Sans", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply font-body bg-background text-on-background;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-headline;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+  .dopamine-bg {
+    background: 
+        radial-gradient(circle at 10% 20%, var(--color-primary-container) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, var(--color-secondary-container) 0%, transparent 40%),
+        radial-gradient(circle at 50% 50%, var(--color-tertiary-container) 0%, transparent 50%),
+        var(--color-background);
+  }
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: var(--color-surface-variant);
+    border-radius: 10px;
+  }
+}
