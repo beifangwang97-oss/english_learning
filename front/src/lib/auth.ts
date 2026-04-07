@@ -1,4 +1,4 @@
-﻿export interface AuthUser {
+export interface AuthUser {
   id: string | number;
   username: string;
   name?: string;
@@ -9,6 +9,19 @@
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+
+type ApiErrorPayload = {
+  error?: string;
+  code?: string;
+};
+
+function throwApiError(payload: ApiErrorPayload | null | undefined, fallbackMessage: string): never {
+  const err = new Error(payload?.error || fallbackMessage) as Error & { code?: string };
+  if (payload?.code) {
+    err.code = payload.code;
+  }
+  throw err;
+}
 
 export interface AdminUser {
   id: number;
@@ -103,8 +116,10 @@ export interface StudentWordTestAssignment {
   assignmentId: number;
   testId: string;
   title: string;
-  testType: '默写' | '听写';
+  testType: string;
   status: 'pending' | 'completed';
+  passScore?: number | null;
+  attemptCount?: number | null;
   score?: number | null;
   correctCount?: number | null;
   totalCount?: number | null;
@@ -118,7 +133,8 @@ export interface PublishWordTestRequest {
   createdBy: number;
   storeCode: string;
   title: string;
-  testType: '默写' | '听写';
+  testType: string;
+  passScore?: number;
   studentIds: number[];
   scopes: WordTestGroupScope[];
   items: WordTestContentItem[];
@@ -128,8 +144,10 @@ export interface WordTestAssignmentRow {
   testId: string;
   userId: number;
   title: string;
-  testType: '默写' | '听写';
+  testType: string;
   status: string;
+  passScore?: number | null;
+  attemptCount?: number | null;
   score?: number | null;
   correctCount?: number | null;
   totalCount?: number | null;
@@ -150,7 +168,7 @@ export const authApi = {
 
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload?.error || '鐧诲綍澶辫触');
+      throwApiError(payload, '登录失败');
     }
 
     return payload;
@@ -165,7 +183,7 @@ export const authApi = {
 
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload?.error || '鑾峰彇鐢ㄦ埛淇℃伅澶辫触');
+      throwApiError(payload, '获取用户信息失败');
     }
 
     return payload;
@@ -173,12 +191,21 @@ export const authApi = {
 
   logout: async (token: string): Promise<void> => {
     if (!token) return;
-    await fetch(`${API_BASE_URL}/api/users/logout`, {
+    const response = await fetch(`${API_BASE_URL}/api/users/logout`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
       },
     });
+    if (!response.ok) {
+      let payload: ApiErrorPayload | null = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      throwApiError(payload, '退出登录失败');
+    }
   },
 
   getOnlineCount: async (token: string, role: 'student' | 'teacher' = 'student'): Promise<number> => {
@@ -681,4 +708,8 @@ export const wordTestApi = {
     return payload;
   },
 };
+
+
+
+
 

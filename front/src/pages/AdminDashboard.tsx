@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { UserAccountManagement } from '../components/admin/UserAccountManagement';
@@ -12,6 +12,10 @@ export const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
   const { logout } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+
+  useEffect(() => {
+    document.title = '虎子英语_管理员端';
+  }, []);
 
   const handleLogout = () => {
     logout();

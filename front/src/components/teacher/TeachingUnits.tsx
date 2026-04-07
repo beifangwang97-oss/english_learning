@@ -3,6 +3,7 @@ import { Check, ChevronDown, ChevronRight, Send, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { adminStoreApi, adminUserApi, authApi, unitAssignmentApi, UnitAssignment } from '../../lib/auth';
 import { lexiconApi } from '../../lib/lexicon';
+import { getSessionToken } from '../../lib/session';
 
 type StudentItem = {
   id: string;
@@ -54,7 +55,7 @@ function normalizeLegacyTextbookPermission(permission: string, mergedTextbooks: 
 
 export const TeachingUnits: React.FC = () => {
   const { user } = useAuth();
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
 
   const [students, setStudents] = useState<StudentItem[]>([]);
   const [resolvedStoreName, setResolvedStoreName] = useState('');

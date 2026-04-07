@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Save, Trash2, X } from 'lucide-react';
 import { AdminUser, accountMetaApi, teacherStudentApi } from '../../lib/auth';
+import { getSessionToken } from '../../lib/session';
 
 type EditableStudent = AdminUser & { dirty?: boolean };
 
@@ -39,7 +40,7 @@ function validateStudent(student: Partial<AdminUser>) {
 }
 
 export const PermissionsManagement: React.FC = () => {
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
   const [students, setStudents] = useState<EditableStudent[]>([]);
   const [textbookOptions, setTextbookOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);

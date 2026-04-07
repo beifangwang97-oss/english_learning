@@ -1,18 +1,21 @@
 package com.kineticscholar.userservice.controller;
 
 import com.kineticscholar.userservice.model.User;
+import com.kineticscholar.userservice.service.SessionAuthException;
+import com.kineticscholar.userservice.service.SessionAuthService;
 import com.kineticscholar.userservice.service.UserService;
-import com.kineticscholar.userservice.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Objects;
+import java.time.LocalDate;
 
 @RestController
 @RequestMapping("/api")
@@ -22,7 +25,7 @@ public class UserController {
     private UserService userService;
 
     @Autowired
-    private JwtUtil jwtUtil;
+    private SessionAuthService sessionAuthService;
 
     @PostMapping("/register")
     public ResponseEntity<?> register(@RequestBody User user) {
@@ -45,16 +48,16 @@ public class UserController {
     }
 
     @PostMapping("/users/login")
-    public ResponseEntity<?> login(@RequestBody Map<String, String> credentials) {
-        return loginInternal(credentials);
+    public ResponseEntity<?> login(@RequestBody Map<String, String> credentials, HttpServletRequest request) {
+        return loginInternal(credentials, request);
     }
 
     @PostMapping("/login")
-    public ResponseEntity<?> loginAlias(@RequestBody Map<String, String> credentials) {
-        return loginInternal(credentials);
+    public ResponseEntity<?> loginAlias(@RequestBody Map<String, String> credentials, HttpServletRequest request) {
+        return loginInternal(credentials, request);
     }
 
-    private ResponseEntity<?> loginInternal(Map<String, String> credentials) {
+    private ResponseEntity<?> loginInternal(Map<String, String> credentials, HttpServletRequest request) {
         String username = credentials.get("username");
         String password = credentials.get("password");
 
@@ -66,7 +69,11 @@ public class UserController {
         try {
             Optional<User> user = userService.login(username, password);
             if (user.isPresent()) {
-                String token = jwtUtil.generateToken(user.get().getUsername(), user.get().getRole());
+                String token = sessionAuthService.issueLoginToken(
+                        user.get(),
+                        request == null ? null : request.getRemoteAddr(),
+                        request == null ? null : request.getHeader("User-Agent")
+                );
                 Map<String, Object> response = new HashMap<>();
                 response.put("token", token);
                 response.put("user", toSafeUser(user.get()));
@@ -74,7 +81,10 @@ public class UserController {
             }
         } catch (RuntimeException e) {
             String msg = e.getMessage() == null ? "" : e.getMessage();
-            if ("Account is disabled".equals(msg) || "Account has expired".equals(msg)) {
+            if ("Account is disabled".equals(msg)
+                    || "Account has expired".equals(msg)
+                    || "账号已停用".equals(msg)
+                    || "账号已到期".equals(msg)) {
                 return new ResponseEntity<>(Map.of("error", msg), HttpStatus.FORBIDDEN);
             }
             return new ResponseEntity<>(Map.of("error", msg), HttpStatus.CONFLICT);
@@ -85,16 +95,16 @@ public class UserController {
 
     @PostMapping("/users/logout")
     public ResponseEntity<?> logout(@RequestHeader(value = "Authorization", required = false) String authHeader) {
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            return new ResponseEntity<>(Map.of("error", "Missing or invalid Authorization header"), HttpStatus.UNAUTHORIZED);
+        try {
+            if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                return new ResponseEntity<>(Map.of("error", "Missing or invalid Authorization header"), HttpStatus.UNAUTHORIZED);
+            }
+            String token = authHeader.substring(7);
+            sessionAuthService.logoutByToken(token);
+            return new ResponseEntity<>(Map.of("message", "logout success"), HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         }
-        String token = authHeader.substring(7);
-        if (!jwtUtil.validateToken(token)) {
-            return new ResponseEntity<>(Map.of("error", "Invalid token"), HttpStatus.UNAUTHORIZED);
-        }
-        String username = jwtUtil.getUsernameFromToken(token);
-        userService.markOffline(username);
-        return new ResponseEntity<>(Map.of("message", "logout success"), HttpStatus.OK);
     }
 
     @GetMapping("/users/me")
@@ -108,22 +118,26 @@ public class UserController {
     }
 
     private ResponseEntity<?> getCurrentUserInternal(String authHeader) {
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            return new ResponseEntity<>(Map.of("error", "Missing or invalid Authorization header"), HttpStatus.UNAUTHORIZED);
+        try {
+            User user = sessionAuthService.validateAuthorizationHeader(authHeader);
+            return new ResponseEntity<>(toSafeUser(user), HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         }
+    }
 
-        String token = authHeader.substring(7);
-        if (!jwtUtil.validateToken(token)) {
-            return new ResponseEntity<>(Map.of("error", "Invalid token"), HttpStatus.UNAUTHORIZED);
+    @GetMapping("/users/session/validate")
+    public ResponseEntity<?> validateSession(@RequestHeader(value = "Authorization", required = false) String authHeader) {
+        try {
+            User user = sessionAuthService.validateAuthorizationHeader(authHeader);
+            return new ResponseEntity<>(Map.of(
+                    "id", user.getId(),
+                    "username", user.getUsername(),
+                    "role", user.getRole()
+            ), HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         }
-
-        String username = jwtUtil.getUsernameFromToken(token);
-        Optional<User> user = userService.getUserByUsername(username);
-        if (user.isEmpty()) {
-            return new ResponseEntity<>(Map.of("error", "User not found"), HttpStatus.NOT_FOUND);
-        }
-
-        return new ResponseEntity<>(toSafeUser(user.get()), HttpStatus.OK);
     }
 
     @GetMapping("/users")
@@ -162,6 +176,9 @@ public class UserController {
         try {
             normalizePasswordInput(user);
             User updatedUser = userService.updateUser(id, user);
+            if (!isLoginAllowedNow(updatedUser)) {
+                sessionAuthService.revokeAllSessionsByUserId(updatedUser.getId(), "ACCOUNT_STATE_CHANGED");
+            }
             return new ResponseEntity<>(toSafeUser(updatedUser), HttpStatus.OK);
         } catch (RuntimeException e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
@@ -170,6 +187,7 @@ public class UserController {
 
     @DeleteMapping("/users/{id}")
     public ResponseEntity<?> deleteUser(@PathVariable Long id) {
+        sessionAuthService.revokeAllSessionsByUserId(id, "ACCOUNT_DELETED");
         userService.deleteUser(id);
         return new ResponseEntity<>(HttpStatus.NO_CONTENT);
     }
@@ -186,6 +204,8 @@ public class UserController {
                     .map(this::toSafeUser)
                     .toList();
             return new ResponseEntity<>(users, HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         } catch (RuntimeException e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
@@ -202,6 +222,8 @@ public class UserController {
             user.setStoreName(normalizeStore(teacher.getStoreName()));
             User created = userService.register(user);
             return new ResponseEntity<>(toSafeUser(created), HttpStatus.CREATED);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         } catch (RuntimeException e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
@@ -231,7 +253,12 @@ public class UserController {
             user.setRole("student");
             user.setStoreName(teacherStore);
             User updatedUser = userService.updateUser(id, user);
+            if (!isLoginAllowedNow(updatedUser)) {
+                sessionAuthService.revokeAllSessionsByUserId(updatedUser.getId(), "ACCOUNT_STATE_CHANGED");
+            }
             return new ResponseEntity<>(toSafeUser(updatedUser), HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         } catch (RuntimeException e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
@@ -255,8 +282,11 @@ public class UserController {
             if (!Objects.equals(normalizeStore(target.getStoreName()), teacherStore)) {
                 return new ResponseEntity<>(Map.of("error", "Cannot delete students outside your store"), HttpStatus.FORBIDDEN);
             }
+            sessionAuthService.revokeAllSessionsByUserId(target.getId(), "ACCOUNT_DELETED");
             userService.deleteUser(id);
             return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         } catch (RuntimeException e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
@@ -287,28 +317,20 @@ public class UserController {
                     return new ResponseEntity<>(Map.of("error", "Cannot delete students outside your store"), HttpStatus.FORBIDDEN);
                 }
             }
-            userIds.forEach(userService::deleteUser);
+            userIds.forEach(id -> {
+                sessionAuthService.revokeAllSessionsByUserId(id, "ACCOUNT_DELETED");
+                userService.deleteUser(id);
+            });
             return new ResponseEntity<>(Map.of("message", "Deleted " + userIds.size() + " students"), HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
         } catch (RuntimeException e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
     }
 
     private User requireTeacher(String authHeader) {
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            throw new RuntimeException("Missing or invalid Authorization header");
-        }
-        String token = authHeader.substring(7);
-        if (!jwtUtil.validateToken(token)) {
-            throw new RuntimeException("Invalid token");
-        }
-        String role = jwtUtil.getRoleFromToken(token);
-        if (!"teacher".equalsIgnoreCase(role)) {
-            throw new RuntimeException("Teacher role required");
-        }
-        String username = jwtUtil.getUsernameFromToken(token);
-        User teacher = userService.getUserByUsername(username)
-                .orElseThrow(() -> new RuntimeException("Teacher not found"));
+        User teacher = sessionAuthService.validateAuthorizationHeader(authHeader);
         if (!"teacher".equalsIgnoreCase(teacher.getRole())) {
             throw new RuntimeException("Teacher role required");
         }
@@ -318,8 +340,23 @@ public class UserController {
         return teacher;
     }
 
+    private ResponseEntity<Map<String, Object>> authErrorResponse(SessionAuthException e) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("error", e.getMessage());
+        body.put("code", e.getCode());
+        return new ResponseEntity<>(body, e.getStatus());
+    }
+
     private String normalizeStore(String storeName) {
         return storeName == null ? "" : storeName.trim();
+    }
+
+    private boolean isLoginAllowedNow(User user) {
+        if (user == null || !user.isActive()) {
+            return false;
+        }
+        LocalDate today = LocalDate.now();
+        return user.getExpireDate() != null && !today.isAfter(user.getExpireDate());
     }
 
     private Map<String, Object> toSafeUser(User user) {

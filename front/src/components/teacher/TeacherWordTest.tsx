@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronRight, ClipboardList, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -13,6 +13,7 @@ import {
   WordTestGroupScope,
   wordTestApi,
 } from '../../lib/auth';
+import { getSessionToken } from '../../lib/session';
 import { lexiconApi, LexiconTaskTreeBook } from '../../lib/lexicon';
 
 type StudentUser = AdminUser & { onlineStatus?: number | boolean | null };
@@ -103,7 +104,7 @@ function formatDuration(seconds?: number | null) {
 
 export const TeacherWordTest: React.FC = () => {
   const { user } = useAuth();
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
 
   const [students, setStudents] = useState<StudentUser[]>([]);
   const [studentNameMap, setStudentNameMap] = useState<Map<number, string>>(new Map());
@@ -118,6 +119,7 @@ export const TeacherWordTest: React.FC = () => {
   const [treeHint, setTreeHint] = useState<string | null>(null);
 
   const [testType, setTestType] = useState<'默写' | '听写'>('默写');
+  const [passScore, setPassScore] = useState<number>(60);
   const [testTitle, setTestTitle] = useState(todayDefaultTitle());
   const [selectedStudents, setSelectedStudents] = useState<number[]>([]);
   const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
@@ -258,6 +260,7 @@ export const TeacherWordTest: React.FC = () => {
     if (!token || !user?.id) return;
     if (selectedStudents.length === 0) return setError('请至少选择一位学生');
     if (selectedScopes.length === 0) return setError('请至少选择一个组');
+    if (!Number.isFinite(passScore) || passScore < 0 || passScore > 100) return setError('合格分数需在 0-100 之间');
 
     const scopes = selectedScopes
       .map(parseScopeKey)
@@ -295,6 +298,7 @@ export const TeacherWordTest: React.FC = () => {
         storeCode: teacherStoreCode,
         title: (testTitle || '').trim(),
         testType,
+        passScore,
         studentIds: selectedStudents,
         scopes,
         items: Array.from(itemMap.values()),
@@ -305,6 +309,7 @@ export const TeacherWordTest: React.FC = () => {
       setSelectedScopes([]);
       setSelectedAssignmentIds([]);
       setTestTitle(todayDefaultTitle());
+      setPassScore(60);
       await loadData();
     } catch (e: any) {
       setError(e?.message || '发布单词测试失败');
@@ -392,8 +397,17 @@ export const TeacherWordTest: React.FC = () => {
             <div className="flex gap-3">
               <button onClick={() => setTestType('默写')} className={`px-4 py-2 rounded-lg border-2 font-bold ${testType === '默写' ? 'border-primary bg-primary-container/20 text-primary' : 'border-outline-variant/30'}`}>默写</button>
               <button onClick={() => setTestType('听写')} className={`px-4 py-2 rounded-lg border-2 font-bold ${testType === '听写' ? 'border-primary bg-primary-container/20 text-primary' : 'border-outline-variant/30'}`}>听写</button>
-            </div>
-            <input value={testTitle} onChange={(e) => setTestTitle(e.target.value)} className="w-full rounded-lg border border-outline-variant/30 px-3 py-2" placeholder="测试名称" />
+            </div>            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-on-surface-variant">合格分</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={passScore}
+                onChange={(e) => setPassScore(Number(e.target.value))}
+                className="w-24 rounded-lg border border-outline-variant/30 px-3 py-2"
+              />
+            </div>            <input value={testTitle} onChange={(e) => setTestTitle(e.target.value)} className="w-full rounded-lg border border-outline-variant/30 px-3 py-2" placeholder="测试名称" />
             {selectedScopes.length > 0 && (
               <div className="rounded-lg border border-outline-variant/30 bg-white p-2">
                 <p className="mb-1 text-xs font-bold text-on-surface-variant">已选范围（含册数）</p>
@@ -497,13 +511,14 @@ export const TeacherWordTest: React.FC = () => {
               <thead className="sticky top-0 bg-surface-container-low">
                 <tr>
                   <th className="px-4 py-3">选择</th>
-                  <th className="px-4 py-3">测试名称</th>
+                  <th className="px-4 py-3">任务名称</th>
                   <th className="px-4 py-3">类型</th>
                   <th className="px-4 py-3">学生</th>
                   <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3">成绩</th>
-                  <th className="px-4 py-3">正确/总数</th>
-                  <th className="px-4 py-3">时长</th>
+                  <th className="px-4 py-3">合格分数</th>
+                  <th className="px-4 py-3">完成次数</th>
+                  <th className="px-4 py-3">最高分/最佳用时</th>
+                  <th className="px-4 py-3">最高正确数/单词总数</th>
                   <th className="px-4 py-3">发布时间</th>
                   <th className="px-4 py-3">操作</th>
                 </tr>
@@ -515,16 +530,15 @@ export const TeacherWordTest: React.FC = () => {
                     <td className="px-4 py-2 font-medium">{row.title}</td>
                     <td className="px-4 py-2">{row.testType}</td>
                     <td className="px-4 py-2">{studentNameMap.get(row.userId) || `ID:${row.userId}`}</td>
-                    <td className="px-4 py-2">{row.status || 'published'}</td>
+                    <td className="px-4 py-2">{row.status || 'pending'}</td>
+                    <td className="px-4 py-2">{typeof row.passScore === 'number' ? `${row.passScore} 分` : '60 分'}</td>
+                    <td className="px-4 py-2">{typeof row.attemptCount === 'number' ? row.attemptCount : 0}</td>
                     <td className="px-4 py-2">
-                      {typeof row.score === 'number' ? `${row.score} 分` : '-'}
+                      {typeof row.score === 'number' ? `${row.score} 分` : '-'} / {formatDuration(row.duration)}
                     </td>
                     <td className="px-4 py-2">
-                      {typeof row.correctCount === 'number' && typeof row.totalCount === 'number'
-                        ? `${row.correctCount}/${row.totalCount}`
-                        : '-'}
+                      {typeof row.correctCount === 'number' && typeof row.totalCount === 'number' ? `${row.correctCount}/${row.totalCount}` : '-'}
                     </td>
-                    <td className="px-4 py-2">{formatDuration(row.duration)}</td>
                     <td className="px-4 py-2">{row.createdAt ? new Date(row.createdAt).toLocaleString() : '-'}</td>
                     <td className="px-4 py-2">
                       <button onClick={() => deleteOne(row.assignmentId)} className="text-sm text-red-600 font-bold">删除</button>
@@ -533,7 +547,7 @@ export const TeacherWordTest: React.FC = () => {
                 ))}
                 {assignments.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="px-4 py-6 text-center text-on-surface-variant">暂无任务</td>
+                    <td colSpan={11} className="px-4 py-6 text-center text-on-surface-variant">暂无数据</td>
                   </tr>
                 )}
               </tbody>
@@ -544,3 +558,11 @@ export const TeacherWordTest: React.FC = () => {
     </div>
   );
 };
+
+
+
+
+
+
+
+

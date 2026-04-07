@@ -9,6 +9,10 @@ export const Login: React.FC = () => {
   const { login, isLoading, error, user } = useAuth();
   const navigate = useNavigate();
 
+  useEffect(() => {
+    document.title = '虎子英语_登录页';
+  }, []);
+
   // 当用户登录成功后，根据用户角色跳转到相应的仪表盘页面
   useEffect(() => {
     console.log('User state changed:', user);

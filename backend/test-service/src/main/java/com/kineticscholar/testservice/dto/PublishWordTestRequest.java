@@ -9,9 +9,9 @@ public class PublishWordTestRequest {
     private Long createdBy;
     private String storeCode;
     private String title;
-    private String testType; // 默写, 听写
+    private String testType;
+    private Integer passScore;
     private List<Long> studentIds;
     private List<WordTestGroupScope> scopes;
     private List<WordTestContentItem> items;
 }
-

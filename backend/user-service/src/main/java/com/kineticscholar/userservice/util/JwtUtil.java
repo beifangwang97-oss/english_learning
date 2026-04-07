@@ -11,6 +11,7 @@ import java.security.Key;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 @Component
 public class JwtUtil {
@@ -25,9 +26,10 @@ public class JwtUtil {
         return Keys.hmacShaKeyFor(secret.getBytes());
     }
 
-    public String generateToken(String username, String role) {
+    public String generateToken(String username, String role, String sessionId) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("role", role);
+        claims.put("sid", sessionId);
         return createToken(claims, username);
     }
 
@@ -60,6 +62,16 @@ public class JwtUtil {
                 .parseClaimsJws(token)
                 .getBody();
         return (String) claims.get("role");
+    }
+
+    public String getSessionIdFromToken(String token) {
+        Claims claims = Jwts.parserBuilder()
+                .setSigningKey(getSigningKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+        Object sid = claims.get("sid");
+        return sid == null ? null : Objects.toString(sid, null);
     }
 
     public boolean validateToken(String token) {

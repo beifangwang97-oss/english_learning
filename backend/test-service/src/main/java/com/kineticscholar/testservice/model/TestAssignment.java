@@ -37,6 +37,9 @@ public class TestAssignment {
     @Column(name = "duration")
     private Integer duration; // in seconds
 
+    @Column(name = "attempt_count")
+    private Integer attemptCount;
+
     @Column(name = "completed_at")
     private LocalDateTime completedAt;
 
@@ -47,6 +50,9 @@ public class TestAssignment {
     protected void onCreate() {
         if (createdAt == null) {
             createdAt = LocalDateTime.now();
+        }
+        if (attemptCount == null) {
+            attemptCount = 0;
         }
     }
 }

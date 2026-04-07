@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Save, Trash2, X } from 'lucide-react';
+import { Plus, Save, Search, Trash2, X } from 'lucide-react';
 import { AdminUser, accountMetaApi, adminStoreApi, adminUserApi } from '../../lib/auth';
+import { getSessionToken } from '../../lib/session';
 import { StoreManagement } from './StoreManagement';
 
 type EditableUser = AdminUser & { dirty?: boolean };
@@ -36,12 +37,13 @@ function safeStore(value?: string | null) {
 }
 
 export const UserAccountManagement: React.FC = () => {
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
 
   const [users, setUsers] = useState<EditableUser[]>([]);
   const [stores, setStores] = useState<string[]>([]);
   const [textbookOptions, setTextbookOptions] = useState<string[]>([]);
   const [selectedStore, setSelectedStore] = useState('ALL');
+  const [searchKeyword, setSearchKeyword] = useState('');
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,9 +109,16 @@ export const UserAccountManagement: React.FC = () => {
   };
 
   const visibleUsers = useMemo(() => {
-    if (selectedStore === 'ALL') return users;
-    return users.filter((u) => safeStore(u.storeName) === selectedStore);
-  }, [users, selectedStore]);
+    const keyword = searchKeyword.trim().toLowerCase();
+    return users.filter((u) => {
+      const inStore = selectedStore === 'ALL' || safeStore(u.storeName) === selectedStore;
+      if (!inStore) return false;
+      if (!keyword) return true;
+      const phoneLike = (u.username || u.phone || '').toLowerCase();
+      const name = (u.name || '').toLowerCase();
+      return phoneLike.includes(keyword) || name.includes(keyword);
+    });
+  }, [users, selectedStore, searchKeyword]);
 
   const teacherUsers = useMemo(() => visibleUsers.filter((u) => u.role === 'teacher'), [visibleUsers]);
   const studentUsers = useMemo(() => visibleUsers.filter((u) => u.role === 'student'), [visibleUsers]);
@@ -262,13 +271,24 @@ export const UserAccountManagement: React.FC = () => {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-2xl font-black">账号管理</h3>
-        <div className="flex items-center gap-2 flex-wrap">
-          <label className="text-sm font-bold">门店筛选</label>
-          <select className="border rounded-lg px-3 py-2 bg-white" value={selectedStore} onChange={(e) => setSelectedStore(e.target.value)}>
-            <option value="ALL">全部门店</option>
-            {stores.map((code) => <option key={code} value={code}>{code}</option>)}
-          </select>
+        <div className="flex flex-wrap items-center gap-3">
+          <h3 className="text-2xl font-black">账号管理</h3>
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="text-sm font-bold">门店筛选</label>
+            <select className="border rounded-lg px-3 py-2 bg-white" value={selectedStore} onChange={(e) => setSelectedStore(e.target.value)}>
+              <option value="ALL">全部门店</option>
+              {stores.map((code) => <option key={code} value={code}>{code}</option>)}
+            </select>
+          </div>
+          <div className="relative">
+            <Search className="w-4 h-4 text-on-surface-variant absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              className="border rounded-lg pl-9 pr-3 py-2 bg-white w-64"
+              placeholder="搜索手机号或姓名"
+              value={searchKeyword}
+              onChange={(e) => setSearchKeyword(e.target.value)}
+            />
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button

@@ -232,6 +232,30 @@ export const lexiconApi = {
     return `${API_BASE_URL}/api/lexicon/audio?path=${encodeURIComponent(path)}`;
   },
 
+  async playAudioWithAuth(token: string, path?: string) {
+    if (!token || !path) return;
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/audio?path=${encodeURIComponent(path)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!response.ok) {
+      throw new Error('音频加载失败');
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const audio = new Audio(objectUrl);
+    const cleanup = () => URL.revokeObjectURL(objectUrl);
+    audio.addEventListener('ended', cleanup, { once: true });
+    audio.addEventListener('error', cleanup, { once: true });
+    try {
+      await audio.play();
+    } catch (e) {
+      cleanup();
+      throw e;
+    }
+  },
+
   async getLearningSummary(
     token: string,
     params: { type: 'word' | 'phrase'; bookVersion: string; grade: string; semester: string; unit: string }

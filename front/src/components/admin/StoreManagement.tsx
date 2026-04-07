@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AdminStore, AdminUser, accountMetaApi, adminStoreApi, adminUserApi } from '../../lib/auth';
+import { getSessionToken } from '../../lib/session';
 
 type EditableStore = AdminStore & { editing?: boolean };
 
@@ -74,7 +75,7 @@ const CheckboxMultiSelect: React.FC<MultiSelectProps> = ({ options, value, onCha
 };
 
 export const StoreManagement: React.FC = () => {
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
 
   const [stores, setStores] = useState<EditableStore[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);

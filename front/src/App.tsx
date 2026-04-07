@@ -10,6 +10,13 @@ import { StudentDashboard } from './pages/StudentDashboard';
 import { StudentUnit } from './pages/StudentUnit';
 import { TeacherDashboard } from './pages/TeacherDashboard';
 import { AdminDashboard } from './pages/AdminDashboard';
+import { useAuth } from './context/AuthContext';
+
+function RootEntry() {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  return <Navigate to={`/${user.role}/dashboard`} replace />;
+}
 
 export default function App() {
   return (
@@ -17,6 +24,7 @@ export default function App() {
       <TimerProvider>
         <Router>
           <Routes>
+            <Route path="/" element={<RootEntry />} />
             <Route path="/login" element={<Login />} />
             
             <Route element={<GlobalLayout />}>
@@ -37,8 +45,7 @@ export default function App() {
               </Route>
             </Route>
 
-            {/* Default redirect */}
-            <Route path="*" element={<Navigate to="/login" replace />} />
+            <Route path="*" element={<RootEntry />} />
           </Routes>
         </Router>
       </TimerProvider>

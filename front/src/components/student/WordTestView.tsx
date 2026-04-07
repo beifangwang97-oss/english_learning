@@ -1,16 +1,33 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
-import { Volume2, Play, CheckCircle2, XCircle, Award, BookOpen, Clock3 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Volume2, Play, CheckCircle2, XCircle, Award, BookOpen, Clock3, RotateCcw } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { StudentWordTestAssignment, wordTestApi } from '../../lib/auth';
+import { StudentWordTestAssignment, WordTestContentItem, wordTestApi } from '../../lib/auth';
 import { lexiconApi } from '../../lib/lexicon';
+import { getSessionToken } from '../../lib/session';
 
 function normalizeAnswer(value: string) {
   return (value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+function shuffleItems(items: WordTestContentItem[]): WordTestContentItem[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function formatDuration(seconds?: number | null) {
+  if (typeof seconds !== 'number' || seconds <= 0) return '-';
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}分${secs}秒`;
+}
+
 export const WordTestView: React.FC = () => {
   const { user } = useAuth();
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
 
   const [tests, setTests] = useState<StudentWordTestAssignment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -46,7 +63,7 @@ export const WordTestView: React.FC = () => {
   const completedTests = tests.filter((t) => t.status === 'completed');
 
   const handleStartTest = (test: StudentWordTestAssignment) => {
-    setActiveTest(test);
+    setActiveTest({ ...test, items: shuffleItems(test.items || []) });
     setAnswers({});
     setStartedAt(Date.now());
     setSubmitted(false);
@@ -113,18 +130,50 @@ export const WordTestView: React.FC = () => {
     }
   };
 
-  const playAudio = (audioPath?: string) => {
-    if (!audioPath) return;
+  const playAudio = async (audioPath?: string) => {
+    if (!audioPath || !token) return;
     try {
-      const audio = new Audio(lexiconApi.audioUrl(audioPath));
-      void audio.play();
+      await lexiconApi.playAudioWithAuth(token, audioPath);
     } catch {
       setError('音频播放失败');
     }
   };
 
+  const renderTestCard = (test: StudentWordTestAssignment, completed: boolean) => {
+    const passScore = typeof test.passScore === 'number' ? test.passScore : 60;
+    const bestScore = typeof test.score === 'number' ? test.score : null;
+    const attemptCount = typeof test.attemptCount === 'number' ? test.attemptCount : 0;
+    const bestDuration = formatDuration(test.duration);
+
+    return (
+      <div key={test.assignmentId} className="border-2 border-outline-variant/20 rounded-xl p-6 hover:border-primary/50 transition-colors flex flex-col">
+        <div className="flex justify-between items-start mb-4 gap-2">
+          <h3 className="text-xl font-bold text-on-surface">{test.title}</h3>
+          <span className={`px-3 py-1 rounded-full text-xs font-bold ${test.testType === '听写' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-container text-on-tertiary-container'}`}>
+            {test.testType}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-sm text-on-surface-variant mb-6">
+          <span className="flex items-center gap-1"><BookOpen className="w-4 h-4" /> {test.items.length} 个单词</span>
+          <span>合格分：{passScore} 分</span>
+          <span>累计完成：{attemptCount} 次</span>
+          <span className="col-span-2 flex items-center gap-1"><Clock3 className="w-4 h-4" /> 最高分/最佳用时：{bestScore === null ? '-' : `${bestScore} 分`} / {bestDuration}</span>
+        </div>
+
+        <button
+          onClick={() => handleStartTest(test)}
+          className="mt-auto w-full py-3 bg-primary text-on-primary font-bold rounded-lg hover:bg-primary-dim transition-colors flex items-center justify-center gap-2"
+        >
+          {completed ? <RotateCcw className="w-5 h-5" /> : <Play className="w-5 h-5" />} {completed ? '重新测试' : '开始测试'}
+        </button>
+      </div>
+    );
+  };
+
   if (activeTest) {
     const total = activeTest.items.length;
+    const passScore = typeof activeTest.passScore === 'number' ? activeTest.passScore : 60;
     return (
       <div className="space-y-8 animate-in fade-in">
         {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
@@ -132,7 +181,7 @@ export const WordTestView: React.FC = () => {
           <div>
             <h2 className="text-2xl font-black text-on-surface">{activeTest.title}</h2>
             <p className="text-on-surface-variant mt-1">
-              测试类型: <span className="font-bold text-primary">{activeTest.testType}</span>
+              测试类型: <span className="font-bold text-primary">{activeTest.testType}</span> · 合格分: <span className="font-bold text-primary">{passScore}</span>
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -159,9 +208,12 @@ export const WordTestView: React.FC = () => {
             <div className="w-20 h-20 bg-primary-container rounded-full flex items-center justify-center mb-4">
               <Award className="w-10 h-10 text-primary" />
             </div>
-            <h3 className="text-3xl font-black mb-2">测试已完成</h3>
+            <h3 className="text-3xl font-black mb-2">测试已提交</h3>
             <p className="text-xl text-on-surface-variant">得分: <span className="text-4xl font-black text-primary ml-2">{score}</span> / 100</p>
             <p className="text-sm mt-2 text-on-surface-variant">正确题数: {correctCount}/{total}</p>
+            <p className={`text-sm mt-2 font-bold ${score >= passScore ? 'text-emerald-600' : 'text-red-600'}`}>
+              {score >= passScore ? '本次达到合格分' : '本次未达到合格分，任务仍在待完成中'}
+            </p>
           </div>
         )}
 
@@ -227,7 +279,7 @@ export const WordTestView: React.FC = () => {
       <header className="relative overflow-hidden rounded-2xl p-12 bg-gradient-to-br from-blue-500 to-blue-700 text-white shadow-lg">
         <div className="relative z-10 max-w-2xl">
           <h1 className="font-headline font-extrabold text-5xl tracking-tight leading-tight mb-4">单词测试</h1>
-          <p className="text-blue-50 text-lg">完成教师发布的测试任务，系统自动计时并记录成绩。</p>
+          <p className="text-blue-50 text-lg">完成教师发布的测试任务，系统将记录历史最高分、最快用时与完成次数。</p>
         </div>
         <div className="absolute -right-20 -bottom-20 w-80 h-80 bg-white/10 rounded-full blur-3xl"></div>
       </header>
@@ -248,28 +300,7 @@ export const WordTestView: React.FC = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {pendingTests.map((test) => (
-              <div key={test.assignmentId} className="border-2 border-outline-variant/20 rounded-xl p-6 hover:border-primary/50 transition-colors flex flex-col">
-                <div className="flex justify-between items-start mb-4 gap-2">
-                  <h3 className="text-xl font-bold text-on-surface">{test.title}</h3>
-                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${test.testType === '听写' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-container text-on-tertiary-container'}`}>
-                    {test.testType}
-                  </span>
-                </div>
-                <div className="flex items-center gap-4 text-sm text-on-surface-variant mb-2">
-                  <span className="flex items-center gap-1"><BookOpen className="w-4 h-4" /> {test.items.length} 个单词</span>
-                </div>
-                <div className="flex items-center gap-4 text-sm text-on-surface-variant mb-8">
-                  <span className="flex items-center gap-1"><Clock3 className="w-4 h-4" /> 状态：待完成</span>
-                </div>
-                <button
-                  onClick={() => handleStartTest(test)}
-                  className="mt-auto w-full py-3 bg-primary text-on-primary font-bold rounded-lg hover:bg-primary-dim transition-colors flex items-center justify-center gap-2"
-                >
-                  <Play className="w-5 h-5" /> 开始测试
-                </button>
-              </div>
-            ))}
+            {pendingTests.map((test) => renderTestCard(test, false))}
           </div>
         )}
       </div>
@@ -278,30 +309,12 @@ export const WordTestView: React.FC = () => {
         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
           已完成任务 <span className="bg-emerald-600 text-white text-sm px-2 py-0.5 rounded-full">{completedTests.length}</span>
         </h2>
+
         {completedTests.length === 0 ? (
           <div className="text-sm text-on-surface-variant">暂无已完成记录</div>
         ) : (
-          <div className="overflow-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-surface-container-low text-on-surface-variant">
-                <tr>
-                  <th className="px-3 py-2 text-left">测试名称</th>
-                  <th className="px-3 py-2 text-left">类型</th>
-                  <th className="px-3 py-2 text-left">成绩</th>
-                  <th className="px-3 py-2 text-left">正确/总数</th>
-                </tr>
-              </thead>
-              <tbody>
-                {completedTests.map((row) => (
-                  <tr key={row.assignmentId} className="border-t border-outline-variant/20">
-                    <td className="px-3 py-2">{row.title}</td>
-                    <td className="px-3 py-2">{row.testType}</td>
-                    <td className="px-3 py-2">{typeof row.score === 'number' ? `${row.score} 分` : '-'}</td>
-                    <td className="px-3 py-2">{typeof row.correctCount === 'number' && typeof row.totalCount === 'number' ? `${row.correctCount}/${row.totalCount}` : '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {completedTests.map((test) => renderTestCard(test, true))}
           </div>
         )}
       </div>

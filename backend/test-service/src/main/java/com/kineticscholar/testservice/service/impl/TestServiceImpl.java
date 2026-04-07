@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
 public class TestServiceImpl implements TestService {
     private static final String TYPE_DICTATION = "\u542c\u5199";
     private static final String TYPE_TRANSLATION = "\u9ed8\u5199";
+    private static final int DEFAULT_PASS_SCORE = 60;
 
     @Autowired
     private WordTestRepository wordTestRepository;
@@ -182,19 +183,36 @@ public class TestServiceImpl implements TestService {
 
     @Override
     public void submitTest(Long assignmentId, List<TestAnswer> answers, Integer score, Integer duration, Integer correctCount, Integer totalCount) {
-        // Update assignment status
         Optional<TestAssignment> existingAssignment = testAssignmentRepository.findById(assignmentId);
         if (existingAssignment.isPresent()) {
             TestAssignment assignment = existingAssignment.get();
-            assignment.setStatus("completed");
-            assignment.setScore(score);
-            assignment.setCorrectCount(correctCount);
-            assignment.setTotalCount(totalCount);
-            assignment.setDuration(duration);
-            assignment.setCompletedAt(LocalDateTime.now());
+            WordTest test = wordTestRepository.findById(assignment.getTestId())
+                    .orElseThrow(() -> new RuntimeException("WordTest not found"));
+            int passScore = extractPassScoreFromContentJson(test.getContentJson());
+
+            int incomingScore = score == null ? 0 : score;
+            int incomingDuration = duration == null ? 0 : duration;
+            Integer currentBestScore = assignment.getScore();
+            Integer currentBestDuration = assignment.getDuration();
+
+            boolean better = currentBestScore == null
+                    || incomingScore > currentBestScore
+                    || (incomingScore == currentBestScore && isDurationBetter(incomingDuration, currentBestDuration));
+
+            if (better) {
+                assignment.setScore(incomingScore);
+                assignment.setCorrectCount(correctCount);
+                assignment.setTotalCount(totalCount);
+                assignment.setDuration(incomingDuration);
+                assignment.setCompletedAt(LocalDateTime.now());
+            }
+
+            int nextAttemptCount = effectiveAttemptCount(assignment) + 1;
+            assignment.setAttemptCount(nextAttemptCount);
+            int bestScore = Optional.ofNullable(assignment.getScore()).orElse(0);
+            assignment.setStatus(bestScore >= passScore ? "completed" : "pending");
             testAssignmentRepository.save(assignment);
 
-            // Save answers
             deleteTestAnswersByAssignmentId(assignmentId);
             for (TestAnswer answer : answers) {
                 answer.setAssignmentId(assignmentId);
@@ -283,6 +301,7 @@ public class TestServiceImpl implements TestService {
         if (!TYPE_TRANSLATION.equals(testType) && !TYPE_DICTATION.equals(testType)) {
             throw new RuntimeException("testType must be \u9ed8\u5199 or \u542c\u5199");
         }
+        int passScore = normalizePassScore(request.getPassScore());
 
         WordTest wordTest = new WordTest();
         wordTest.setId(UUID.randomUUID().toString().replace("-", ""));
@@ -296,6 +315,7 @@ public class TestServiceImpl implements TestService {
         try {
             Map<String, Object> content = new LinkedHashMap<>();
             content.put("testType", testType);
+            content.put("passScore", passScore);
             content.put("scopes", request.getScopes());
             content.put("items", request.getItems());
             wordTest.setContentJson(objectMapper.writeValueAsString(content));
@@ -311,7 +331,8 @@ public class TestServiceImpl implements TestService {
             TestAssignment assignment = new TestAssignment();
             assignment.setTestId(saved.getId());
             assignment.setUserId(studentId);
-            assignment.setStatus("published");
+            assignment.setStatus("pending");
+            assignment.setAttemptCount(0);
             assignments.add(assignment);
         }
         if (!assignments.isEmpty()) {
@@ -340,7 +361,11 @@ public class TestServiceImpl implements TestService {
             row.setUserId(assignment.getUserId());
             row.setTitle(test.getTitle());
             row.setTestType(test.getType());
-            row.setStatus(assignment.getStatus());
+            int passScore = extractPassScoreFromContentJson(test.getContentJson());
+            int bestScore = Optional.ofNullable(assignment.getScore()).orElse(0);
+            row.setStatus(bestScore >= passScore ? "completed" : "pending");
+            row.setPassScore(extractPassScoreFromContentJson(test.getContentJson()));
+            row.setAttemptCount(effectiveAttemptCount(assignment));
             row.setScore(assignment.getScore());
             row.setCorrectCount(assignment.getCorrectCount());
             row.setTotalCount(assignment.getTotalCount());
@@ -373,7 +398,11 @@ public class TestServiceImpl implements TestService {
             row.setTestId(test.getId());
             row.setTitle(test.getTitle());
             row.setTestType(test.getType());
-            row.setStatus("completed".equalsIgnoreCase(safe(assignment.getStatus())) ? "completed" : "pending");
+            int passScore = extractPassScoreFromContentJson(test.getContentJson());
+            int bestScore = Optional.ofNullable(assignment.getScore()).orElse(0);
+            row.setStatus(bestScore >= passScore ? "completed" : "pending");
+            row.setPassScore(extractPassScoreFromContentJson(test.getContentJson()));
+            row.setAttemptCount(effectiveAttemptCount(assignment));
             row.setScore(assignment.getScore());
             row.setCorrectCount(assignment.getCorrectCount());
             row.setTotalCount(assignment.getTotalCount());
@@ -413,6 +442,46 @@ public class TestServiceImpl implements TestService {
         if (!t.isEmpty()) return t;
         LocalDate d = LocalDate.now();
         return d.getYear() + "\u5e74" + d.getMonthValue() + "\u6708" + d.getDayOfMonth() + "\u65e5\u5355\u8bcd\u6d4b\u8bd5";
+    }
+
+    private int normalizePassScore(Integer passScore) {
+        if (passScore == null) return DEFAULT_PASS_SCORE;
+        if (passScore < 0 || passScore > 100) {
+            throw new RuntimeException("passScore must be between 0 and 100");
+        }
+        return passScore;
+    }
+
+    private int extractPassScoreFromContentJson(String contentJson) {
+        if (contentJson == null || contentJson.isBlank()) return DEFAULT_PASS_SCORE;
+        try {
+            Map<?, ?> payload = objectMapper.readValue(contentJson, Map.class);
+            Object raw = payload.get("passScore");
+            if (raw instanceof Number n) {
+                int v = n.intValue();
+                return Math.max(0, Math.min(100, v));
+            }
+            if (raw != null) {
+                int v = Integer.parseInt(String.valueOf(raw));
+                return Math.max(0, Math.min(100, v));
+            }
+            return DEFAULT_PASS_SCORE;
+        } catch (Exception e) {
+            return DEFAULT_PASS_SCORE;
+        }
+    }
+
+    private boolean isDurationBetter(Integer incomingDuration, Integer currentDuration) {
+        if (incomingDuration == null || incomingDuration <= 0) return false;
+        if (currentDuration == null || currentDuration <= 0) return true;
+        return incomingDuration < currentDuration;
+    }
+
+    private int effectiveAttemptCount(TestAssignment assignment) {
+        Integer value = assignment.getAttemptCount();
+        if (value != null && value >= 0) return value;
+        if (assignment.getScore() != null || assignment.getCompletedAt() != null) return 1;
+        return 0;
     }
 
     private List<WordTestContentItem> extractItemsFromContentJson(String contentJson) {

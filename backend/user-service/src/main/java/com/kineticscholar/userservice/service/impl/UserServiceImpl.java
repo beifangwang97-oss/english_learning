@@ -54,14 +54,11 @@ public class UserServiceImpl implements UserService {
             if (passwordEncoder.matches(password, user.get().getPasswordHash())) {
                 User u = user.get();
                 if (!u.isActive()) {
-                    throw new RuntimeException("Account is disabled");
+                    throw new RuntimeException("账号已停用");
                 }
                 LocalDate today = LocalDate.now();
                 if (u.getExpireDate() == null || today.isAfter(u.getExpireDate())) {
-                    throw new RuntimeException("Account has expired");
-                }
-                if (u.getOnlineStatus() != null && u.getOnlineStatus() == 1) {
-                    throw new RuntimeException("Account already online, please logout from other device first");
+                    throw new RuntimeException("账号已到期");
                 }
                 u.setOnlineStatus(1);
                 u.setLastActiveAt(LocalDateTime.now());

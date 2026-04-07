@@ -2,11 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { adminStoreApi, authApi } from '../../lib/auth';
+import { getSessionToken } from '../../lib/session';
 
 export const GlobalLayout: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
   const [storeCode, setStoreCode] = useState('');
   const [storeLabel, setStoreLabel] = useState('');
 

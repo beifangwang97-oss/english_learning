@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { CheckSquare, Layers, Pencil, Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import { LexiconItem, lexiconApi } from '../../lib/lexicon';
+import { getSessionToken } from '../../lib/session';
 
 type Props = { type: 'word' | 'phrase' };
 
@@ -14,7 +15,7 @@ const sortUnit = (a: string, b: string) => {
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 export const LexiconManagement: React.FC<Props> = ({ type }) => {
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

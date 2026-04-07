@@ -12,6 +12,8 @@ public class WordTestAssignmentView {
     private String title;
     private String testType;
     private String status;
+    private Integer passScore;
+    private Integer attemptCount;
     private Integer score;
     private Integer correctCount;
     private Integer totalCount;

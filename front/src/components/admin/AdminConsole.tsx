@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { Activity, GraduationCap, RefreshCw, Store, UserCheck, Users } from 'lucide-react';
 import { AdminStore, AdminUser, adminStoreApi, adminUserApi } from '../../lib/auth';
+import { getSessionToken } from '../../lib/session';
 
 type StoreOverview = {
   storeCode: string;
@@ -28,7 +29,7 @@ function isOnline(user: OnlineLikeUser) {
 }
 
 export const AdminConsole: React.FC = () => {
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
   const [users, setUsers] = useState<OnlineLikeUser[]>([]);
   const [stores, setStores] = useState<AdminStore[]>([]);
   const [loading, setLoading] = useState(true);

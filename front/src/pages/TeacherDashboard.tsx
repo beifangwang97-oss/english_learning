@@ -7,6 +7,7 @@ import { LearningAnalytics } from '../components/teacher/LearningAnalytics';
 import { TeacherWordTest } from '../components/teacher/TeacherWordTest';
 import { useAuth } from '../context/AuthContext';
 import { AdminStore, AdminUser, adminStoreApi, adminUserApi, authApi } from '../lib/auth';
+import { getSessionToken } from '../lib/session';
 
 type TabKey = 'dashboard' | 'teachingUnits' | 'wordTest' | 'permissions' | 'analytics';
 
@@ -38,7 +39,11 @@ export const TeacherDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const { logout, user } = useAuth();
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
+
+  useEffect(() => {
+    document.title = '虎子英语_教师端';
+  }, []);
 
   useEffect(() => {
     if (!token || user?.role !== 'teacher') return;

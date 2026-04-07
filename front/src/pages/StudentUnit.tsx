@@ -6,6 +6,7 @@ import { useTimer } from '../context/TimerContext';
 import { cn } from '../lib/utils';
 import { learningProgressApi } from '../lib/auth';
 import { lexiconApi, LearningEntry, LearningGroupSummary } from '../lib/lexicon';
+import { getSessionToken } from '../lib/session';
 import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileQuestion, HelpCircle, LayoutDashboard, Library, LogOut, MessageCircle, Mic2, NotebookPen, Volume2, XCircle } from 'lucide-react';
 
 type ModuleType = 'vocab' | 'phrase' | 'reading' | 'quiz';
@@ -158,7 +159,7 @@ export const StudentUnit: React.FC = () => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { startTimer, pauseTimer } = useTimer();
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
 
   const [currentModule, setCurrentModule] = useState<ModuleType>('vocab');
   const [showError, setShowError] = useState(false);
@@ -521,16 +522,15 @@ export const StudentUnit: React.FC = () => {
     return normalizeText(input) === normalizeText(expected);
   };
 
-  const playAudio = (path?: string) => {
+  const playAudio = async (path?: string) => {
     if (!path || !token) return;
     try {
       if (currentAudioRef.current) {
         currentAudioRef.current.pause();
         currentAudioRef.current.currentTime = 0;
       }
-      const audio = new Audio(lexiconApi.audioUrl(path));
-      audio.play().catch(() => {});
-      currentAudioRef.current = audio;
+      await lexiconApi.playAudioWithAuth(token, path);
+      currentAudioRef.current = null;
     } catch {
       // ignore audio error
     }
@@ -839,6 +839,20 @@ export const StudentUnit: React.FC = () => {
           <div className="bg-surface-container-low p-6 rounded-xl">
             <h3 className="text-2xl font-black mb-2">补全：{item.cn}</h3>
             <p className="text-sm text-on-surface-variant mb-3">对挖空字母补全，可用左右箭头切换空位，按 Enter 提交</p>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              {item.phonetic ? (
+                <span className="text-sm text-on-surface-variant">{item.phonetic}</span>
+              ) : (
+                <span className="text-sm text-on-surface-variant">-</span>
+              )}
+              <button
+                onClick={() => playAudio(item.wordAudio)}
+                className="w-8 h-8 rounded-full bg-secondary-container/70 flex items-center justify-center"
+                title="播放发音"
+              >
+                <Volume2 className="w-4 h-4" />
+              </button>
+            </div>
             <div className="flex flex-wrap items-center gap-2 mb-4">
               {item.en.split('').map((ch, idx) => {
                 const slotIndex = blankIndexes.indexOf(idx);

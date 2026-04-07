@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTimer } from '../context/TimerContext';
 import { useAuth } from '../context/AuthContext';
 import { adminStoreApi, authApi, unitAssignmentApi } from '../lib/auth';
+import { getSessionToken } from '../lib/session';
 import { lexiconApi } from '../lib/lexicon';
 import { BookOpen, Play, Lock, CheckCircle2, Hourglass, Flame, Award, LayoutDashboard, Library, NotebookPen, ArrowRight, MessageCircle, FileQuestion, LogOut, Mic2, ClipboardList } from 'lucide-react';
 import { PhoneticsView } from '../components/student/PhoneticsView';
@@ -36,13 +37,17 @@ export const StudentDashboard: React.FC = () => {
   const navigate = useNavigate();
   const { pauseTimer } = useTimer();
   const { logout, user } = useAuth();
-  const token = useMemo(() => localStorage.getItem('token') || '', []);
+  const token = useMemo(() => getSessionToken(), []);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'units' | 'notebook' | 'phonetics' | 'word-tests'>('dashboard');
   const [checkedIn, setCheckedIn] = useState(false);
   const [unitsLoading, setUnitsLoading] = useState(false);
   const [unitsError, setUnitsError] = useState<string | null>(null);
   const [allUnits, setAllUnits] = useState<StudentUnitCard[]>([]);
   const today = new Date().getDate();
+
+  useEffect(() => {
+    document.title = '虎子英语_学生端';
+  }, []);
 
   const handleCheckIn = () => {
     if (!checkedIn) {
