@@ -37,6 +37,7 @@ venv/
 # Large local datasets / media (keep local, do not push to GitHub)
 english_book/
 tool/audio/
+tool/**/*.jsonl
 
 # Local caches
 Microsoft/
