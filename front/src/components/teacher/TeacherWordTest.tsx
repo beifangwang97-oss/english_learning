@@ -530,7 +530,7 @@ export const TeacherWordTest: React.FC = () => {
                     <td className="px-4 py-2 font-medium">{row.title}</td>
                     <td className="px-4 py-2">{row.testType}</td>
                     <td className="px-4 py-2">{studentNameMap.get(row.userId) || `ID:${row.userId}`}</td>
-                    <td className="px-4 py-2">{row.status || 'pending'}</td>
+                    <td className="px-4 py-2">{row.status === 'completed' ? '已完成' : '待完成'}</td>
                     <td className="px-4 py-2">{typeof row.passScore === 'number' ? `${row.passScore} 分` : '60 分'}</td>
                     <td className="px-4 py-2">{typeof row.attemptCount === 'number' ? row.attemptCount : 0}</td>
                     <td className="px-4 py-2">

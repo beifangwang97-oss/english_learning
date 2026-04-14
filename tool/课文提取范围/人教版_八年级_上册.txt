@@ -1,0 +1,40 @@
+unit 1 sectionA page12 2a
+unit 1 sectionB page15-16 1b
+unit 1 sectionB page18 3a
+
+unit 2 sectionA page22 2a
+unit 2 sectionB page25 1b 
+unit 2 sectionB page28 3a 
+
+unit 3 sectionA page32 2a 
+unit 3 sectionB page35-36 1b
+unit 3 sectionB page38 3a 
+
+unit 4 sectionA page42 2a 
+unit 4 sectionB page45 1b
+unit 4 sectionB page48 3a 
+
+unit 5 sectionA page52 2a 
+unit 5 sectionB page55 1b
+unit 5 sectionB page58 3a 
+
+unit 6 sectionA page62 2a
+unit 6 sectionB page65 1b
+unit 6 sectionB page68 3a 
+
+unit 7 sectionA page72 2a
+unit 7 sectionB page75 1b
+unit 7 sectionB page78 3a 
+
+unit 8 sectionA page82 2a
+unit 8 sectionB page85 1b
+unit 8 sectionB page88 3a 
+
+unit 1 page90
+unit 2 page91-92
+unit 3 page93
+unit 4 page94-95
+unit 5 page96
+unit 6 page97-98
+unit 7 page99
+unit 8 page100-101

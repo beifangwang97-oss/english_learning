@@ -5,9 +5,14 @@ import com.kineticscholar.testservice.model.TestAssignment;
 import com.kineticscholar.testservice.model.TestAnswer;
 import com.kineticscholar.testservice.model.UnitAssignment;
 import com.kineticscholar.testservice.dto.PublishWordTestRequest;
+import com.kineticscholar.testservice.dto.PublishWordReviewRequest;
 import com.kineticscholar.testservice.dto.StudentWordTestAssignmentView;
+import com.kineticscholar.testservice.dto.StudentWordReviewAssignmentView;
+import com.kineticscholar.testservice.dto.SubmitWordReviewSessionRequest;
 import com.kineticscholar.testservice.dto.UnitTaskItem;
 import com.kineticscholar.testservice.dto.WordTestAssignmentView;
+import com.kineticscholar.testservice.dto.WordReviewAssignmentView;
+import com.kineticscholar.testservice.dto.WordReviewDailySessionView;
 import java.util.List;
 import java.util.Optional;
 
@@ -52,4 +57,13 @@ public interface TestService {
     List<StudentWordTestAssignmentView> getStudentWordTests(Long userId);
     void deleteWordTestAssignment(Long assignmentId);
     void deleteWordTestAssignments(List<Long> assignmentIds);
+
+    // Teacher/student word review
+    void publishWordReview(PublishWordReviewRequest request);
+    List<WordReviewAssignmentView> getTeacherWordReviewAssignments(Long teacherId, String storeCode);
+    List<StudentWordReviewAssignmentView> getStudentWordReviews(Long userId);
+    WordReviewDailySessionView startWordReviewDailySession(Long assignmentId);
+    void submitWordReviewDailySession(Long sessionId, SubmitWordReviewSessionRequest request);
+    void deleteWordReviewAssignment(Long assignmentId);
+    void deleteWordReviewAssignments(List<Long> assignmentIds);
 }

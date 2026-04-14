@@ -5,11 +5,12 @@ import { TeachingUnits } from '../components/teacher/TeachingUnits';
 import { PermissionsManagement } from '../components/teacher/PermissionsManagement';
 import { LearningAnalytics } from '../components/teacher/LearningAnalytics';
 import { TeacherWordTest } from '../components/teacher/TeacherWordTest';
+import { TeacherWordReview } from '../components/teacher/TeacherWordReview';
 import { useAuth } from '../context/AuthContext';
 import { AdminStore, AdminUser, adminStoreApi, adminUserApi, authApi } from '../lib/auth';
 import { getSessionToken } from '../lib/session';
 
-type TabKey = 'dashboard' | 'teachingUnits' | 'wordTest' | 'permissions' | 'analytics';
+type TabKey = 'dashboard' | 'teachingUnits' | 'wordTest' | 'wordReview' | 'permissions' | 'analytics';
 
 type TeacherStudentUser = AdminUser & {
   onlineStatus?: number | boolean | null;
@@ -206,6 +207,8 @@ export const TeacherDashboard: React.FC = () => {
         return <main className="ml-64 flex-1"><TeachingUnits /></main>;
       case 'wordTest':
         return <main className="ml-64 flex-1"><TeacherWordTest /></main>;
+      case 'wordReview':
+        return <main className="ml-64 flex-1"><TeacherWordReview /></main>;
       case 'permissions':
         return <main className="ml-64 flex-1"><PermissionsManagement /></main>;
       case 'analytics':
@@ -219,6 +222,7 @@ export const TeacherDashboard: React.FC = () => {
     { key: 'dashboard', label: '控制台' },
     { key: 'teachingUnits', label: '教学任务' },
     { key: 'wordTest', label: '单词测试' },
+    { key: 'wordReview', label: '单词复习' },
     { key: 'permissions', label: '权限管理' },
     { key: 'analytics', label: '学习分析' },
   ];

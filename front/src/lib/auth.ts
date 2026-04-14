@@ -156,6 +156,93 @@ export interface WordTestAssignmentRow {
   createdAt?: string;
 }
 
+export interface WordReviewUnitScope {
+  textbookVersion: string;
+  grade: string;
+  semester: string;
+  unit: string;
+}
+
+export interface WordReviewContentItem {
+  entryId: string;
+  word: string;
+  phonetic?: string;
+  meaning?: string;
+  pos?: string;
+  wordAudio?: string;
+  sentence?: string;
+  sentenceCn?: string;
+  sentenceAudio?: string;
+}
+
+export interface PublishWordReviewRequest {
+  createdBy: number;
+  storeCode: string;
+  title: string;
+  dailyQuota: number;
+  enableSpelling: boolean;
+  enableZhToEn: boolean;
+  studentIds: number[];
+  scopes: WordReviewUnitScope[];
+  items: WordReviewContentItem[];
+}
+
+export interface WordReviewAssignmentRow {
+  assignmentId: number;
+  taskId: string;
+  userId: number;
+  title: string;
+  status: 'pending' | 'completed';
+  dailyQuota: number;
+  enableSpelling: boolean;
+  enableZhToEn: boolean;
+  totalWordCount: number;
+  masteredWordCount: number;
+  lastReviewDate?: string | null;
+  storeCode: string;
+  createdAt?: string;
+}
+
+export interface StudentWordReviewAssignment {
+  assignmentId: number;
+  taskId: string;
+  title: string;
+  status: 'pending' | 'completed';
+  dailyQuota: number;
+  enableSpelling: boolean;
+  enableZhToEn: boolean;
+  totalWordCount: number;
+  masteredWordCount: number;
+  lastReviewDate?: string | null;
+  todayDone?: boolean;
+  createdAt?: string;
+  completedAt?: string | null;
+}
+
+export interface WordReviewSessionItem {
+  entryId: string;
+  word: string;
+  phonetic?: string;
+  meaning?: string;
+  wordAudio?: string;
+  sentence?: string;
+  sentenceCn?: string;
+  sentenceAudio?: string;
+}
+
+export interface WordReviewDailySession {
+  sessionId: number;
+  assignmentId: number;
+  taskTitle: string;
+  dailyQuota: number;
+  enableSpelling: boolean;
+  enableZhToEn: boolean;
+  totalWordCount: number;
+  masteredWordCount: number;
+  status: 'in_progress' | 'done';
+  items: WordReviewSessionItem[];
+}
+
 export const authApi = {
   login: async (username: string, password: string): Promise<{ user: AuthUser; token: string }> => {
     const response = await fetch(`${API_BASE_URL}/api/users/login`, {
@@ -706,6 +793,102 @@ export const wordTestApi = {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || 'Failed to batch delete word test assignments');
     return payload;
+  },
+};
+
+export const wordReviewApi = {
+  publish: async (token: string, request: PublishWordReviewRequest) => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/word-reviews/publish`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(request),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to publish word review');
+    return payload as { message: string };
+  },
+
+  getTeacherAssignments: async (token: string, teacherId: number, storeCode: string): Promise<WordReviewAssignmentRow[]> => {
+    const q = new URLSearchParams({ teacherId: String(teacherId), storeCode });
+    const response = await fetch(`${API_BASE_URL}/api/tests/word-reviews/teacher-assignments?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load teacher word reviews');
+    return payload;
+  },
+
+  getStudentAssignments: async (token: string, userId: number): Promise<StudentWordReviewAssignment[]> => {
+    const q = new URLSearchParams({ userId: String(userId) });
+    const response = await fetch(`${API_BASE_URL}/api/tests/word-reviews/student-assignments?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load student word reviews');
+    return payload;
+  },
+
+  startDailySession: async (token: string, assignmentId: number): Promise<WordReviewDailySession> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/word-reviews/assignments/${assignmentId}/start-daily-session`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to start daily review session');
+    return payload;
+  },
+
+  submitDailySession: async (
+    token: string,
+    sessionId: number,
+    request: {
+      results: Array<{
+        entryId: string;
+        cardDone: boolean;
+        enToZhCorrect: boolean;
+        spellingCorrect?: boolean;
+        zhToEnCorrect?: boolean;
+      }>;
+    }
+  ) => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/word-reviews/daily-sessions/${sessionId}/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(request),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to submit daily review');
+    return payload as { message: string };
+  },
+
+  deleteOneAssignment: async (token: string, assignmentId: number) => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/word-reviews/assignments/${assignmentId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to delete word review assignment');
+    return payload as { message: string };
+  },
+
+  batchDeleteAssignments: async (token: string, assignmentIds: number[]) => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/word-reviews/assignments/batch-delete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ assignmentIds }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to batch delete word review assignments');
+    return payload as { message: string };
   },
 };
 

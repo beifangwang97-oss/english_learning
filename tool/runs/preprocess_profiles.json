@@ -1,0 +1,37 @@
+{
+  "人教版|九年级|全一册|人教版_九年级_全册.pdf": {
+    "start_page": 171,
+    "end_page": 185,
+    "page_configs": {
+      "171": {
+        "mode": "split",
+        "left_ratio": 0.3
+      },
+      "172": {
+        "mode": "split",
+        "left_ratio": 0.35
+      },
+      "173": {
+        "mode": "split",
+        "left_ratio": 0.3
+      },
+      "174": {
+        "mode": "split",
+        "left_ratio": 0.35
+      },
+      "175": {
+        "mode": "split",
+        "left_ratio": 0.3
+      },
+      "176": {
+        "mode": "split",
+        "left_ratio": 0.35
+      },
+      "177": {
+        "mode": "split",
+        "left_ratio": 0.3
+      }
+    },
+    "updated_at": "2026-04-12 21:40:13"
+  }
+}

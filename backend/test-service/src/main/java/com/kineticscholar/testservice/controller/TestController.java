@@ -4,9 +4,12 @@ import com.kineticscholar.testservice.model.WordTest;
 import com.kineticscholar.testservice.model.TestAssignment;
 import com.kineticscholar.testservice.model.TestAnswer;
 import com.kineticscholar.testservice.dto.BatchDeleteWordTestAssignmentsRequest;
+import com.kineticscholar.testservice.dto.BatchDeleteWordReviewAssignmentsRequest;
 import com.kineticscholar.testservice.dto.BatchAssignUnitTasksRequest;
 import com.kineticscholar.testservice.dto.BatchDeleteUnitAssignmentsRequest;
 import com.kineticscholar.testservice.dto.PublishWordTestRequest;
+import com.kineticscholar.testservice.dto.PublishWordReviewRequest;
+import com.kineticscholar.testservice.dto.SubmitWordReviewSessionRequest;
 import com.kineticscholar.testservice.service.TestService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -110,6 +113,58 @@ public class TestController {
         }
         testService.deleteWordTestAssignments(request.getAssignmentIds());
         return new ResponseEntity<>(Map.of("message", "Word test assignments deleted"), HttpStatus.OK);
+    }
+
+    @PostMapping("/word-reviews/publish")
+    public ResponseEntity<?> publishWordReview(@RequestBody PublishWordReviewRequest request) {
+        try {
+            testService.publishWordReview(request);
+            return new ResponseEntity<>(Map.of("message", "Word review published"), HttpStatus.CREATED);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @GetMapping("/word-reviews/teacher-assignments")
+    public ResponseEntity<?> getTeacherWordReviewAssignments(
+            @RequestParam("teacherId") Long teacherId,
+            @RequestParam("storeCode") String storeCode
+    ) {
+        return new ResponseEntity<>(testService.getTeacherWordReviewAssignments(teacherId, storeCode), HttpStatus.OK);
+    }
+
+    @GetMapping("/word-reviews/student-assignments")
+    public ResponseEntity<?> getStudentWordReviews(@RequestParam("userId") Long userId) {
+        return new ResponseEntity<>(testService.getStudentWordReviews(userId), HttpStatus.OK);
+    }
+
+    @PostMapping("/word-reviews/assignments/{assignmentId}/start-daily-session")
+    public ResponseEntity<?> startWordReviewDailySession(@PathVariable Long assignmentId) {
+        return new ResponseEntity<>(testService.startWordReviewDailySession(assignmentId), HttpStatus.OK);
+    }
+
+    @PostMapping("/word-reviews/daily-sessions/{sessionId}/submit")
+    public ResponseEntity<?> submitWordReviewDailySession(
+            @PathVariable Long sessionId,
+            @RequestBody SubmitWordReviewSessionRequest request
+    ) {
+        testService.submitWordReviewDailySession(sessionId, request);
+        return new ResponseEntity<>(Map.of("message", "Word review session submitted"), HttpStatus.OK);
+    }
+
+    @DeleteMapping("/word-reviews/assignments/{assignmentId}")
+    public ResponseEntity<?> deleteWordReviewAssignment(@PathVariable Long assignmentId) {
+        testService.deleteWordReviewAssignment(assignmentId);
+        return new ResponseEntity<>(Map.of("message", "Word review assignment deleted"), HttpStatus.OK);
+    }
+
+    @PostMapping("/word-reviews/assignments/batch-delete")
+    public ResponseEntity<?> batchDeleteWordReviewAssignments(@RequestBody BatchDeleteWordReviewAssignmentsRequest request) {
+        if (request == null || request.getAssignmentIds() == null || request.getAssignmentIds().isEmpty()) {
+            return new ResponseEntity<>(Map.of("error", "assignmentIds is required"), HttpStatus.BAD_REQUEST);
+        }
+        testService.deleteWordReviewAssignments(request.getAssignmentIds());
+        return new ResponseEntity<>(Map.of("message", "Word review assignments deleted"), HttpStatus.OK);
     }
 
     // TestAssignment endpoints

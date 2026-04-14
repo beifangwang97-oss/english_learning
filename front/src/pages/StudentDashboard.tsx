@@ -8,6 +8,7 @@ import { lexiconApi } from '../lib/lexicon';
 import { BookOpen, Play, Lock, CheckCircle2, Hourglass, Flame, Award, LayoutDashboard, Library, NotebookPen, ArrowRight, MessageCircle, FileQuestion, LogOut, Mic2, ClipboardList } from 'lucide-react';
 import { PhoneticsView } from '../components/student/PhoneticsView';
 import { WordTestView } from '../components/student/WordTestView';
+import { WordReviewView } from '../components/student/WordReviewView';
 
 type StudentUnitCard = {
   id: string;
@@ -38,7 +39,7 @@ export const StudentDashboard: React.FC = () => {
   const { pauseTimer } = useTimer();
   const { logout, user } = useAuth();
   const token = useMemo(() => getSessionToken(), []);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'units' | 'notebook' | 'phonetics' | 'word-tests'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'units' | 'notebook' | 'phonetics' | 'word-tests' | 'word-reviews'>('dashboard');
   const [checkedIn, setCheckedIn] = useState(false);
   const [unitsLoading, setUnitsLoading] = useState(false);
   const [unitsError, setUnitsError] = useState<string | null>(null);
@@ -191,6 +192,11 @@ export const StudentDashboard: React.FC = () => {
           <div onClick={() => setActiveTab('word-tests')} className={`${activeTab === 'word-tests' ? 'bg-yellow-400 text-yellow-950 shadow-lg shadow-yellow-400/20' : 'text-emerald-800 hover:bg-emerald-100'} rounded-full mx-4 mb-2 flex items-center gap-3 px-4 py-3 font-headline font-semibold cursor-pointer transition-all duration-200`}>
             <ClipboardList className="w-5 h-5" />
             <span>单词测试</span>
+          </div>
+
+          <div onClick={() => setActiveTab('word-reviews')} className={`${activeTab === 'word-reviews' ? 'bg-yellow-400 text-yellow-950 shadow-lg shadow-yellow-400/20' : 'text-emerald-800 hover:bg-emerald-100'} rounded-full mx-4 mb-2 flex items-center gap-3 px-4 py-3 font-headline font-semibold cursor-pointer transition-all duration-200`}>
+            <BookOpen className="w-5 h-5" />
+            <span>单词复习</span>
           </div>
 
           <div onClick={() => setActiveTab('notebook')} className={`${activeTab === 'notebook' ? 'bg-yellow-400 text-yellow-950 shadow-lg shadow-yellow-400/20' : 'text-emerald-800 hover:bg-emerald-100'} rounded-full mx-4 mb-2 flex items-center gap-3 px-4 py-3 font-headline font-semibold cursor-pointer transition-all duration-200`}>
@@ -347,6 +353,7 @@ export const StudentDashboard: React.FC = () => {
 
         {activeTab === 'phonetics' && <PhoneticsView />}
         {activeTab === 'word-tests' && <WordTestView />}
+        {activeTab === 'word-reviews' && <WordReviewView />}
         
         {activeTab === 'notebook' && (
           <>

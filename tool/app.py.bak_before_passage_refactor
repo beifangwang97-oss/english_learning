@@ -1,0 +1,2984 @@
+import streamlit as st
+import fitz
+import base64
+import json
+import pandas as pd
+from openai import OpenAI
+import os
+import time
+import hashlib
+import html
+import asyncio
+import edge_tts
+import re
+import random
+
+st.set_page_config(page_title="Tiger English - Corpus and Audio Tool", layout="wide", page_icon="T")
+
+st.markdown("""
+<style>
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        padding-left: 20px;
+        padding-right: 20px;
+        font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #1f77b4;
+        color: white;
+    }
+    div[data-testid="stVerticalBlock"] > div[style*="flex-direction: column"] > div > div > div > div {
+        opacity: 1 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+if "all_extracted_data" not in st.session_state:
+    st.session_state.all_extracted_data = []
+if "is_extracting_pdf" not in st.session_state:
+    st.session_state.is_extracting_pdf = False
+if "is_generating_audio" not in st.session_state:
+    st.session_state.is_generating_audio = False
+if "task_duration" not in st.session_state:
+    st.session_state.task_duration = None
+if "jsonl_audio_data" not in st.session_state:
+    st.session_state.jsonl_audio_data = []
+if "pdf_bytes" not in st.session_state:
+    st.session_state.pdf_bytes = None
+if "pdf_doc" not in st.session_state:
+    st.session_state.pdf_doc = None
+if "current_page_images" not in st.session_state:
+    st.session_state.current_page_images = {}
+if "extraction_progress" not in st.session_state:
+    st.session_state.extraction_progress = {"current": 0, "total": 0, "current_page": 1}
+if "realtime_data" not in st.session_state:
+    st.session_state.realtime_data = []
+if "edited_words" not in st.session_state:
+    st.session_state.edited_words = {}
+if "edited_phrases" not in st.session_state:
+    st.session_state.edited_phrases = {}
+if "audio_cache" not in st.session_state:
+    st.session_state.audio_cache = {}
+if "selected_range" not in st.session_state:
+    st.session_state.selected_range = (1, 1)
+if "items_to_delete" not in st.session_state:
+    st.session_state.items_to_delete = set()
+if "items_to_move" not in st.session_state:
+    st.session_state.items_to_move = set()
+if "custom_units" not in st.session_state:
+    st.session_state.custom_units = set()
+if "preprocessed_pages" not in st.session_state:
+    st.session_state.preprocessed_pages = {}
+if "split_mode" not in st.session_state:
+    st.session_state.split_mode = {}
+if "stop_extraction" not in st.session_state:
+    st.session_state.stop_extraction = False
+
+AUDIO_DIR = os.path.join(os.getcwd(), "audio")
+DATA_DIR = os.path.join(os.getcwd(), "word_data")
+UNRECORDED_DIR = os.path.join(DATA_DIR, "未录音")
+RECORDED_DIR = os.path.join(DATA_DIR, "已录音")
+RUNS_DIR = os.path.join(os.getcwd(), "runs")
+PREPROCESS_PROFILE_FILE = os.path.join(RUNS_DIR, "preprocess_profiles.json")
+MAX_CONCURRENT_TTS = 4
+LLM_TIMEOUT_SECONDS = 90
+LLM_MAX_RETRIES = 4
+LLM_CLIENT_CACHE = {}
+
+def ensure_runtime_dirs():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(UNRECORDED_DIR, exist_ok=True)
+    os.makedirs(RECORDED_DIR, exist_ok=True)
+    os.makedirs(AUDIO_DIR, exist_ok=True)
+    os.makedirs(RUNS_DIR, exist_ok=True)
+
+
+def make_task_id():
+    return time.strftime("%Y%m%d_%H%M%S")
+
+
+def sanitize_filename(text):
+    safe = re.sub(r'[\\/:*?"<>|]+', "_", str(text or "").strip())
+    safe = re.sub(r"\s+", "", safe)
+    return safe or "unknown"
+
+
+def build_book_key(book_version, grade, semester, pdf_filename):
+    return f"{sanitize_filename(book_version)}|{sanitize_filename(grade)}|{sanitize_filename(semester)}|{sanitize_filename(pdf_filename)}"
+
+
+def build_result_filename(book_version, grade, semester, kind_text, task_id):
+    return f"{sanitize_filename(book_version)}_{sanitize_filename(grade)}_{sanitize_filename(semester)}_{kind_text}_{task_id}.jsonl"
+
+
+def _read_json_file(path, default_value):
+    if not os.path.exists(path):
+        return default_value
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return json.load(f)
+    except Exception:
+        return default_value
+
+
+def _write_json_file(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
+def load_preprocess_profiles():
+    ensure_runtime_dirs()
+    data = _read_json_file(PREPROCESS_PROFILE_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_preprocess_profile(book_key, start_page, end_page, preprocessed_pages):
+    profiles = load_preprocess_profiles()
+    page_configs = {}
+    for p_num, info in (preprocessed_pages or {}).items():
+        if not isinstance(info, dict):
+            continue
+        mode = info.get("mode", "none")
+        if mode == "split":
+            page_configs[str(p_num)] = {
+                "mode": "split",
+                "left_ratio": float(info.get("left_ratio", 0.5))
+            }
+        else:
+            page_configs[str(p_num)] = {"mode": "none"}
+
+    profiles[book_key] = {
+        "start_page": int(start_page),
+        "end_page": int(end_page),
+        "page_configs": page_configs,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    _write_json_file(PREPROCESS_PROFILE_FILE, profiles)
+
+
+def get_preprocess_profile(book_key):
+    profiles = load_preprocess_profiles()
+    profile = profiles.get(book_key)
+    return profile if isinstance(profile, dict) else None
+
+
+def build_preprocessed_pages_from_profile(doc, start_page, end_page, profile):
+    result = {}
+    page_configs = (profile or {}).get("page_configs", {})
+    for p_num in range(start_page, end_page + 1):
+        cfg = page_configs.get(str(p_num), {})
+        mode = cfg.get("mode", "none")
+        page = doc.load_page(p_num - 1)
+        mat = fitz.Matrix(1.5, 1.5)
+        pix = page.get_pixmap(matrix=mat)
+        img_bytes = pix.tobytes("png")
+        if mode == "split":
+            left_ratio = float(cfg.get("left_ratio", 0.5))
+            page_width = pix.width
+            page_height = pix.height
+            left_width = int(page_width * left_ratio)
+            left_rect = fitz.Rect(0, 0, left_width, page_height)
+            right_rect = fitz.Rect(left_width, 0, page_width, page_height)
+            left_pix = page.get_pixmap(matrix=mat, clip=left_rect)
+            right_pix = page.get_pixmap(matrix=mat, clip=right_rect)
+            result[p_num] = {
+                "mode": "split",
+                "left_ratio": left_ratio,
+                "left_bytes": left_pix.tobytes("png"),
+                "right_bytes": right_pix.tobytes("png")
+            }
+        else:
+            result[p_num] = {
+                "mode": "none",
+                "original_bytes": img_bytes
+            }
+    return result
+OPENROUTER_MODEL_OPTIONS = [
+    {
+        "id": "openai/gpt-4o-mini",
+        "name": "OpenAI GPT-4o mini",
+        "input_price": "$0.15/M",
+        "output_price": "$0.60/M",
+    },
+    {
+        "id": "openai/gpt-4.1-mini",
+        "name": "OpenAI GPT-4.1 mini",
+        "input_price": "$0.40/M",
+        "output_price": "$1.60/M",
+    },
+    {
+        "id": "openai/gpt-4.1",
+        "name": "OpenAI GPT-4.1",
+        "input_price": "$2.00/M",
+        "output_price": "$8.00/M",
+    },
+    {
+        "id": "openai/gpt-4o",
+        "name": "OpenAI GPT-4o",
+        "input_price": "$2.50/M",
+        "output_price": "$10.00/M",
+    },
+    {
+        "id": "google/gemini-2.5-flash-lite",
+        "name": "Google Gemini 2.5 Flash Lite",
+        "input_price": "$0.10/M",
+        "output_price": "$0.40/M",
+    },
+    {
+        "id": "google/gemini-2.5-flash",
+        "name": "Google Gemini 2.5 Flash",
+        "input_price": "$0.15/M",
+        "output_price": "$0.60/M",
+    },
+    {
+        "id": "google/gemini-2.5-pro",
+        "name": "Google Gemini 2.5 Pro",
+        "input_price": "$1.25/M",
+        "output_price": "$10.00/M",
+    },
+    {
+        "id": "qwen/qwen-2.5-vl-72b-instruct",
+        "name": "Qwen 2.5 VL 72B Instruct",
+        "input_price": "OpenRouter实时价",
+        "output_price": "OpenRouter实时价",
+    },
+]
+
+
+def is_chinese_prompt_model(model_name):
+    model = (model_name or "").lower()
+    return model.startswith("qwen/") or "qwen" in model
+
+
+def _model_label(option):
+    return (
+        f"{option['name']} | {option['id']} | "
+        f"输入 {option['input_price']} 输出 {option['output_price']}"
+    )
+
+
+OPENROUTER_MODEL_LABEL_TO_ID = {_model_label(opt): opt["id"] for opt in OPENROUTER_MODEL_OPTIONS}
+OPENROUTER_MODEL_ID_TO_LABEL = {opt["id"]: _model_label(opt) for opt in OPENROUTER_MODEL_OPTIONS}
+OPENROUTER_MODEL_LABELS = list(OPENROUTER_MODEL_LABEL_TO_ID.keys())
+
+
+def render_model_selector(widget_label, default_model_id, picker_key):
+    safe_default_id = default_model_id if default_model_id in OPENROUTER_MODEL_ID_TO_LABEL else "openai/gpt-4o-mini"
+    default_label = OPENROUTER_MODEL_ID_TO_LABEL[safe_default_id]
+    selected = st.multiselect(
+        widget_label,
+        options=OPENROUTER_MODEL_LABELS,
+        default=[default_label],
+        max_selections=1,
+        key=picker_key,
+    )
+    if selected:
+        return OPENROUTER_MODEL_LABEL_TO_ID[selected[0]]
+    return safe_default_id
+def get_openai_client(api_key, base_url):
+    cache_key = f"{base_url}|{api_key}"
+    if cache_key not in LLM_CLIENT_CACHE:
+        LLM_CLIENT_CACHE[cache_key] = OpenAI(api_key=api_key, base_url=base_url)
+    return LLM_CLIENT_CACHE[cache_key]
+
+
+def _strip_markdown_fences(text):
+    if not isinstance(text, str):
+        return ""
+    cleaned = text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    return cleaned.strip()
+
+
+def _extract_likely_json_block(text, expect_list=False):
+    cleaned = _strip_markdown_fences(text)
+    if not cleaned:
+        return cleaned
+
+    if expect_list:
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
+    else:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+
+    if start != -1 and end != -1 and end > start:
+        return cleaned[start:end + 1]
+    return cleaned
+
+
+def _safe_json_parse(text, expect_list=False):
+    json_block = _extract_likely_json_block(text, expect_list=expect_list)
+    return json.loads(json_block)
+
+
+def _load_json_line(line):
+    if isinstance(line, bytes):
+        line = line.decode("utf-8-sig", errors="replace")
+    cleaned = (line or "").lstrip("\ufeff").strip()
+    return json.loads(cleaned)
+
+def call_chat_json_with_retry(client, request_kwargs, expect_list=False):
+    last_error = None
+    for attempt in range(1, LLM_MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(
+                timeout=LLM_TIMEOUT_SECONDS,
+                **request_kwargs
+            )
+            content = (response.choices[0].message.content or "").strip()
+            parsed = _safe_json_parse(content, expect_list=expect_list)
+            return parsed, None
+        except Exception as e:
+            last_error = e
+            if attempt < LLM_MAX_RETRIES:
+                backoff_seconds = min(2 ** (attempt - 1) + random.uniform(0, 1), 8)
+                time.sleep(backoff_seconds)
+    return None, str(last_error)
+
+
+def _normalize_meanings(item):
+    valid_pos = {"n.", "v.", "adj.", "adv.", "prep.", "pron.", "conj.", "interj.", "num.", "art.", "phr."}
+    pos_alias = {
+        "n": "n.",
+        "v": "v.",
+        "vt": "v.",
+        "vi": "v.",
+        "adj": "adj.",
+        "adv": "adv.",
+        "prep": "prep.",
+        "pron": "pron.",
+        "conj": "conj.",
+        "interj": "interj.",
+        "num": "num.",
+        "art": "art.",
+        "phr": "phr.",
+    }
+
+    def normalize_pos_token(token):
+        t = (token or "").strip().lower()
+        if not t:
+            return ""
+        if t in valid_pos:
+            return t
+        t = t.replace(".", "")
+        return pos_alias.get(t, "")
+
+    def split_pos_values(pos_text):
+        raw = (pos_text or "").strip()
+        if not raw:
+            return [""]
+        parts = re.split(r"\s*(?:&|/|,|，|、|;|；|\+|\band\b|\bor\b)\s*", raw, flags=re.IGNORECASE)
+        normalized_parts = []
+        seen = set()
+        for p in parts:
+            n = normalize_pos_token(p)
+            if not n:
+                continue
+            if n in seen:
+                continue
+            seen.add(n)
+            normalized_parts.append(n)
+        return normalized_parts if normalized_parts else [raw]
+
+    meanings = item.get("meanings")
+    if not isinstance(meanings, list) or not meanings:
+        meanings = [{
+            "pos": item.get("pos", "") or "",
+            "meaning": item.get("meaning", "") or "",
+            "example": item.get("example", "") or "",
+            "example_zh": item.get("example_zh", "") or ""
+        }]
+
+    normalized = []
+    for m in meanings:
+        if not isinstance(m, dict):
+            continue
+        pos_values = split_pos_values((m.get("pos", "") or "").strip())
+        meaning_text = (m.get("meaning", "") or "").strip()
+        example_text = (m.get("example", "") or "").strip()
+        example_zh_text = (m.get("example_zh", "") or "").strip()
+
+        for pos_value in pos_values:
+            normalized.append({
+                "pos": pos_value,
+                "meaning": meaning_text,
+                "example": example_text,
+                "example_zh": example_zh_text,
+            })
+
+    normalized = [m for m in normalized if m["meaning"]]
+    if not normalized:
+        normalized = [{
+            "pos": "",
+            "meaning": "",
+            "example": "",
+            "example_zh": ""
+        }]
+    return normalized
+
+
+def _sanitize_item_for_jsonl(item):
+    if not isinstance(item, dict):
+        return item
+    sanitized = {}
+    for key, value in item.items():
+        if key == "example_audio":
+            continue
+        if key == "meanings" and isinstance(value, list):
+            sanitized["meanings"] = [dict(m) for m in value if isinstance(m, dict)]
+        else:
+            sanitized[key] = value
+    return sanitized
+def _is_slash_phonetic(value):
+    text = (value or "").strip()
+    return bool(re.fullmatch(r"/[^/\n]+/", text))
+
+
+def _has_complete_meanings(meanings, require_pos=False):
+    if not isinstance(meanings, list) or not meanings:
+        return False
+    for m in meanings:
+        if not isinstance(m, dict):
+            return False
+        if require_pos and not (m.get("pos", "") or "").strip():
+            return False
+        if not (m.get("meaning", "") or "").strip():
+            return False
+        if not (m.get("example", "") or "").strip():
+            return False
+        if not (m.get("example_zh", "") or "").strip():
+            return False
+    return True
+
+
+def _is_complete_word_payload(payload, item_type="word"):
+    if not isinstance(payload, dict):
+        return False
+
+    if item_type == "phrase":
+        # Phrase entries should not carry phonetic labels.
+        if (payload.get("phonetic", "") or "").strip():
+            return False
+        return _has_complete_meanings(payload.get("meanings"), require_pos=False)
+
+    if not _is_slash_phonetic(payload.get("phonetic", "")):
+        return False
+    return _has_complete_meanings(payload.get("meanings"), require_pos=True)
+
+def postprocess_extracted_items(items, fallback_unit):
+    if not isinstance(items, list):
+        return []
+
+    cleaned_items = []
+    seen = set()
+
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+
+        word = (raw.get("word", "") or "").strip()
+        word = re.sub(r"\s+", " ", word)
+        word = re.sub(r"^[\-\*\d\.\)\s]+", "", word).strip()
+
+        # Drop non-English head tokens and empty rows early.
+        if not word or not re.search(r"[A-Za-z]", word):
+            continue
+
+        item_type = (raw.get("type", "") or "").strip().lower()
+        if item_type not in {"word", "phrase"}:
+            item_type = "phrase" if " " in word else "word"
+
+        unit = (raw.get("unit", "") or fallback_unit or "").strip()
+        if not unit:
+            unit = "Unit ?"
+
+        phonetic = (raw.get("phonetic", "") or "").strip()
+        meanings = _normalize_meanings(raw)
+
+        if item_type == "phrase":
+            phonetic = ""
+            for m in meanings:
+                m["pos"] = ""
+
+        dedup_key = (word.lower(), unit.lower(), item_type)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        cleaned_items.append({
+            "word": word,
+            "phonetic": phonetic,
+            "meanings": meanings,
+            "unit": unit,
+            "type": item_type,
+        })
+
+    return cleaned_items
+class PDFCache:
+    _instance = None
+    _doc = None
+    _pdf_bytes = None
+    
+    @classmethod
+    def get_doc(cls, pdf_bytes):
+        if cls._pdf_bytes != pdf_bytes or cls._doc is None:
+            if cls._doc is not None:
+                cls._doc.close()
+            cls._doc = fitz.open("pdf", pdf_bytes)
+            cls._pdf_bytes = pdf_bytes
+        return cls._doc
+    
+    @classmethod
+    def close(cls):
+        if cls._doc is not None:
+            cls._doc.close()
+            cls._doc = None
+            cls._pdf_bytes = None
+
+
+def pdf_page_to_base64_cached(doc, page_number):
+    page = doc.load_page(page_number - 1)
+    mat = fitz.Matrix(2, 2)
+    pix = page.get_pixmap(matrix=mat)
+    img_bytes = pix.tobytes("png")
+    return base64.b64encode(img_bytes).decode('utf-8')
+
+
+def pdf_page_to_image_bytes_cached(doc, page_number):
+    page = doc.load_page(page_number - 1)
+    mat = fitz.Matrix(1.5, 1.5)
+    pix = page.get_pixmap(matrix=mat)
+    return pix.tobytes("png")
+
+
+def get_unique_id(word, unit, grade):
+    raw_str = f"{word}_{unit}_{grade}"
+    return hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:10]
+
+
+def get_audio_hash(text):
+    return hashlib.md5(text.encode('utf-8')).hexdigest()[:12]
+
+
+def check_audio_cache(text, audio_dir):
+    audio_hash = get_audio_hash(text)
+    cache_key = f"{audio_hash}_{text}"
+    
+    if cache_key in st.session_state.audio_cache:
+        cached_path = st.session_state.audio_cache[cache_key]
+        if os.path.exists(cached_path):
+            return cached_path, audio_hash
+    
+    if os.path.exists(audio_dir):
+        possible_files = [f for f in os.listdir(audio_dir) if f.startswith(audio_hash)]
+        if possible_files:
+            cached_path = os.path.join(audio_dir, possible_files[0])
+            st.session_state.audio_cache[cache_key] = cached_path
+            return cached_path, audio_hash
+    
+    return None, audio_hash
+
+
+async def _generate_single_audio_with_retry(text, filepath, semaphore, voice="en-US-GuyNeural", max_retries=3):
+    async with semaphore:
+        if not text or not str(text).strip():
+            return True
+
+        if os.path.exists(filepath):
+            if os.path.getsize(filepath) > 0:
+                return True
+            else:
+                os.remove(filepath)
+
+        for attempt in range(max_retries):
+            try:
+                communicate = edge_tts.Communicate(str(text), voice)
+                await asyncio.wait_for(communicate.save(filepath), timeout=30)
+                if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                    return True
+                else:
+                    if os.path.exists(filepath):
+                        os.remove(filepath)
+            except asyncio.TimeoutError:
+                print(f"TTS 超时 [{text}] (尝试 {attempt + 1}/{max_retries})")
+            except Exception as e:
+                error_msg = str(e)
+                if "403" in error_msg or "Invalid response status" in error_msg:
+                    wait_time = 10 * (attempt + 1)
+                    print(f"TTS 被服务端拒绝(403) [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                    continue
+                if "503" in error_msg or "Cannot connect" in error_msg:
+                    wait_time = 6 * (attempt + 1)
+                    print(f"TTS 服务暂时不可用 [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                    continue
+                print(f"TTS 生成失败 [{text}] (尝试 {attempt + 1}/{max_retries}): {e}")
+
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 * (attempt + 1))
+
+        print(f"TTS 生成失败 [{text}]，已放弃")
+        return False
+async def _generate_audios_with_progress(audio_tasks, progress_callback=None):
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TTS)
+    results = []
+    
+    for i, (text, path) in enumerate(audio_tasks):
+        result = await _generate_single_audio_with_retry(text, path, semaphore)
+        results.append(result)
+        if progress_callback:
+            progress_callback(i + 1, len(audio_tasks))
+        await asyncio.sleep(0.5)
+    
+    return results
+
+
+def generate_audios_in_batch(audio_tasks, progress_bar=None, status_text=None):
+    async def run_all():
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_TTS)
+        total = len(audio_tasks)
+        completed = [0]
+        success_count = [0]
+        fail_count = [0]
+        
+        async def process_one(text, path, idx):
+            async with semaphore:
+                result = await _generate_single_audio_concurrent(text, path)
+                completed[0] += 1
+                if result:
+                    success_count[0] += 1
+                else:
+                    fail_count[0] += 1
+                
+                if progress_bar:
+                    progress_bar.progress(completed[0] / total)
+                if status_text:
+                    status_text.text(f"🎵 音频生成进度: {completed[0]}/{total} (成功: {success_count[0]}, 失败: {fail_count[0]})")
+                return result
+        
+        tasks = [process_one(text, path, i) for i, (text, path) in enumerate(audio_tasks)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        return success_count[0], fail_count[0]
+    
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    return loop.run_until_complete(run_all())
+
+
+async def _generate_single_audio_concurrent(text, filepath, voice="en-US-GuyNeural", max_retries=3):
+    if not text or not str(text).strip():
+        return True
+
+    if os.path.exists(filepath):
+        if os.path.getsize(filepath) > 0:
+            return True
+        else:
+            os.remove(filepath)
+
+    for attempt in range(max_retries):
+        try:
+            communicate = edge_tts.Communicate(str(text), voice)
+            await asyncio.wait_for(communicate.save(filepath), timeout=30)
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                return True
+            else:
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+        except asyncio.TimeoutError:
+            print(f"TTS 超时 [{text}] (尝试 {attempt + 1}/{max_retries})")
+        except Exception as e:
+            error_msg = str(e)
+            if "403" in error_msg or "Invalid response status" in error_msg:
+                wait_time = 10 * (attempt + 1)
+                print(f"TTS 被服务端拒绝(403) [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+                continue
+            if "503" in error_msg or "Cannot connect" in error_msg:
+                wait_time = 4 * (attempt + 1)
+                print(f"TTS 服务暂时不可用 [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+                continue
+            print(f"TTS 生成失败 [{text}] (尝试 {attempt + 1}/{max_retries}): {e}")
+
+        if attempt < max_retries - 1:
+            await asyncio.sleep(1 * (attempt + 1))
+
+    print(f"TTS 生成失败 [{text}]，已放弃")
+    return False
+def render_audio_player(filepath):
+    if not filepath or not os.path.exists(filepath):
+        return "<span style='color:gray; font-size:12px;'>无 音频</span>"
+    try:
+        with open(filepath, "rb") as f:
+            audio_bytes = f.read()
+        if len(audio_bytes) == 0:
+            return "<span style='color:red; font-size:12px;'>❌ 音频损坏</span>"
+        b64_audio = base64.b64encode(audio_bytes).decode()
+        return f'<audio controls preload="none" style="height: 35px; width: 140px;"><source src="data:audio/mp3;base64,{b64_audio}" type="audio/mpeg"></audio>'
+    except Exception as e:
+        return "<span style='color:red; font-size:12px;'>❌ 错误</span>"
+
+
+def generate_html_table(data_list):
+    html_content = (
+        "<div style='max-height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px;'>"
+        "<table style='width:100%; border-collapse: collapse; font-size: 14px; text-align: left; background-color: white;'>"
+        "<thead style='position: sticky; top: 0; background-color: #f0f2f6; z-index: 1;'>"
+        "<tr>"
+        "<th style='padding: 10px; border-bottom: 1px solid #ccc; width: 20%;'>单词/短语发音</th>"
+        "<th style='padding: 10px; border-bottom: 1px solid #ccc; width: 20%;'>音标</th>"
+        "<th style='padding: 10px; border-bottom: 1px solid #ccc; width: 40%;'>释义</th>"
+        "<th style='padding: 10px; border-bottom: 1px solid #ccc; width: 20%;'>例句音频</th>"
+        "</tr>"
+        "</thead>"
+        "<tbody>"
+    )
+    for row in reversed(data_list):
+        s_word = html.escape(str(row.get('word', '')))
+        s_phonetic = html.escape(str(row.get('phonetic', '')))
+        s_meaning = html.escape(str(row.get('meaning', '')))
+        s_example = html.escape(str(row.get('example', '')))
+        s_example_zh = html.escape(str(row.get('example_zh', '')))
+        w_player = render_audio_player(row.get('word_audio'))
+        e_player = render_audio_player(row.get('example_audio'))
+        html_content += "<tr style='border-bottom: 1px solid #eee;'>"
+        html_content += "<td style='padding: 10px;'>"
+        html_content += f"<strong style='font-size: 16px; color: #1f77b4;'>{s_word}</strong><br>"
+        html_content += f"<span style='color:gray; font-size:13px;'>{s_phonetic}</span><br>"
+        html_content += f"<span style='font-size:13px;'>{s_meaning}</span>"
+        html_content += "</td>"
+        html_content += f"<td style='padding: 10px;'>{w_player}</td>"
+        html_content += "<td style='padding: 10px; font-size:13px;'>"
+        html_content += f"<em>{s_example}</em><br>"
+        html_content += f"<span style='color:gray;'>{s_example_zh}</span>"
+        html_content += "</td>"
+        html_content += f"<td style='padding: 10px;'>{e_player}</td>"
+        html_content += "</tr>"
+    html_content += "</tbody></table></div>"
+    return html_content
+
+
+def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last_unit, grade_level):
+    client = get_openai_client(api_key, base_url)
+    use_zh_prompt = is_chinese_prompt_model(model_name)
+
+    if use_zh_prompt:
+        context_info = f"已知上一页结尾的单元是：{last_unit}。" if last_unit else "这是提取的第一页。"
+        prompt = f"""
+你是一个专业的英语教材教研专家，正在处理【{grade_level}】级别的词汇数据。
+背景信息：{context_info}
+
+任务：识别图片中的英语单词表和短语表，按从上到下的视觉顺序提取为 JSON 数组。
+本阶段一次性完成提取，不进行第二轮补全。
+
+视觉与切换规则（非常重要）：
+1. 页面已经是单列，词条按从上到下连续排列。
+2. 普通单词/短语通常是黑色字体；单元标识符（Unit N / Starter Unit N）通常是蓝色字体。
+3. 只有当你识别到蓝色单元标识符时，才允许切换当前 unit。
+4. 若本段没有新的蓝色单元标识符，则该段词条必须继承上一个 unit。
+5. 不要因为猜测连续编号而主动切换 unit。
+
+输出结构（按 type 分支）：
+- type=word：
+  {{
+    "word": "英文单词",
+    "type": "word",
+    "unit": "Unit X 或 Starter Unit X",
+    "phonetic": "/.../",
+    "meanings": [
+      {{
+        "pos": "n.|v.|adj.|adv.|prep.|pron.|conj.|interj.|num.|art.|phr.",
+        "meaning": "中文释义",
+        "example": "英文例句",
+        "example_zh": "中文例句"
+      }}
+    ],
+    "unit_source": "header_detected|carried"
+  }}
+- type=phrase：
+  {{
+    "word": "英文短语",
+    "type": "phrase",
+    "unit": "Unit X 或 Starter Unit X",
+    "meanings": [
+      {{
+        "meaning": "中文释义",
+        "example": "英文例句",
+        "example_zh": "中文例句"
+      }}
+    ],
+    "unit_source": "header_detected|carried"
+  }}
+
+规则：
+1. 只保留页面中的真实英文单词/短语。
+2. type=word 必须输出 phonetic，且格式为 /.../。
+3. type=phrase 不要输出 phonetic 和 pos。
+4. meaning 必须中文；example 必须符合【{grade_level}】水平；example_zh 必须是中文译文。
+5. type=word 时，每个 meanings 元素只能对应一个词性；不要使用 "adj. & pron." 这类合并词性写法。
+6. 若同一单词有多个词性，请拆分为多个 meanings 元素，并确保每个词性都有自己对应的中文释义、英文例句和中文例句。
+7. meanings 必须是非空数组。
+8. last_unit 仅作弱参考：如果本页第一个单元看起来跳号，请优先复核蓝色单元标题；若仍不确定，保留视觉识别结果，不要强行改成 +1。
+9. 只输出 JSON 数组，不要输出 Markdown 代码块。
+"""
+    else:
+        context_info = f"Current best unit context: {last_unit}." if last_unit else "No prior unit context."
+        prompt = f"""
+You are extracting textbook vocabulary from one page image (grade context: {grade_level}).
+{context_info}
+
+This pass must finish extraction completely in one shot (no second completion pass).
+Return a JSON array only (no markdown), using schema by type:
+
+Visual + unit-switch rules (critical):
+1. The page is already single-column; entries flow top-to-bottom.
+2. Regular word/phrase entries are usually black text; unit headers (Unit N / Starter Unit N) are usually blue text.
+3. Switch unit ONLY when a blue unit header is actually detected.
+4. If no new blue unit header appears, entries must inherit the current unit.
+5. Never switch unit only by guessed numbering continuity.
+
+- type=word:
+  {{
+    "word": "...",
+    "type": "word",
+    "unit": "Unit X or Starter Unit X",
+    "phonetic": "/.../",
+    "meanings": [
+      {{
+        "pos": "n.|v.|adj.|adv.|prep.|pron.|conj.|interj.|num.|art.|phr.",
+        "meaning": "Chinese meaning",
+        "example": "English example sentence",
+        "example_zh": "Chinese translation"
+      }}
+    ],
+    "unit_source": "header_detected|carried"
+  }}
+
+- type=phrase:
+  {{
+    "word": "...",
+    "type": "phrase",
+    "unit": "Unit X or Starter Unit X",
+    "meanings": [
+      {{
+        "meaning": "Chinese meaning",
+        "example": "English example sentence",
+        "example_zh": "Chinese translation"
+      }}
+    ],
+    "unit_source": "header_detected|carried"
+  }}
+
+Rules:
+- Keep only real English words/phrases from the page.
+- For type=word, phonetic is required in /.../ format.
+- For type=phrase, do not output phonetic or POS.
+- meaning must be Chinese.
+- example must be grade-appropriate for {grade_level} learners.
+- example_zh must be the Chinese translation of the example.
+- For type=word, each meanings item must map to exactly one POS. Do not merge POS like "adj. & pron." in one item.
+- If a word has multiple POS, split them into separate meanings items, and each POS must have its own aligned meaning/example/example_zh.
+- meanings must be a non-empty array.
+- Use last_unit as a weak reference only: if first unit seems to jump, re-check blue headers first; if still uncertain, keep visual evidence result instead of forcing +1.
+- Do not output audio fields.
+"""
+
+    request_kwargs = {
+        "model": model_name,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}", "detail": "high"}}
+            ]}
+        ],
+        "temperature": 0.1,
+    }
+
+    parsed, error = call_chat_json_with_retry(client, request_kwargs, expect_list=True)
+    if error:
+        st.warning(f"页面解析失败，已重试 {LLM_MAX_RETRIES} 次: {error}")
+        return []
+
+    return postprocess_extracted_items(parsed, last_unit)
+def append_to_jsonl(file_path, item):
+    with open(file_path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(_sanitize_item_for_jsonl(item), ensure_ascii=False) + '\n')
+
+
+def flatten_meanings_for_display(item):
+    if "meanings" in item and isinstance(item["meanings"], list) and item["meanings"]:
+        meanings = item["meanings"]
+        if len(meanings) == 1:
+            m = meanings[0]
+            return {
+                "word": item.get("word", ""),
+                "phonetic": item.get("phonetic", ""),
+                "pos": m.get("pos", ""),
+                "meaning": m.get("meaning", ""),
+                "example": m.get("example", ""),
+                "example_zh": m.get("example_zh", ""),
+                "id": item.get("id", ""),
+                "unit": item.get("unit", ""),
+                "type": item.get("type", "word")
+            }
+        else:
+            all_pos = "; ".join([m.get("pos", "") for m in meanings])
+            all_meanings = "; ".join([m.get("meaning", "") for m in meanings])
+            first_example = meanings[0].get("example", "") if meanings else ""
+            first_example_zh = meanings[0].get("example_zh", "") if meanings else ""
+            return {
+                "word": item.get("word", ""),
+                "phonetic": item.get("phonetic", ""),
+                "pos": all_pos,
+                "meaning": all_meanings,
+                "example": first_example,
+                "example_zh": first_example_zh,
+                "id": item.get("id", ""),
+                "unit": item.get("unit", ""),
+                "type": item.get("type", "word"),
+                "has_multiple_meanings": True
+            }
+    else:
+        return {
+            "word": item.get("word", ""),
+            "phonetic": item.get("phonetic", ""),
+            "pos": item.get("pos", ""),
+            "meaning": item.get("meaning", ""),
+            "example": item.get("example", ""),
+            "example_zh": item.get("example_zh", ""),
+            "id": item.get("id", ""),
+            "unit": item.get("unit", ""),
+            "type": item.get("type", "word")
+        }
+
+
+st.title("🐅 Tiger English 词汇提取与音频生成工具")
+
+with st.sidebar:
+    st.header("📄 PDF 文件上传")
+    global_uploaded_pdf = st.file_uploader("上传 PDF 文件", type=["pdf"], key="global_pdf_uploader")
+    
+    if global_uploaded_pdf:
+        global_pdf_bytes = global_uploaded_pdf.getvalue()
+        st.session_state.global_pdf_bytes = global_pdf_bytes
+        global_doc = PDFCache.get_doc(global_pdf_bytes)
+        global_total_p = len(global_doc)
+        
+        st.write(f"PDF 总页数：**{global_total_p}** 页")
+        
+        col_start, col_end = st.columns(2)
+        with col_start:
+            global_start_p = st.number_input("起始页", min_value=1, max_value=global_total_p, value=1, key="global_start_page")
+        with col_end:
+            global_end_p = st.number_input("结束页", min_value=1, max_value=global_total_p, value=global_total_p, key="global_end_page")
+        
+        st.session_state.global_page_range = (global_start_p, global_end_p)
+    
+    st.divider()
+    
+    st.header("🔧 提取 API 配置")
+    extract_api_key = st.text_input("提取 API Key", type="password", key="extract_api_key")
+    extract_base_url = st.text_input("提取 Base URL", value="https://openrouter.ai/api/v1", key="extract_base_url")
+    extract_model_name = render_model_selector(
+        "提取模型（下拉勾选，单选）",
+        st.session_state.get("extract_model_name", "openai/gpt-4o-mini"),
+        "extract_model_picker",
+    )
+    st.session_state.extract_model_name = extract_model_name
+    st.caption(f"提取模型ID：`{extract_model_name}`")
+    st.divider()
+    
+    if st.session_state.get("preprocessed_pages"):
+        st.success("✅ 已检测到预处理数据")
+        pre_pages = st.session_state.preprocessed_pages
+        split_pages = [p for p, info in pre_pages.items() if info.get("mode") == "split"]
+        none_pages = [p for p, info in pre_pages.items() if info.get("mode") == "none"]
+        
+        st.info(f"预处理页数：{len(pre_pages)} 页")
+        st.write(f"- 已分割页数：{len(split_pages)} 页")
+        if split_pages:
+            st.write(f"  页码: {sorted(split_pages)}")
+        st.write(f"- 未分割页数：{len(none_pages)} 页")
+        if none_pages:
+            st.write(f"  页码: {sorted(none_pages)}")
+        
+        if st.button("清空预处理数据", key="btn_clear_preprocess"):
+            st.session_state.preprocessed_pages = {}
+            st.session_state.split_mode = {}
+            for key in list(st.session_state.keys()):
+                if key.startswith("split_option_"):
+                    del st.session_state[key]
+            st.rerun()
+
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "模式零：PDF 预处理",
+    "模式一：PDF 提取与校对",
+    "模式二：JSONL 导入与音频生成",
+    "模式三：JSONL 转 PDF 导出",
+    "模式四：单元名称提取",
+    "模式五：课文提取"
+])
+
+with tab0:
+    st.header("PDF 预处理 - 分割左右双列")
+    st.info("使用此模式预先分割双列页面，可提高提取准确性。")
+    
+    if not st.session_state.get("global_pdf_bytes"):
+        st.warning("请先在左侧上传 PDF 文件")
+    else:
+        pre_pdf_bytes = st.session_state.global_pdf_bytes
+        pre_doc = PDFCache.get_doc(pre_pdf_bytes)
+        pre_start_p, pre_end_p = st.session_state.get("global_page_range", (1, len(pre_doc)))
+        st.subheader("预处理教材标识")
+        col_book1, col_book2, col_book3 = st.columns(3)
+        with col_book1:
+            preprocess_book_version = st.text_input("教材版本（预处理）", "人教版", key="preprocess_book_version")
+        with col_book2:
+            preprocess_grade = st.selectbox("年级（预处理）", ["七年级", "八年级", "九年级", "高一", "高二", "高三"], key="preprocess_grade")
+        with col_book3:
+            preprocess_semester = st.selectbox("上下册（预处理）", ["上册", "下册", "全一册"], key="preprocess_semester")
+
+        preprocess_pdf_name = global_uploaded_pdf.name if global_uploaded_pdf else "unknown.pdf"
+        preprocess_book_key = build_book_key(preprocess_book_version, preprocess_grade, preprocess_semester, preprocess_pdf_name)
+        st.caption(f"预处理匹配键：`{preprocess_book_key}`")
+        
+        st.write(f"当前处理范围：第 **{pre_start_p}** 页 到 第 **{pre_end_p}** 页")
+        
+        col_odd, col_even = st.columns(2)
+        with col_odd:
+            odd_default_split = st.checkbox("奇数页默认分割", value=False, key="odd_default_split")
+            odd_left_ratio = st.slider("奇数页左列比例", 0.3, 0.7, 0.5, 0.05, key="odd_left_ratio")
+        with col_even:
+            even_default_split = st.checkbox("偶数页默认分割", value=False, key="even_default_split")
+            even_left_ratio = st.slider("偶数页左列比例", 0.3, 0.7, 0.5, 0.05, key="even_left_ratio")
+        
+        st.info(
+            f"当前设置：奇数页{'分割' if odd_default_split else '不分割'}（比例 {odd_left_ratio:.2f}），"
+            f"偶数页{'分割' if even_default_split else '不分割'}（比例 {even_left_ratio:.2f}）"
+        )
+        
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        with col_btn1:
+            if st.button("🔄 应用默认设置", type="primary", key="btn_apply_defaults"):
+                st.session_state.split_mode = {}
+                st.session_state.preprocessed_pages = {}
+                
+                applied_count = 0
+                for p_num in range(pre_start_p, pre_end_p + 1):
+                    page = pre_doc.load_page(p_num - 1)
+                    mat = fitz.Matrix(1.5, 1.5)
+                    pix = page.get_pixmap(matrix=mat)
+                    img_bytes = pix.tobytes("png")
+                    
+                    should_split = False
+                    left_ratio = 0.5
+                    
+                    if p_num % 2 == 1 and odd_default_split:
+                        should_split = True
+                        left_ratio = odd_left_ratio
+                    elif p_num % 2 == 0 and even_default_split:
+                        should_split = True
+                        left_ratio = even_left_ratio
+                    
+                    if should_split:
+                        page_width = pix.width
+                        page_height = pix.height
+                        left_width = int(page_width * left_ratio)
+                        
+                        left_rect = fitz.Rect(0, 0, left_width, page_height)
+                        right_rect = fitz.Rect(left_width, 0, page_width, page_height)
+                        
+                        left_pix = page.get_pixmap(matrix=mat, clip=left_rect)
+                        right_pix = page.get_pixmap(matrix=mat, clip=right_rect)
+                        
+                        st.session_state.preprocessed_pages[p_num] = {
+                            "mode": "split",
+                            "left_ratio": left_ratio,
+                            "left_bytes": left_pix.tobytes("png"),
+                            "right_bytes": right_pix.tobytes("png")
+                        }
+                        st.session_state.split_mode[p_num] = "split"
+                        st.session_state[f"split_option_{p_num}"] = "分割为左右两列"
+                        applied_count += 1
+                    else:
+                        st.session_state.preprocessed_pages[p_num] = {
+                            "mode": "none",
+                            "original_bytes": img_bytes
+                        }
+                        st.session_state.split_mode[p_num] = "none"
+                        st.session_state[f"split_option_{p_num}"] = "不分割"
+                
+                st.success(f"已应用设置：分割 {applied_count} 页，未分割 {pre_end_p - pre_start_p + 1 - applied_count} 页")
+                st.rerun()
+        
+        with col_btn2:
+            if st.button("保存预处理结果", key="btn_save_preprocess"):
+                save_preprocess_profile(preprocess_book_key, pre_start_p, pre_end_p, st.session_state.preprocessed_pages)
+                st.success(f"已保存预处理结果，共 {len(st.session_state.preprocessed_pages)} 页（已写入持久配置）")
+                st.session_state.split_mode = {}
+                st.session_state.preprocessed_pages = {}
+                for key in list(st.session_state.keys()):
+                    if key.startswith("split_option_"):
+                        del st.session_state[key]
+                st.rerun()
+        
+        st.divider()
+        
+        for p_num in range(pre_start_p, pre_end_p + 1):
+            st.subheader(f"第 {p_num} 页（{'奇数页' if p_num % 2 == 1 else '偶数页'}）")
+            
+            page = pre_doc.load_page(p_num - 1)
+            mat = fitz.Matrix(1.5, 1.5)
+            pix = page.get_pixmap(matrix=mat)
+            img_bytes = pix.tobytes("png")
+            
+            col_img, col_ctrl = st.columns([2, 1])
+            
+            with col_img:
+                st.image(img_bytes, width="stretch")
+            
+            with col_ctrl:
+                existing_info = st.session_state.preprocessed_pages.get(p_num, {})
+                existing_mode = existing_info.get("mode", "none")
+                
+                split_option = st.radio(
+                    "处理方式",
+                    ["不分割", "分割为左右两列"],
+                    index=0 if existing_mode == "none" else 1,
+                    key=f"split_option_{p_num}"
+                )
+                
+                new_mode = "split" if split_option == "分割为左右两列" else "none"
+                
+                if new_mode != existing_mode:
+                    if split_option == "分割为左右两列":
+                        st.session_state.split_mode[p_num] = "split"
+                        
+                        default_ratio = existing_info.get("left_ratio", 0.5)
+                        
+                        col_ratio1, col_ratio2 = st.columns(2)
+                        with col_ratio1:
+                            left_ratio = st.slider("左列宽度比例", 0.3, 0.7, default_ratio, 0.05, key=f"left_ratio_{p_num}")
+                        with col_ratio2:
+                            st.write(f"右列宽度比例: {1-left_ratio:.2f}")
+                        
+                        page_width = pix.width
+                        page_height = pix.height
+                        
+                        left_width = int(page_width * left_ratio)
+                        right_width = page_width - left_width
+                        
+                        left_rect = fitz.Rect(0, 0, left_width, page_height)
+                        right_rect = fitz.Rect(left_width, 0, page_width, page_height)
+                        
+                        left_pix = page.get_pixmap(matrix=mat, clip=left_rect)
+                        right_pix = page.get_pixmap(matrix=mat, clip=right_rect)
+                        
+                        st.session_state.preprocessed_pages[p_num] = {
+                            "mode": "split",
+                            "left_ratio": left_ratio,
+                            "left_bytes": left_pix.tobytes("png"),
+                            "right_bytes": right_pix.tobytes("png")
+                        }
+                    else:
+                        st.session_state.split_mode[p_num] = "none"
+                        st.session_state.preprocessed_pages[p_num] = {
+                            "mode": "none",
+                            "original_bytes": img_bytes
+                        }
+                    existing_info = st.session_state.preprocessed_pages.get(p_num, {})
+                
+                if split_option == "分割为左右两列":
+                    info = st.session_state.preprocessed_pages.get(p_num, {})
+                    if info.get("mode") == "split":
+                        st.info(f"已分割（左列比例: {info.get('left_ratio', 0.5):.2f}）")
+                        st.markdown("**左列预览：**")
+                        st.image(info.get("left_bytes"), width="stretch")
+                        st.markdown("**右列预览：**")
+                        st.image(info.get("right_bytes"), width="stretch")
+                else:
+                    st.info("已设置为不分割")
+            
+            st.divider()
+        
+        if st.button("完成预处理并进入提取", type="primary", key="btn_finish_preprocess"):
+            save_preprocess_profile(preprocess_book_key, pre_start_p, pre_end_p, st.session_state.preprocessed_pages)
+            st.session_state.preprocessed_range = (pre_start_p, pre_end_p)
+            st.success(f"预处理完成！共处理 {len(st.session_state.preprocessed_pages)} 页，已保存该教材分割配置，请切换到【模式一】进行提取。")
+with tab1:
+    btn_pdf = False
+    if "stop_extraction" not in st.session_state:
+        st.session_state.stop_extraction = False
+    
+    if not st.session_state.get("global_pdf_bytes"):
+        st.warning("⚠️ 请先在左侧上传 PDF 文件")
+    else:
+        pdf_bytes = st.session_state.global_pdf_bytes
+        doc = PDFCache.get_doc(pdf_bytes)
+        total_p = len(doc)
+        
+        start_p, end_p = st.session_state.get("global_page_range", (1, total_p))
+        
+        st.subheader("教材元数据")
+        col_meta1, col_meta2, col_meta3 = st.columns(3)
+        with col_meta1:
+            b_version = st.text_input("教材版本", "人教版", key="book_version")
+        with col_meta2:
+            b_grade = st.selectbox("年级", ["七年级", "八年级", "九年级", "高一", "高二", "高三"], key="grade_select")
+        with col_meta3:
+            b_semester = st.selectbox("上下册", ["上册", "下册", "全一册"], key="semester_select")
+        
+        current_pdf_name = global_uploaded_pdf.name if global_uploaded_pdf else "unknown.pdf"
+        current_book_key = build_book_key(b_version, b_grade, b_semester, current_pdf_name)
+        matched_preprocess_profile = get_preprocess_profile(current_book_key)
+        if matched_preprocess_profile:
+            st.success("已自动匹配到该教材的预处理配置，将用于模式一提取。")
+            auto_preprocessed = build_preprocessed_pages_from_profile(doc, start_p, end_p, matched_preprocess_profile)
+            st.session_state.preprocessed_pages = auto_preprocessed
+            st.session_state.preprocessed_range = (start_p, end_p)
+            st.session_state.matched_preprocess_book_key = current_book_key
+        else:
+            st.warning("未匹配到该教材的预处理配置，将按原图提取（可先在模式零保存预处理）。")
+        st.session_state.export_name_tab1 = f"{b_version}_{b_grade}_{b_semester}"
+
+        st.divider()
+        st.subheader("批量任务（顺序执行）")
+        st.caption("批量模式会按上传顺序逐本教材提取并直接保存到 `word_data/未录音`。原有单本教材校对流程不受影响。")
+        batch_uploaded_pdfs = st.file_uploader(
+            "批量上传教材 PDF（模式一）",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="batch_pdf_uploader_tab1"
+        )
+        btn_batch_pdf = False
+        if batch_uploaded_pdfs:
+            st.write(f"待处理教材数量：{len(batch_uploaded_pdfs)}")
+            btn_batch_pdf = st.button("📚 开始批量提取并保存", type="primary", key="btn_pdf_batch_extract")
+
+        if btn_batch_pdf:
+            if not extract_api_key:
+                st.error("请先填入提取 API Key")
+            else:
+                ensure_runtime_dirs()
+                batch_progress = st.progress(0)
+                batch_status = st.empty()
+                batch_outputs = []
+                batch_started_at = time.time()
+
+                for batch_idx, batch_pdf in enumerate(batch_uploaded_pdfs):
+                    batch_status.info(f"正在处理第 {batch_idx + 1}/{len(batch_uploaded_pdfs)} 本：{batch_pdf.name}")
+
+                    batch_pdf_bytes = batch_pdf.getvalue()
+                    batch_doc = PDFCache.get_doc(batch_pdf_bytes)
+                    batch_total_pages = len(batch_doc)
+
+                    batch_book_key = build_book_key(b_version, b_grade, b_semester, batch_pdf.name)
+                    batch_profile = get_preprocess_profile(batch_book_key)
+
+                    if batch_profile:
+                        profile_start = int(batch_profile.get("start_page", 1))
+                        profile_end = int(batch_profile.get("end_page", batch_total_pages))
+                        batch_start_p = max(1, min(profile_start, batch_total_pages))
+                        batch_end_p = max(batch_start_p, min(profile_end, batch_total_pages))
+                        batch_preprocessed_pages = build_preprocessed_pages_from_profile(batch_doc, batch_start_p, batch_end_p, batch_profile)
+                    else:
+                        batch_start_p, batch_end_p = 1, batch_total_pages
+                        batch_preprocessed_pages = {}
+
+                    extraction_tasks = []
+                    for p_num in range(batch_start_p, batch_end_p + 1):
+                        pre_info = batch_preprocessed_pages.get(p_num, {})
+                        if pre_info.get("mode") == "split":
+                            extraction_tasks.append((p_num, "left", pre_info))
+                            extraction_tasks.append((p_num, "right", pre_info))
+                        else:
+                            extraction_tasks.append((p_num, "full", pre_info))
+
+                    last_unit_context = ""
+                    batch_items = []
+
+                    for p_num, part, pre_info in extraction_tasks:
+                        if pre_info.get("mode") == "split" and part in ["left", "right"]:
+                            img_bytes = pre_info.get("left_bytes") if part == "left" else pre_info.get("right_bytes")
+                            b64_img = base64.b64encode(img_bytes).decode("utf-8")
+                        else:
+                            b64_img = pdf_page_to_base64_cached(batch_doc, p_num)
+
+                        page_results = extract_vocab_with_context(
+                            b64_img,
+                            extract_api_key,
+                            extract_base_url,
+                            extract_model_name,
+                            last_unit_context,
+                            b_grade,
+                        )
+
+                        if not page_results:
+                            continue
+
+                        for item in page_results:
+                            item["book_version"] = b_version
+                            item["grade"] = b_grade
+                            item["semester"] = b_semester
+
+                            if "type" not in item:
+                                word_text = item.get("word", "")
+                                item["type"] = "phrase" if " " in word_text.strip() else "word"
+
+                            last_unit_context = item.get("unit", last_unit_context)
+
+                            if not item.get("meanings") or len(item.get("meanings", [])) == 0:
+                                item["meanings"] = [{
+                                    "pos": item.get("pos", ""),
+                                    "meaning": item.get("meaning", ""),
+                                    "example": item.get("example", ""),
+                                    "example_zh": item.get("example_zh", "")
+                                }]
+
+                            word_clean = "".join([c for c in item.get("word", "") if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
+                            item["id"] = get_unique_id(word_clean, last_unit_context, b_grade)
+
+                            if item["type"] == "word":
+                                item["word_audio"] = ""
+                            else:
+                                item["phrase_audio"] = ""
+
+                            batch_items.append(item)
+
+                    batch_task_id = make_task_id()
+                    words_filename = build_result_filename(b_version, b_grade, b_semester, "单词表", batch_task_id)
+                    phrases_filename = build_result_filename(b_version, b_grade, b_semester, "短语表", batch_task_id)
+                    words_file_path = os.path.join(UNRECORDED_DIR, words_filename)
+                    phrases_file_path = os.path.join(UNRECORDED_DIR, phrases_filename)
+
+                    words_data = [it for it in batch_items if it.get("type") == "word"]
+                    phrases_data = [it for it in batch_items if it.get("type") == "phrase"]
+
+                    with open(words_file_path, "w", encoding="utf-8") as wf:
+                        for entry in words_data:
+                            wf.write(json.dumps(_sanitize_item_for_jsonl(entry), ensure_ascii=False) + "\n")
+
+                    with open(phrases_file_path, "w", encoding="utf-8") as pf:
+                        for entry in phrases_data:
+                            pf.write(json.dumps(_sanitize_item_for_jsonl(entry), ensure_ascii=False) + "\n")
+
+                    batch_outputs.append({
+                        "pdf": batch_pdf.name,
+                        "task_id": batch_task_id,
+                        "words": words_file_path,
+                        "phrases": phrases_file_path,
+                        "count": len(batch_items),
+                    })
+
+                    batch_progress.progress((batch_idx + 1) / len(batch_uploaded_pdfs))
+
+                elapsed_batch = int(time.time() - batch_started_at)
+                lines = []
+                for x in batch_outputs:
+                    lines.append(f"- {x['pdf']} | task_id={x['task_id']} | 词条={x['count']}")
+                    lines.append(f"  单词: {x['words']}")
+                    lines.append(f"  短语: {x['phrases']}")
+
+                batch_status.success("✅ 批量提取完成")
+                st.success(f"共处理 {len(batch_outputs)} 本教材，耗时 {elapsed_batch} 秒")
+                st.text("\n".join(lines))
+        
+        col_btn_extract, col_btn_stop = st.columns(2)
+        with col_btn_extract:
+            btn_pdf = st.button("🐅 开始解析 PDF", type="primary", key="btn_pdf_extract")
+        with col_btn_stop:
+            if st.button("🛑 停止解析", type="secondary", key="btn_stop_extraction"):
+                st.session_state.stop_extraction = True
+                st.warning("正在停止解析...")
+        
+        use_preprocessed = bool(st.session_state.get("preprocessed_pages", {}))
+        if use_preprocessed:
+            st.info("检测到预处理结果，将使用分割后的图像进行提取。")
+            pre_check = st.session_state.preprocessed_pages
+            split_pages = [p for p, info in pre_check.items() if info.get("mode") == "split"]
+            st.write(f"预处理数据：共 {len(pre_check)} 页，其中分割 {len(split_pages)} 页")
+            
+            if len(pre_check) > 0 and len(split_pages) == 0:
+                st.write("调试信息：")
+                sample_key = list(pre_check.keys())[0]
+                sample_val = pre_check[sample_key]
+                st.write(f"  - 样本键: {sample_key}, 类型: {type(sample_key)}")
+                st.write(f"  - 样本值类型: {type(sample_val)}")
+                st.write(f"  - 样本值内容: {sample_val}")
+                st.write(f"  - mode 字段: '{sample_val.get('mode')}'")
+        else:
+            st.warning("未检测到预处理结果")
+
+    if btn_pdf:
+        if not extract_api_key:
+            st.error("请先填入提取 API Key")
+        else:
+            start_time = time.time()
+            st.session_state.is_extracting_pdf = True
+            st.session_state.all_extracted_data = []
+            st.session_state.realtime_data = []
+            st.session_state.pdf_bytes = st.session_state.global_pdf_bytes
+            st.session_state.current_page_images = {}
+            st.session_state.items_to_delete = set()
+            st.session_state.items_to_move = set()
+            
+            os.makedirs(DATA_DIR, exist_ok=True)
+            
+            last_unit_context = ""
+            pdf_data = st.session_state.global_pdf_bytes
+            doc = PDFCache.get_doc(pdf_data)
+            total_p = len(doc)
+            
+            start_p, end_p = st.session_state.get("global_page_range", (1, total_p))
+            
+            st.session_state.stop_extraction = False
+            
+            use_preprocessed = bool(st.session_state.get("preprocessed_pages", {}))
+            
+            if use_preprocessed:
+                st.info("检测到预处理结果，将使用分割后的图像进行提取。")
+            
+            progress_bar = st.progress(0)
+            progress_text = st.empty()
+            page_image_placeholder = st.empty()
+            data_placeholder = st.empty()
+            
+            extraction_tasks = []
+            preprocessed_pages_keys = list(st.session_state.preprocessed_pages.keys()) if st.session_state.get("preprocessed_pages") else []
+            
+            split_count = 0
+            full_count = 0
+            missing_count = 0
+            
+            for p_num in range(start_p, end_p + 1):
+                preprocessed_info = st.session_state.preprocessed_pages.get(p_num, {})
+                if preprocessed_info.get("mode") == "split":
+                    extraction_tasks.append((p_num, "left", preprocessed_info))
+                    extraction_tasks.append((p_num, "right", preprocessed_info))
+                    split_count += 1
+                elif preprocessed_info.get("mode") == "none":
+                    extraction_tasks.append((p_num, "full", preprocessed_info))
+                    full_count += 1
+                else:
+                    extraction_tasks.append((p_num, "full", preprocessed_info))
+                    missing_count += 1
+            
+            st.info(
+                f"提取任务统计：分割 {split_count} 页，未分割 {full_count} 页，"
+                f"预处理缺失 {missing_count} 页，共 {len(extraction_tasks)} 个任务"
+            )
+            
+            if preprocessed_pages_keys:
+                st.info(f"📋 预处理页码范围：{min(preprocessed_pages_keys)} - {max(preprocessed_pages_keys)}，提取页码范围：{start_p} - {end_p}")
+            
+            st.session_state.extraction_progress = {"current": 0, "total": len(extraction_tasks), "current_page": start_p}
+            
+            for i, (p_num, part, preprocessed_info) in enumerate(extraction_tasks):
+                if st.session_state.stop_extraction:
+                    progress_text.warning("解析已停止")
+                    break
+                
+                st.session_state.extraction_progress["current"] = i + 1
+                
+                part_name = f"第{p_num - start_p + 1}页" if part == "full" else f"第{p_num - start_p + 1}页-{'左列' if part == 'left' else '右列'}"
+                
+                progress_bar.progress((i + 1) / len(extraction_tasks))
+                progress_text.info(f"正在解析: {part_name} ({i + 1}/{len(extraction_tasks)})...")
+                
+                if preprocessed_info.get("mode") == "split" and part in ["left", "right"]:
+                    if part == "left":
+                        img_bytes = preprocessed_info.get("left_bytes")
+                    else:
+                        img_bytes = preprocessed_info.get("right_bytes")
+                    b64_img = base64.b64encode(img_bytes).decode('utf-8')
+                    
+                    st.session_state.current_page_images[f"{p_num}_{part}"] = img_bytes
+                else:
+                    img_bytes = pdf_page_to_image_bytes_cached(doc, p_num)
+                    b64_img = pdf_page_to_base64_cached(doc, p_num)
+                    st.session_state.current_page_images[p_num] = img_bytes
+                
+                page_image_placeholder.subheader(f"📄 当前: {part_name}")
+                page_image_placeholder.image(img_bytes, width="stretch")
+                
+                page_results = extract_vocab_with_context(b64_img, extract_api_key, extract_base_url, extract_model_name,
+                                                          last_unit_context, b_grade)
+                
+                if page_results:
+                    for item in page_results:
+                        item["book_version"] = b_version
+                        item["grade"] = b_grade
+                        item["semester"] = b_semester
+                        
+                        if "type" not in item:
+                            word_text = item.get("word", "")
+                            item["type"] = "phrase" if " " in word_text.strip() else "word"
+                        
+                        last_unit_context = item.get("unit", last_unit_context)
+                        
+                        if not item.get("meanings") or len(item.get("meanings", [])) == 0:
+                            item["meanings"] = [{
+                                "pos": item.get("pos", ""),
+                                "meaning": item.get("meaning", ""),
+                                "example": item.get("example", ""),
+                                "example_zh": item.get("example_zh", "")
+                            }]
+                        
+                        word_clean = "".join([c for c in item.get("word", "") if
+                                              c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
+                        item["id"] = get_unique_id(word_clean, last_unit_context, b_grade)
+                        
+                        if item["type"] == "word":
+                            item["word_audio"] = ""
+                            
+                        else:
+                            item["phrase_audio"] = ""
+                            
+                        
+                        st.session_state.all_extracted_data.append(item)
+                        st.session_state.realtime_data.append(item)
+                
+                data_placeholder.subheader("📝 实时提取结果")
+                if st.session_state.realtime_data:
+                    df_realtime = pd.DataFrame([flatten_meanings_for_display(item) for item in st.session_state.realtime_data])
+                    data_placeholder.dataframe(df_realtime, width="stretch")
+                
+                time.sleep(0.05)
+            
+            elapsed_seconds = int(time.time() - start_time)
+            st.session_state.task_duration = f"{elapsed_seconds}秒"
+            st.session_state.is_extracting_pdf = False
+            st.rerun()
+
+    if not st.session_state.is_extracting_pdf and st.session_state.all_extracted_data:
+        st.success(f"PDF 解析完毕！耗时：**{st.session_state.task_duration}**。请在下方核对修改，无误后点击保存。")
+        
+        all_data = [item for item in st.session_state.all_extracted_data if item.get("id") not in st.session_state.items_to_delete]
+        units = sorted(list(set([item.get("unit", "未知单元") for item in all_data]) | st.session_state.custom_units), key=lambda x: (len(x), x))
+        
+        col_left, col_right = st.columns([1, 2])
+        
+        with col_left:
+            st.subheader("📄 PDF 页面预览")
+            if st.session_state.pdf_bytes:
+                start_p, end_p = st.session_state.selected_range
+                page_range = list(range(start_p, end_p + 1))
+                
+                selected_page = st.selectbox(
+                    "选择页面",
+                    page_range,
+                    key="page_selector",
+                    format_func=lambda x: f"第{x}页"
+                )
+                
+                if selected_page in st.session_state.current_page_images:
+                    st.image(st.session_state.current_page_images[selected_page], width="stretch")
+                else:
+                    doc = PDFCache.get_doc(st.session_state.pdf_bytes)
+                    img_bytes = pdf_page_to_image_bytes_cached(doc, selected_page)
+                    st.session_state.current_page_images[selected_page] = img_bytes
+                    st.image(img_bytes, width="stretch")
+        
+        with col_right:
+            st.subheader("📝 单元词汇数据编辑")
+            
+            col_unit1, col_unit2 = st.columns([3, 1])
+            with col_unit1:
+                selected_unit = st.selectbox("选择单元", units, key="unit_selector")
+            with col_unit2:
+                st.write("")
+                if st.button("➕ 新建单元", key="btn_new_unit"):
+                    st.session_state.show_new_unit_input = True
+            
+            if st.session_state.get("show_new_unit_input", False):
+                with st.container():
+                    new_unit_name = st.text_input("输入新单元名称（如 Unit 3）", key="new_unit_name_input")
+                    col_confirm1, col_confirm2 = st.columns(2)
+                    with col_confirm1:
+                        if st.button("✅ 确认添加", key="btn_confirm_new_unit"):
+                            if new_unit_name and new_unit_name not in units:
+                                st.session_state.custom_units.add(new_unit_name)
+                                st.session_state.show_new_unit_input = False
+                                st.success(f"已添加新单元: {new_unit_name}")
+                                st.rerun()
+                            elif new_unit_name in units:
+                                st.warning("单元已存在")
+                    with col_confirm2:
+                        if st.button("❌ 取消", key="btn_cancel_new_unit"):
+                            st.session_state.show_new_unit_input = False
+                            st.rerun()
+            
+            unit_data = [item for item in all_data if item.get("unit") == selected_unit]
+            words_data = [item for item in unit_data if item.get("type") == "word"]
+            phrases_data = [item for item in unit_data if item.get("type") == "phrase"]
+            
+            tab_words, tab_phrases = st.tabs([f"单词列表 ({len(words_data)})", f"短语列表 ({len(phrases_data)})"])
+            
+            with tab_words:
+                st.markdown("### 单词数据")
+                if words_data:
+                    flat_words = [flatten_meanings_for_display(item) for item in words_data]
+                    df_words = pd.DataFrame(flat_words)
+                    
+                    display_cols = ["word", "phonetic", "pos", "meaning", "example", "example_zh"]
+                    df_display = df_words[[col for col in display_cols if col in df_words.columns]].copy()
+                    df_display.insert(0, "选择", False)
+                    
+                    edited_words_df = st.data_editor(
+                        df_display,
+                        num_rows="dynamic",
+                        width="stretch",
+                        key=f"words_editor_{selected_unit}",
+                        column_config={
+                            "选择": st.column_config.CheckboxColumn("选择", default=False, width="small"),
+                            "word": st.column_config.TextColumn("英文单词", width="medium"),
+                            "phonetic": st.column_config.TextColumn("音标", width="medium"),
+                            "pos": st.column_config.TextColumn("词性", width="small"),
+                            "meaning": st.column_config.TextColumn("释义", width="medium"),
+                            "example": st.column_config.TextColumn("英文例句", width="large"),
+                            "example_zh": st.column_config.TextColumn("中文例句", width="large")
+                        },
+                        hide_index=True
+                    )
+                    
+                    st.session_state.edited_words[selected_unit] = edited_words_df
+                    
+                    col_del, col_move = st.columns(2)
+                    with col_del:
+                        if st.button("🗑️ 删除选中项", key=f"btn_delete_words_{selected_unit}"):
+                            selected_rows = edited_words_df[edited_words_df["选择"] == True]
+                            if not selected_rows.empty:
+                                for _, row in selected_rows.iterrows():
+                                    word_id = words_data[list(flat_words).index(row) if row in flat_words else None]
+                                    if word_id:
+                                        st.session_state.items_to_delete.add(word_id.get("id", ""))
+                                st.success(f"已标记删除 {len(selected_rows)} 个单词")
+                                st.rerun()
+                    
+                    with col_move:
+                        target_unit = st.selectbox("目标单元", [u for u in units if u != selected_unit], key=f"move_target_{selected_unit}")
+                        if st.button("📦 移动选中项", key=f"btn_move_words_{selected_unit}"):
+                            selected_rows = edited_words_df[edited_words_df["选择"] == True]
+                            if not selected_rows.empty:
+                                for idx, row in selected_rows.iterrows():
+                                    for item in st.session_state.all_extracted_data:
+                                        if item.get("word") == row["word"] and item.get("unit") == selected_unit:
+                                            item["unit"] = target_unit
+                                st.success(f"已移动 {len(selected_rows)} 个单词到 {target_unit}")
+                                st.rerun()
+                else:
+                    st.info("该单元暂无单词数据")
+                
+                st.divider()
+                st.markdown("### ➕ 批量添加单词")
+                
+                st.markdown("**格式说明**：每行一个单词，格式为`英文 词性 中文释义`")
+                st.markdown("例如：`apple n. 苹果` 或 `book n. 书 v. 预订`")
+                
+                batch_words_input = st.text_area(
+                    "输入批量单词数据",
+                    height=150,
+                    placeholder="apple n. 苹果\nbanana n. 香蕉\nbook n. 书 v. 预订",
+                    key=f"batch_words_input_{selected_unit}"
+                )
+                
+                btn_add_words = st.button("批量添加单词", type="primary", key=f"btn_add_words_{selected_unit}")
+                
+                if btn_add_words:
+                    if batch_words_input.strip():
+                        lines = [line.strip() for line in batch_words_input.strip().split('\n') if line.strip()]
+                        added_count = 0
+                        failed_words = []
+
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+
+                        pos_pattern = r"^(n\.|v\.|adj\.|adv\.|prep\.|pron\.|conj\.|interj\.|num\.|art\.|phr\.)\s*(.*)$"
+
+                        for idx, line in enumerate(lines):
+                            status_text.text(f"正在处理: {line} ({idx + 1}/{len(lines)})")
+
+                            parts = line.split(None, 1)
+                            if len(parts) >= 2:
+                                word = parts[0].strip()
+                                pos_meaning = parts[1].strip()
+
+                                m = re.match(pos_pattern, pos_meaning, flags=re.IGNORECASE)
+                                if m:
+                                    pos_value = m.group(1).lower()
+                                    meaning_value = (m.group(2) or "").strip()
+                                else:
+                                    pos_value = ""
+                                    meaning_value = pos_meaning
+
+                                if not meaning_value:
+                                    failed_words.append(word)
+                                else:
+                                    new_item = {
+                                        "word": word,
+                                        "phonetic": "",
+                                        "meanings": [{
+                                            "pos": pos_value,
+                                            "meaning": meaning_value,
+                                            "example": "",
+                                            "example_zh": ""
+                                        }],
+                                        "unit": selected_unit,
+                                        "type": "word",
+                                        "book_version": b_version,
+                                        "grade": b_grade,
+                                        "semester": b_semester,
+                                        "word_audio": "",
+                                        
+                                    }
+                                    word_clean = "".join([c for c in word if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
+                                    new_item["id"] = get_unique_id(word_clean, selected_unit, b_grade)
+                                    st.session_state.all_extracted_data.append(new_item)
+                                    added_count += 1
+                            else:
+                                failed_words.append(line)
+
+                            progress_bar.progress((idx + 1) / len(lines))
+
+                        status_text.empty()
+                        progress_bar.empty()
+
+                        if added_count > 0:
+                            st.success(f"成功添加 {added_count} 个单词")
+                        if failed_words:
+                            st.warning(f"添加失败的单词: {', '.join(failed_words)}")
+
+                        if added_count > 0:
+                            st.rerun()
+                    else:
+                        st.warning("请输入单词数据")
+            with tab_phrases:
+                st.markdown("### 短语数据")
+                if phrases_data:
+                    flat_phrases = [flatten_meanings_for_display(item) for item in phrases_data]
+                    df_phrases = pd.DataFrame(flat_phrases)
+                    
+                    display_cols = ["word", "phonetic", "pos", "meaning", "example", "example_zh"]
+                    df_display = df_phrases[[col for col in display_cols if col in df_phrases.columns]].copy()
+                    df_display.insert(0, "选择", False)
+                    
+                    edited_phrases_df = st.data_editor(
+                        df_display,
+                        num_rows="dynamic",
+                        width="stretch",
+                        key=f"phrases_editor_{selected_unit}",
+                        column_config={
+                            "选择": st.column_config.CheckboxColumn("选择", default=False, width="small"),
+                            "word": st.column_config.TextColumn("英文短语", width="medium"),
+                            "phonetic": st.column_config.TextColumn("音标", width="medium"),
+                            "pos": st.column_config.TextColumn("词性", width="small"),
+                            "meaning": st.column_config.TextColumn("释义", width="medium"),
+                            "example": st.column_config.TextColumn("英文例句", width="large"),
+                            "example_zh": st.column_config.TextColumn("中文例句", width="large")
+                        },
+                        hide_index=True
+                    )
+                    
+                    st.session_state.edited_phrases[selected_unit] = edited_phrases_df
+                    
+                    col_del, col_move = st.columns(2)
+                    with col_del:
+                        if st.button("🗑️ 删除选中项", key=f"btn_delete_phrases_{selected_unit}"):
+                            selected_rows = edited_phrases_df[edited_phrases_df["选择"] == True]
+                            if not selected_rows.empty:
+                                for _, row in selected_rows.iterrows():
+                                    for item in phrases_data:
+                                        if item.get("word") == row["word"]:
+                                            st.session_state.items_to_delete.add(item.get("id", ""))
+                                            break
+                                st.success(f"已标记删除 {len(selected_rows)} 个短语")
+                                st.rerun()
+                    
+                    with col_move:
+                        target_unit_p = st.selectbox("目标单元", [u for u in units if u != selected_unit], key=f"move_target_p_{selected_unit}")
+                        if st.button("📦 移动选中项", key=f"btn_move_phrases_{selected_unit}"):
+                            selected_rows = edited_phrases_df[edited_phrases_df["选择"] == True]
+                            if not selected_rows.empty:
+                                for idx, row in selected_rows.iterrows():
+                                    for item in st.session_state.all_extracted_data:
+                                        if item.get("word") == row["word"] and item.get("unit") == selected_unit:
+                                            item["unit"] = target_unit_p
+                                st.success(f"已移动 {len(selected_rows)} 个短语到 {target_unit_p}")
+                                st.rerun()
+                else:
+                    st.info("该单元暂无短语数据")
+                
+                st.divider()
+                st.markdown("### ➕ 批量添加短语")
+                
+                st.markdown("**格式说明**：每行一个短语，格式为`英文 中文释义`")
+                st.markdown("例如：`look for 寻找` 或 `get up 起床`")
+                
+                batch_phrases_input = st.text_area(
+                    "输入批量短语数据",
+                    height=150,
+                    placeholder="look for 寻找\nget up 起床\ntake care of 照顾",
+                    key=f"batch_phrases_input_{selected_unit}"
+                )
+                
+                btn_add_phrases = st.button("批量添加短语", type="primary", key=f"btn_add_phrases_{selected_unit}")
+                
+                if btn_add_phrases:
+                    if batch_phrases_input.strip():
+                        lines = [line.strip() for line in batch_phrases_input.strip().split('\n') if line.strip()]
+                        added_count = 0
+                        failed_phrases = []
+
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+
+                        for idx, line in enumerate(lines):
+                            status_text.text(f"正在处理: {line} ({idx + 1}/{len(lines)})")
+
+                            parts = line.split(None, 1)
+                            if len(parts) >= 2:
+                                phrase = parts[0].strip()
+                                meaning = parts[1].strip()
+
+                                if not meaning:
+                                    failed_phrases.append(phrase)
+                                else:
+                                    new_item = {
+                                        "word": phrase,
+                                        "phonetic": "",
+                                        "meanings": [{
+                                            "pos": "",
+                                            "meaning": meaning,
+                                            "example": "",
+                                            "example_zh": ""
+                                        }],
+                                        "unit": selected_unit,
+                                        "type": "phrase",
+                                        "book_version": b_version,
+                                        "grade": b_grade,
+                                        "semester": b_semester,
+                                        "phrase_audio": "",
+                                        
+                                    }
+                                    word_clean = "".join([c for c in phrase if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
+                                    new_item["id"] = get_unique_id(word_clean, selected_unit, b_grade)
+                                    st.session_state.all_extracted_data.append(new_item)
+                                    added_count += 1
+                            else:
+                                failed_phrases.append(line)
+
+                            progress_bar.progress((idx + 1) / len(lines))
+
+                        status_text.empty()
+                        progress_bar.empty()
+
+                        if added_count > 0:
+                            st.success(f"成功添加 {added_count} 个短语")
+                        if failed_phrases:
+                            st.warning(f"添加失败的短语: {', '.join(failed_phrases)}")
+
+                        if added_count > 0:
+                            st.rerun()
+                    else:
+                        st.warning("请输入短语数据")
+        st.divider()
+        st.subheader("💾 保存数据")
+        
+        st.info("点击下方按钮将提取的数据保存为 JSONL 文件（未录音版）")
+        
+        col_save1, col_save2 = st.columns([2, 1])
+        with col_save1:
+            base_name = st.session_state.get("export_name_tab1", "extracted")
+        with col_save2:
+            st.write("")
+            if st.button("💾 保存为 JSONL（未录音版）", type="primary", width="stretch", key="btn_save_jsonl"):
+                ensure_runtime_dirs()
+                task_id = make_task_id()
+
+                words_filename = build_result_filename(b_version, b_grade, b_semester, "单词表", task_id)
+                phrases_filename = build_result_filename(b_version, b_grade, b_semester, "短语表", task_id)
+                words_file_path = os.path.join(UNRECORDED_DIR, words_filename)
+                phrases_file_path = os.path.join(UNRECORDED_DIR, phrases_filename)
+
+                words_data = [item for item in st.session_state.all_extracted_data
+                             if item.get("type") == "word" and item.get("id") not in st.session_state.items_to_delete]
+                phrases_data = [item for item in st.session_state.all_extracted_data
+                               if item.get("type") == "phrase" and item.get("id") not in st.session_state.items_to_delete]
+
+                with open(words_file_path, 'w', encoding='utf-8') as f:
+                    for entry in words_data:
+                        f.write(json.dumps(_sanitize_item_for_jsonl(entry), ensure_ascii=False) + '\n')
+
+                with open(phrases_file_path, 'w', encoding='utf-8') as f:
+                    for entry in phrases_data:
+                        f.write(json.dumps(_sanitize_item_for_jsonl(entry), ensure_ascii=False) + '\n')
+
+                st.success(f"保存成功（任务ID: {task_id}）\n- 单词：`{words_file_path}` ({len(words_data)} 个)\n- 短语：`{phrases_file_path}` ({len(phrases_data)} 个)")
+
+with tab2:
+    st.info("在此模式下，您可以导入已保存的 JSONL 文件来生成或修复音频。")
+    
+    col_upload1, col_upload2 = st.columns(2)
+    with col_upload1:
+        uploaded_words = st.file_uploader("上传单词 JSONL 文件（未录音版，可批量）", type=["jsonl"], accept_multiple_files=True, key="words_uploader")
+    with col_upload2:
+        uploaded_phrases = st.file_uploader("上传短语 JSONL 文件（未录音版，可批量）", type=["jsonl"], accept_multiple_files=True, key="phrases_uploader")
+    
+    btn_jsonl = False
+    if uploaded_words or uploaded_phrases:
+        st.info('📁 将按任务ID写入 `word_data/已录音` 目录（支持批量顺序处理）')
+        if uploaded_words:
+            st.write(f"单词文件数量：{len(uploaded_words)}")
+        if uploaded_phrases:
+            st.write(f"短语文件数量：{len(uploaded_phrases)}")
+
+        btn_jsonl = st.button("🎵 开始生成音频", type="primary", width="stretch", key="btn_jsonl_record")
+    
+    if btn_jsonl:
+        st.session_state.jsonl_audio_data = []
+        st.session_state.is_generating_audio = True
+        
+        main_progress = st.progress(0)
+        main_status = st.empty()
+        table_placeholder_2 = st.empty()
+        
+        start_time_2 = time.time()
+        ensure_runtime_dirs()
+        os.makedirs(AUDIO_DIR, exist_ok=True)
+
+        def load_existing_items_map(file_path):
+            items_map = {}
+            if not os.path.exists(file_path):
+                return items_map
+            try:
+                with open(file_path, 'r', encoding='utf-8-sig') as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            row = _load_json_line(line)
+                            rid = row.get("id")
+                            if rid:
+                                items_map[rid] = row
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            return items_map
+
+        def rel_to_abs(audio_rel_path):
+            if not audio_rel_path:
+                return ""
+            cleaned = audio_rel_path.strip()
+            if cleaned.startswith("./audio/"):
+                return os.path.join(AUDIO_DIR, cleaned.replace("./audio/", ""))
+            if cleaned.startswith("audio/"):
+                return os.path.join(AUDIO_DIR, cleaned.replace("audio/", ""))
+            if cleaned.startswith("./"):
+                return os.path.join(os.getcwd(), cleaned[2:])
+            if os.path.isabs(cleaned):
+                return cleaned
+            return os.path.join(os.getcwd(), cleaned)
+
+        def is_valid_audio_file(audio_path):
+            return bool(audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0)
+
+        def find_audio_filename_by_rule(uid, expected_filename, example_idx=None):
+            expected_abs = os.path.join(AUDIO_DIR, expected_filename)
+            if is_valid_audio_file(expected_abs):
+                return expected_filename
+
+            if not os.path.exists(AUDIO_DIR):
+                return ""
+
+            try:
+                files = [f for f in os.listdir(AUDIO_DIR) if f.endswith('.mp3') and f.startswith(f"{uid}_")]
+            except Exception:
+                files = []
+
+            if example_idx is None:
+                candidates = [f for f in files if '_ex_' not in f]
+            else:
+                suffix = f"_ex_{example_idx}.mp3"
+                candidates = [f for f in files if f.endswith(suffix)]
+
+            for name in sorted(candidates):
+                abs_path = os.path.join(AUDIO_DIR, name)
+                if is_valid_audio_file(abs_path):
+                    return name
+            return ""
+
+        def resolve_audio_rel(current_rel_path, uid, expected_filename, example_idx=None):
+            if current_rel_path:
+                abs_from_rel = rel_to_abs(current_rel_path)
+                if is_valid_audio_file(abs_from_rel):
+                    return current_rel_path, True
+
+            found_name = find_audio_filename_by_rule(uid, expected_filename, example_idx=example_idx)
+            if found_name:
+                return f"./audio/{found_name}", True
+
+            return f"./audio/{expected_filename}", False
+
+        def load_items_from_uploaded(uploaded_file, source_type):
+            parsed = []
+            for line in uploaded_file.getvalue().decode("utf-8-sig", errors="replace").splitlines():
+                if not line.strip():
+                    continue
+                item = _load_json_line(line)
+                item["_source_type"] = source_type
+                parsed.append(item)
+            return parsed
+
+        def pick_meta(items):
+            for row in items:
+                bv = (row.get("book_version", "") or "").strip()
+                gg = (row.get("grade", "") or "").strip()
+                ss = (row.get("semester", "") or "").strip()
+                if bv or gg or ss:
+                    return (
+                        bv or st.session_state.get("book_version", "未知版本"),
+                        gg or st.session_state.get("grade_select", "未知年级"),
+                        ss or st.session_state.get("semester_select", "未知册别"),
+                    )
+            return (
+                st.session_state.get("book_version", "未知版本"),
+                st.session_state.get("grade_select", "未知年级"),
+                st.session_state.get("semester_select", "未知册别"),
+            )
+
+        upload_tasks = []
+        for wf in (uploaded_words or []):
+            upload_tasks.append((wf, "word"))
+        for pf in (uploaded_phrases or []):
+            upload_tasks.append((pf, "phrase"))
+
+        main_status.text("📋 正在顺序处理批量音频任务...")
+
+        global_success_total = 0
+        global_fail_total = 0
+        global_skipped_total = 0
+        global_already_processed = 0
+        aggregated_items = []
+        generated_files = []
+
+        for file_idx, (uploaded_file, source_type) in enumerate(upload_tasks):
+            all_items = load_items_from_uploaded(uploaded_file, source_type)
+            if not all_items:
+                main_progress.progress((file_idx + 1) / len(upload_tasks))
+                continue
+
+            file_book_version, file_grade, file_semester = pick_meta(all_items)
+            file_task_id = make_task_id()
+            file_table_type = "单词表" if source_type == "word" else "短语表"
+            file_name = build_result_filename(file_book_version, file_grade, file_semester, file_table_type, file_task_id)
+            save_path = os.path.join(RECORDED_DIR, file_name)
+
+            existing_items_map = load_existing_items_map(save_path)
+
+            for i, uploaded_item in enumerate(all_items):
+                word = uploaded_item.get("word", "")
+                item_type = uploaded_item.get("type", source_type)
+
+                if not word:
+                    continue
+
+                word_clean = "".join([c for c in word if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
+                uid = uploaded_item.get("id", get_unique_id(word_clean, uploaded_item.get("unit", "unk"), uploaded_item.get("grade", "unk")))
+                uploaded_item["id"] = uid
+
+                item = existing_items_map.get(uid, uploaded_item)
+                if uid in existing_items_map:
+                    global_already_processed += 1
+
+                for core_key in ["word", "unit", "type", "book_version", "grade", "semester", "phonetic"]:
+                    if core_key in uploaded_item:
+                        item[core_key] = uploaded_item.get(core_key)
+
+                if not isinstance(item.get("meanings"), list) or not item.get("meanings"):
+                    item["meanings"] = uploaded_item.get("meanings", []) if isinstance(uploaded_item.get("meanings"), list) else []
+
+                audio_tasks_for_item = []
+                main_field = "word_audio" if item_type == "word" else "phrase_audio"
+
+                main_filename = f"{uid}_{word_clean}.mp3"
+                current_main_rel = item.get(main_field, "")
+                resolved_main_rel, main_exists = resolve_audio_rel(current_main_rel, uid, main_filename, example_idx=None)
+                item[main_field] = resolved_main_rel
+
+                if main_exists:
+                    global_skipped_total += 1
+                else:
+                    audio_tasks_for_item.append((word, os.path.join(AUDIO_DIR, main_filename)))
+
+                meanings = item.get("meanings", [])
+                if isinstance(meanings, list):
+                    for meaning_idx, m in enumerate(meanings):
+                        if not isinstance(m, dict):
+                            continue
+                        example = (m.get("example", "") or "").strip()
+                        if not example:
+                            continue
+
+                        ex_filename = f"{uid}_{word_clean}_ex_{meaning_idx}.mp3"
+                        current_ex_rel = m.get("example_audio", "")
+                        resolved_ex_rel, ex_exists = resolve_audio_rel(current_ex_rel, uid, ex_filename, example_idx=meaning_idx)
+                        m["example_audio"] = resolved_ex_rel
+
+                        if ex_exists:
+                            global_skipped_total += 1
+                        else:
+                            audio_tasks_for_item.append((example, os.path.join(AUDIO_DIR, ex_filename)))
+
+                if "_source_type" in item:
+                    del item["_source_type"]
+
+                if audio_tasks_for_item:
+                    main_status.text(f"🎵 [{file_idx + 1}/{len(upload_tasks)}] {uploaded_file.name} -> {word[:20]}")
+                    s, f = generate_audios_in_batch(audio_tasks_for_item, None, None)
+                    global_success_total += s
+                    global_fail_total += f
+
+                existing_items_map[uid] = item
+
+                main_status.text(
+                    f"📋 文件进度: {i + 1}/{len(all_items)} | 批次: {file_idx + 1}/{len(upload_tasks)} | "
+                    f"新生成: {global_success_total}, 跳过: {global_skipped_total}, 已处理: {global_already_processed}"
+                )
+
+            with open(save_path, 'w', encoding='utf-8') as f:
+                for row in existing_items_map.values():
+                    clean_row = _sanitize_item_for_jsonl(row)
+                    f.write(json.dumps(clean_row, ensure_ascii=False) + '\n')
+                    aggregated_items.append(clean_row)
+
+            generated_files.append(save_path)
+            main_progress.progress((file_idx + 1) / len(upload_tasks))
+
+        st.session_state.jsonl_audio_data = aggregated_items
+
+        file_summary = "\n".join([f"- `{p}`" for p in generated_files]) if generated_files else "- 无输出文件"
+        main_status.success(
+            f"✅ 批量处理完成！新生成: {global_success_total}, 跳过已存在音频: {global_skipped_total}, "
+            f"已处理过: {global_already_processed}, 失败: {global_fail_total}\n输出文件：\n{file_summary}"
+        )
+        
+        elapsed = int(time.time() - start_time_2)
+        st.session_state.task_duration = f"{elapsed}秒"
+        
+        main_progress.empty()
+        st.session_state.is_generating_audio = False
+        st.rerun()
+if not st.session_state.is_generating_audio and st.session_state.jsonl_audio_data:
+    st.success(f"🎉 音频生成完成！耗时：**{st.session_state.task_duration}**")
+    st.balloons()
+    
+    st.subheader("📊 音频结果")
+    
+    display_items = []
+    for item in st.session_state.jsonl_audio_data:
+        flat = flatten_meanings_for_display(item)
+        if item.get("type") == "word":
+            flat["word_audio"] = item.get("word_audio", "")
+        else:
+            flat["word_audio"] = item.get("phrase_audio", "")
+        meanings = item.get("meanings", [])
+        if meanings:
+            flat["example_audio"] = meanings[0].get("example_audio", "") if meanings else ""
+        display_items.append(flat)
+    
+    st.markdown(generate_html_table(display_items), unsafe_allow_html=True)
+    
+    st.divider()
+    st.subheader("🔧 音频修复工具")
+    
+    def check_audio_status(audio_path):
+        if not audio_path:
+            return "missing"
+        full_path = audio_path.replace("./audio/", f"{AUDIO_DIR}/").replace("./", f"{AUDIO_DIR}/")
+        if not os.path.exists(full_path):
+            return "missing"
+        if os.path.getsize(full_path) == 0:
+            return "empty"
+        return "ok"
+    
+    damaged_items = []
+    for item in st.session_state.jsonl_audio_data:
+        item_type = item.get("type", "word")
+        word = item.get("word", "")
+        item_id = item.get("id", "")
+        
+        if item_type == "word":
+            word_audio = item.get("word_audio", "")
+            status = check_audio_status(word_audio)
+            if status in ["missing", "empty"]:
+                damaged_items.append({
+                    "id": item_id,
+                    "word": word,
+                    "type": "word",
+                    "audio_type": "单词发音",
+                    "audio_path": word_audio,
+                    "status": "缺失" if status == "missing" else "空文件"
+                })
+        else:
+            phrase_audio = item.get("phrase_audio", "")
+            status = check_audio_status(phrase_audio)
+            if status in ["missing", "empty"]:
+                damaged_items.append({
+                    "id": item_id,
+                    "word": word,
+                    "type": "phrase",
+                    "audio_type": "短语发音",
+                    "audio_path": phrase_audio,
+                    "status": "缺失" if status == "missing" else "空文件"
+                })
+        
+        meanings = item.get("meanings", [])
+        if meanings:
+            example = meanings[0].get("example", "")
+            example_audio = meanings[0].get("example_audio", "")
+            status = check_audio_status(example_audio)
+            if status in ["missing", "empty"] and example:
+                damaged_items.append({
+                    "id": item_id,
+                    "word": word,
+                    "type": item_type,
+                    "audio_type": "例句发音",
+                    "audio_path": example_audio,
+                    "text_to_generate": example,
+                    "status": "缺失" if status == "missing" else "空文件"
+                })
+    
+    if damaged_items:
+        st.warning(f"发现 {len(damaged_items)} 个音频文件缺失或损坏")
+        
+        damaged_df = pd.DataFrame(damaged_items)
+        st.dataframe(damaged_df[["word", "type", "audio_type", "status"]], width="stretch")
+        
+        col_regen1, col_regen2 = st.columns(2)
+        with col_regen1:
+            if st.button("🔄 修复全部音频", type="primary", key="btn_repair_all_audio"):
+                repair_tasks = []
+                for d_item in damaged_items:
+                    if d_item.get("text_to_generate"):
+                        text = d_item["text_to_generate"]
+                    else:
+                        text = d_item["word"]
+                    
+                    audio_path = d_item["audio_path"]
+                    if audio_path:
+                        full_path = audio_path.replace("./audio/", f"{AUDIO_DIR}/").replace("./", f"{AUDIO_DIR}/")
+                        repair_tasks.append((text, full_path))
+                
+                if repair_tasks:
+                    repair_progress = st.progress(0)
+                    repair_status = st.empty()
+                    success, fail = generate_audios_in_batch(repair_tasks, repair_progress, repair_status)
+                    st.success(f"修复完成：成功 {success} 个，失败 {fail} 个")
+                    st.rerun()
+        
+        with col_regen2:
+            selected_word = st.selectbox("选择要修复的单词/短语", 
+                                         options=[d["word"] for d in damaged_items],
+                                         key="select_damaged_word")
+            
+            if st.button("🔧 修复选中项", key="btn_repair_selected"):
+                selected_items = [d for d in damaged_items if d["word"] == selected_word]
+                repair_tasks = []
+                for d_item in selected_items:
+                    if d_item.get("text_to_generate"):
+                        text = d_item["text_to_generate"]
+                    else:
+                        text = d_item["word"]
+                    
+                    audio_path = d_item["audio_path"]
+                    if audio_path:
+                        full_path = audio_path.replace("./audio/", f"{AUDIO_DIR}/").replace("./", f"{AUDIO_DIR}/")
+                        repair_tasks.append((text, full_path))
+                
+                if repair_tasks:
+                    repair_progress = st.progress(0)
+                    repair_status = st.empty()
+                    success, fail = generate_audios_in_batch(repair_tasks, repair_progress, repair_status)
+                    if success > 0:
+                        st.success(f"修复成功 {success} 个")
+                    if fail > 0:
+                        st.warning(f"修复失败 {fail} 个")
+                    st.rerun()
+    else:
+        st.success("✅ 所有音频文件正常")
+
+class PDFVocabGenerator:
+    def __init__(self, page_width=595, page_height=842, margin=35):
+        self.page_width = page_width
+        self.page_height = page_height
+        self.margin = margin
+        self.y_position = margin
+        self.line_height = 16
+        self.doc = fitz.open()
+        self.page = None
+        self.chinese_font = "china-s"
+        self.english_font = "helv"
+        self.content_width = page_width - 2 * margin
+    
+    def add_new_page(self):
+        self.page = self.doc.new_page(width=self.page_width, height=self.page_height)
+        self.y_position = self.margin
+        return self.page
+    
+    def check_page_break(self, needed_height):
+        if self.y_position + needed_height > self.page_height - self.margin:
+            self.add_new_page()
+            return True
+        return False
+    
+    def draw_text(self, text, fontsize=9, color=(0, 0, 0), x_offset=0, fontname=None):
+        x = self.margin + x_offset
+        y = self.y_position + fontsize
+        use_font = fontname if fontname else self.chinese_font
+        self.page.insert_text((x, y), text, fontsize=fontsize, fontname=use_font, color=color)
+    
+    def draw_english_text(self, text, fontsize=9, color=(0, 0, 0), x_offset=0):
+        self.draw_text(text, fontsize=fontsize, color=color, x_offset=x_offset, fontname=self.english_font)
+    
+    def draw_unit_header(self, unit_name):
+        self.y_position += 5
+        self.page.draw_rect(
+            fitz.Rect(self.margin - 5, self.y_position - 5,
+                      self.page_width - self.margin + 5, self.y_position + 28),
+            color=(0.95, 0.95, 0.95), fill=True, width=1.5
+        )
+        self.draw_text(unit_name, fontsize=14, color=(0, 0, 0), x_offset=10, fontname="helv")
+        self.y_position += 38
+    
+    def draw_section_header(self, section_name):
+        self.y_position += 3
+        self.page.draw_rect(
+            fitz.Rect(self.margin, self.y_position - 2,
+                      self.margin + 60, self.y_position + 14),
+            color=(0.85, 0.85, 0.85), fill=True, width=0
+        )
+        self.draw_text(section_name, fontsize=9, color=(0.2, 0.2, 0.2), x_offset=5)
+        self.y_position += 18
+    
+    def draw_table_header(self, headers, widths):
+        self.page.draw_rect(
+            fitz.Rect(self.margin, self.y_position - 2,
+                      self.page_width - self.margin, self.y_position + 16),
+            color=(0.92, 0.92, 0.92), fill=True, width=0
+        )
+        x_pos = 0
+        for header, width in zip(headers, widths):
+            self.draw_text(header, fontsize=8, color=(0.2, 0.2, 0.2), x_offset=x_pos + 3)
+            x_pos += width
+        self.y_position += 20
+    
+    def get_pdf_bytes(self):
+        return self.doc.tobytes()
+    
+    def close(self):
+        self.doc.close()
+
+
+with tab3:
+    st.header("📄 JSONL 转 PDF 导出")
+    st.info("在此模式下，您可以将 JSONL 文件转换为格式规范的 PDF 词汇表。")
+    
+    col_upload1, col_upload2 = st.columns(2)
+    with col_upload1:
+        st.subheader("上传单词表")
+        words_jsonl_file = st.file_uploader("单词 JSONL 文件", type=["jsonl"], key="words_jsonl_for_pdf")
+        if words_jsonl_file:
+            st.success(f"已加载: {words_jsonl_file.name}")
+    
+    with col_upload2:
+        st.subheader("上传短语表")
+        phrases_jsonl_file = st.file_uploader("短语 JSONL 文件", type=["jsonl"], key="phrases_jsonl_for_pdf")
+        if phrases_jsonl_file:
+            st.success(f"已加载: {phrases_jsonl_file.name}")
+    
+    st.divider()
+    
+    def extract_title_from_filename(filename):
+        name = filename.replace(".jsonl", "")
+        parts = name.split("_")
+        if len(parts) >= 3:
+            return f"{parts[0]}{parts[1]}{parts[2]}单词短语表"
+        return "单词短语表"
+    
+    default_title = "单词短语表"
+    if words_jsonl_file:
+        default_title = extract_title_from_filename(words_jsonl_file.name)
+    elif phrases_jsonl_file:
+        default_title = extract_title_from_filename(phrases_jsonl_file.name)
+    
+    pdf_title = st.text_input("PDF 标题", value=default_title, key="pdf_title_input")
+    
+    if st.button("📄 生成 PDF", type="primary", key="btn_generate_pdf"):
+        if not words_jsonl_file and not phrases_jsonl_file:
+            st.error("请先上传至少一个 JSONL 文件")
+        else:
+            words_data = []
+            phrases_data = []
+            
+            if words_jsonl_file:
+                try:
+                    for line in words_jsonl_file.getvalue().decode("utf-8-sig").splitlines():
+                        if line.strip():
+                            item = _load_json_line(line)
+                            item_type = item.get("type", "")
+                            if item_type == "word":
+                                words_data.append(item)
+                            elif item_type == "phrase":
+                                phrases_data.append(item)
+                            else:
+                                word_text = item.get("word", "")
+                                if " " in word_text.strip():
+                                    phrases_data.append(item)
+                                else:
+                                    words_data.append(item)
+                except Exception as e:
+                    st.error(f"单词文件解析错误: {e}")
+            
+            if phrases_jsonl_file:
+                try:
+                    for line in phrases_jsonl_file.getvalue().decode("utf-8-sig").splitlines():
+                        if line.strip():
+                            item = _load_json_line(line)
+                            item_type = item.get("type", "")
+                            if item_type == "phrase":
+                                phrases_data.append(item)
+                            elif item_type == "word":
+                                words_data.append(item)
+                            else:
+                                word_text = item.get("word", "")
+                                if " " in word_text.strip():
+                                    phrases_data.append(item)
+                                else:
+                                    words_data.append(item)
+                except Exception as e:
+                    st.error(f"短语文件解析错误: {e}")
+            
+            if not words_data and not phrases_data:
+                st.error("未找到有效数据")
+            else:
+                units_dict = {}
+                
+                for item in words_data:
+                    unit = item.get("unit", "Unit 0")
+                    if unit not in units_dict:
+                        units_dict[unit] = {"words": [], "phrases": []}
+                    units_dict[unit]["words"].append(item)
+                
+                for item in phrases_data:
+                    unit = item.get("unit", "Unit 0")
+                    if unit not in units_dict:
+                        units_dict[unit] = {"words": [], "phrases": []}
+                    units_dict[unit]["phrases"].append(item)
+                
+                def sort_unit_key(unit_name):
+                    match = re.search(r'(\d+)', unit_name)
+                    if match:
+                        return int(match.group(1))
+                    return 0
+                
+                sorted_units = sorted(units_dict.keys(), key=sort_unit_key)
+                
+                pdf_gen = PDFVocabGenerator()
+                pdf_gen.add_new_page()
+                
+                title_x = pdf_gen.page_width / 2
+                pdf_gen.page.insert_text(
+                    (title_x - 80, pdf_gen.y_position + 20),
+                    pdf_title,
+                    fontsize=18,
+                    fontname="china-s",
+                    color=(0.1, 0.2, 0.4)
+                )
+                pdf_gen.y_position += 35
+                
+                pdf_gen.page.draw_line(
+                    (pdf_gen.margin, pdf_gen.y_position),
+                    (pdf_gen.page_width - pdf_gen.margin, pdf_gen.y_position),
+                    color=(0.8, 0.8, 0.8),
+                    width=0.8
+                )
+                pdf_gen.y_position += 12
+                
+                word_col_widths = [80, 55, 25, 65, 150, 150]
+                word_headers = ["单词", "音标", "词性", "释义", "英文例句", "中文例句"]
+                
+                phrase_col_widths = [95, 80, 175, 175]
+                phrase_headers = ["短语", "释义", "英文例句", "中文例句"]
+                
+                for unit_name in sorted_units:
+                    unit_data = units_dict[unit_name]
+                    words_list = unit_data["words"]
+                    phrases_list = unit_data["phrases"]
+                    
+                    pdf_gen.check_page_break(100)
+                    
+                    pdf_gen.draw_unit_header(unit_name)
+                    
+                    if words_list:
+                        pdf_gen.draw_section_header("单词")
+                        pdf_gen.draw_table_header(word_headers, word_col_widths)
+                        
+                        for word_item in words_list:
+                            word = word_item.get("word", "")
+                            phonetic = word_item.get("phonetic", "")
+                            
+                            meanings = word_item.get("meanings", [])
+                            if not meanings:
+                                meanings = [{"pos": word_item.get("pos", ""), 
+                                            "meaning": word_item.get("meaning", ""),
+                                            "example": word_item.get("example", ""),
+                                            "example_zh": word_item.get("example_zh", "")}]
+                            
+                            for m in meanings:
+                                pdf_gen.check_page_break(26)
+                                
+                                pos = m.get("pos", "")
+                                meaning = m.get("meaning", "")
+                                example = m.get("example", "")
+                                example_zh = m.get("example_zh", "")
+                                
+                                if len(example) > 38:
+                                    example = example[:35] + "..."
+                                if len(example_zh) > 32:
+                                    example_zh = example_zh[:29] + "..."
+                                
+                                x_pos = 0
+                                pdf_gen.draw_english_text(word, fontsize=8, x_offset=x_pos + 3)
+                                x_pos += word_col_widths[0]
+                                pdf_gen.draw_english_text(phonetic, fontsize=7, color=(0.3, 0.3, 0.3), x_offset=x_pos + 3)
+                                x_pos += word_col_widths[1]
+                                pdf_gen.draw_text(pos, fontsize=8, color=(0.2, 0.5, 0.2), x_offset=x_pos + 3)
+                                x_pos += word_col_widths[2]
+                                pdf_gen.draw_text(meaning, fontsize=8, x_offset=x_pos + 3)
+                                x_pos += word_col_widths[3]
+                                pdf_gen.draw_english_text(example, fontsize=7, color=(0.3, 0.3, 0.3), x_offset=x_pos + 3)
+                                x_pos += word_col_widths[4]
+                                pdf_gen.draw_text(example_zh, fontsize=7, color=(0.5, 0.5, 0.5), x_offset=x_pos + 3)
+                                
+                                pdf_gen.y_position += 18
+                    
+                    if phrases_list:
+                        pdf_gen.y_position += 12
+                        pdf_gen.draw_section_header("短语")
+                        pdf_gen.draw_table_header(phrase_headers, phrase_col_widths)
+                        
+                        for phrase_item in phrases_list:
+                            phrase = phrase_item.get("word", "")
+                            
+                            meanings = phrase_item.get("meanings", [])
+                            if not meanings:
+                                meanings = [{"meaning": phrase_item.get("meaning", ""),
+                                            "example": phrase_item.get("example", ""),
+                                            "example_zh": phrase_item.get("example_zh", "")}]
+                            
+                            for m in meanings:
+                                pdf_gen.check_page_break(26)
+                                
+                                meaning = m.get("meaning", "")
+                                example = m.get("example", "")
+                                example_zh = m.get("example_zh", "")
+                                
+                                if len(example) > 45:
+                                    example = example[:42] + "..."
+                                if len(example_zh) > 38:
+                                    example_zh = example_zh[:35] + "..."
+                                
+                                x_pos = 0
+                                pdf_gen.draw_english_text(phrase, fontsize=8, x_offset=x_pos + 3)
+                                x_pos += phrase_col_widths[0]
+                                pdf_gen.draw_text(meaning, fontsize=8, x_offset=x_pos + 3)
+                                x_pos += phrase_col_widths[1]
+                                pdf_gen.draw_english_text(example, fontsize=7, color=(0.3, 0.3, 0.3), x_offset=x_pos + 3)
+                                x_pos += phrase_col_widths[2]
+                                pdf_gen.draw_text(example_zh, fontsize=7, color=(0.5, 0.5, 0.5), x_offset=x_pos + 3)
+                                
+                                pdf_gen.y_position += 18
+                    
+                    pdf_gen.y_position += 15
+                
+                pdf_bytes = pdf_gen.get_pdf_bytes()
+                pdf_gen.close()
+                
+                st.success(f"✅ PDF 生成完成！共 {len(sorted_units)} 个单元")
+                
+                total_words = sum(len(units_dict[u]["words"]) for u in sorted_units)
+                total_phrases = sum(len(units_dict[u]["phrases"]) for u in sorted_units)
+                st.info(f"📊 单词: {total_words} 个，短语: {total_phrases} 个")
+                
+                st.download_button(
+                    label="📥 下载 PDF",
+                    data=pdf_bytes,
+                    file_name=f"{pdf_title}.pdf",
+                    mime="application/pdf",
+                    key="download_pdf_btn"
+                )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+with tab4:
+    st.header("单元名称提取（目录页）")
+    st.info("输入教材 PDF 和目录页码范围，提取 Unit、单元标题和标题下简短问句描述。")
+
+    if "unit_meta_results" not in st.session_state:
+        st.session_state.unit_meta_results = []
+    if "unit_meta_source_pdf" not in st.session_state:
+        st.session_state.unit_meta_source_pdf = ""
+
+    source_mode = st.radio(
+        "PDF 来源",
+        ["待处理教材目录", "手动上传 PDF"],
+        horizontal=True,
+        key="unit_meta_source_mode"
+    )
+
+    selected_pdf_bytes = None
+    selected_pdf_name = ""
+
+    if source_mode == "待处理教材目录":
+        if os.path.isdir(TARGET_TEXTBOOK_DIR):
+            pdf_files = sorted([f for f in os.listdir(TARGET_TEXTBOOK_DIR) if f.lower().endswith(".pdf")])
+            if pdf_files:
+                picked = st.selectbox("选择教材文件", pdf_files, key="unit_meta_pdf_picker")
+                selected_pdf_name = picked
+                picked_path = os.path.join(TARGET_TEXTBOOK_DIR, picked)
+                with open(picked_path, "rb") as rf:
+                    selected_pdf_bytes = rf.read()
+                st.caption(f"来源目录：{TARGET_TEXTBOOK_DIR}")
+            else:
+                st.warning(f"目录中没有 PDF：{TARGET_TEXTBOOK_DIR}")
+        else:
+            st.warning(f"目录不存在或不可访问：{TARGET_TEXTBOOK_DIR}")
+    else:
+        uploaded = st.file_uploader("上传教材 PDF", type=["pdf"], key="unit_meta_uploader")
+        if uploaded is not None:
+            selected_pdf_name = uploaded.name
+            selected_pdf_bytes = uploaded.getvalue()
+
+    meta_col1, meta_col2, meta_col3 = st.columns(3)
+    with meta_col1:
+        unit_meta_book_version = st.text_input("教材版本", value="", key="unit_meta_book_version")
+    with meta_col2:
+        unit_meta_grade = st.text_input("年级", value="", key="unit_meta_grade")
+    with meta_col3:
+        unit_meta_semester = st.text_input("学期", value="", key="unit_meta_semester")
+
+    page_range_text = st.text_input(
+        "目录页码范围（例如：2-5,8,10-11）",
+        value="1-3",
+        key="unit_meta_page_range"
+    )
+
+    if st.button("开始提取单元名称", type="primary", key="btn_extract_unit_meta"):
+        if not extract_api_key:
+            st.error("请先在左侧填写提取 API Key。")
+        elif not selected_pdf_bytes:
+            st.error("请先选择或上传教材 PDF。")
+        else:
+            doc = PDFCache.get_doc(selected_pdf_bytes)
+            total_pages = len(doc)
+            pages = parse_page_range_input(page_range_text, 1, total_pages)
+            if not pages:
+                st.error("页码范围无效，请重新输入。")
+            else:
+                progress = st.progress(0)
+                status = st.empty()
+                all_items = []
+                for idx, pno in enumerate(pages):
+                    status.info(f"正在提取目录页：{pno} ({idx + 1}/{len(pages)})")
+                    b64_img = pdf_page_to_base64_cached(doc, pno)
+                    page_items = extract_unit_meta_from_page(
+                        b64_img,
+                        pno,
+                        extract_api_key,
+                        extract_base_url,
+                        extract_model_name
+                    )
+                    all_items.extend(page_items)
+                    progress.progress((idx + 1) / len(pages))
+
+                merged = {}
+                for item in all_items:
+                    unit_key = (item.get("unit", "") or "").strip()
+                    if not unit_key:
+                        continue
+                    if unit_key not in merged:
+                        merged[unit_key] = {
+                            "unit": unit_key,
+                            "unit_title": item.get("unit_title", ""),
+                            "unit_desc_short": item.get("unit_desc_short", ""),
+                            "source_pages": [item.get("source_page")],
+                        }
+                    else:
+                        current = merged[unit_key]
+                        if not current.get("unit_title") and item.get("unit_title"):
+                            current["unit_title"] = item.get("unit_title", "")
+                        if not current.get("unit_desc_short") and item.get("unit_desc_short"):
+                            current["unit_desc_short"] = item.get("unit_desc_short", "")
+                        current["source_pages"].append(item.get("source_page"))
+
+                final_rows = []
+                for _, v in merged.items():
+                    pages_sorted = sorted(set([p for p in v.get("source_pages", []) if isinstance(p, int)]))
+                    v["source_pages"] = pages_sorted
+                    final_rows.append(v)
+
+                final_rows = sorted(final_rows, key=lambda x: int(re.search(r"\d+", x["unit"]).group(0)) if re.search(r"\d+", x["unit"]) else 9999)
+                st.session_state.unit_meta_results = final_rows
+                st.session_state.unit_meta_source_pdf = selected_pdf_name
+
+                status.success(f"提取完成：共识别 {len(final_rows)} 个单元。")
+
+    if st.session_state.unit_meta_results:
+        st.subheader("提取结果（可编辑）")
+        display_rows = []
+        for r in st.session_state.unit_meta_results:
+            row = dict(r)
+            row["source_pages"] = ",".join([str(p) for p in r.get("source_pages", [])])
+            display_rows.append(row)
+
+        df_units = pd.DataFrame(display_rows)
+        edited_df = st.data_editor(
+            df_units,
+            use_container_width=True,
+            num_rows="dynamic",
+            key="unit_meta_editor",
+            hide_index=True
+        )
+
+        default_name = "unit_meta.jsonl"
+        if st.session_state.unit_meta_source_pdf:
+            stem = os.path.splitext(st.session_state.unit_meta_source_pdf)[0]
+            default_name = f"{stem}_unit_meta.jsonl"
+        save_name = st.text_input("保存文件名", value=default_name, key="unit_meta_save_name")
+
+        if st.button("保存到 structure_data", key="btn_save_unit_meta"):
+            os.makedirs(STRUCTURE_DIR, exist_ok=True)
+            save_path = os.path.join(STRUCTURE_DIR, save_name)
+            records = edited_df.to_dict(orient="records")
+            with open(save_path, "w", encoding="utf-8") as wf:
+                for rec in records:
+                    raw_pages = str(rec.get("source_pages", "") or "").strip()
+                    pages = [int(x.strip()) for x in raw_pages.split(",") if x.strip().isdigit()]
+                    out = {
+                        "unit": (rec.get("unit", "") or "").strip(),
+                        "unit_title": (rec.get("unit_title", "") or "").strip(),
+                        "unit_desc_short": (rec.get("unit_desc_short", "") or "").strip(),
+                        "source_pages": pages,
+                        "book_version": (unit_meta_book_version or "").strip(),
+                        "grade": (unit_meta_grade or "").strip(),
+                        "semester": (unit_meta_semester or "").strip(),
+                    }
+                    wf.write(json.dumps(out, ensure_ascii=False) + "\n")
+            st.success(f"已保存：{save_path}")
+
+
+with tab5:
+    st.header("课文提取（按单元 Section A/B 页码）")
+    st.info("导入教材后，按单元填写 Section A 与 Section B 页码（支持 12 或 12-13,15），系统会自动对齐到对应 Unit。")
+
+    if "passage_results" not in st.session_state:
+        st.session_state.passage_results = []
+    if "passage_source_pdf" not in st.session_state:
+        st.session_state.passage_source_pdf = ""
+
+    source_mode_p = st.radio(
+        "PDF 来源",
+        ["待处理教材目录", "手动上传 PDF"],
+        horizontal=True,
+        key="passage_source_mode"
+    )
+
+    selected_pdf_bytes_p = None
+    selected_pdf_name_p = ""
+
+    if source_mode_p == "待处理教材目录":
+        if os.path.isdir(TARGET_TEXTBOOK_DIR):
+            pdf_files_p = sorted([f for f in os.listdir(TARGET_TEXTBOOK_DIR) if f.lower().endswith(".pdf")])
+            if pdf_files_p:
+                picked_p = st.selectbox("选择教材文件", pdf_files_p, key="passage_pdf_picker")
+                selected_pdf_name_p = picked_p
+                picked_path_p = os.path.join(TARGET_TEXTBOOK_DIR, picked_p)
+                with open(picked_path_p, "rb") as rf:
+                    selected_pdf_bytes_p = rf.read()
+                st.caption(f"来源目录：{TARGET_TEXTBOOK_DIR}")
+            else:
+                st.warning(f"目录中没有 PDF：{TARGET_TEXTBOOK_DIR}")
+        else:
+            st.warning(f"目录不存在或不可访问：{TARGET_TEXTBOOK_DIR}")
+    else:
+        uploaded_p = st.file_uploader("上传教材 PDF", type=["pdf"], key="passage_uploader")
+        if uploaded_p is not None:
+            selected_pdf_name_p = uploaded_p.name
+            selected_pdf_bytes_p = uploaded_p.getvalue()
+
+    meta_col_p1, meta_col_p2, meta_col_p3 = st.columns(3)
+    with meta_col_p1:
+        passage_book_version = st.text_input("教材版本", value="", key="passage_book_version")
+    with meta_col_p2:
+        passage_grade = st.text_input("年级", value="", key="passage_grade")
+    with meta_col_p3:
+        passage_semester = st.text_input("学期", value="", key="passage_semester")
+
+    unit_count = st.number_input("单元数量", min_value=1, max_value=30, value=8, step=1, key="passage_unit_count")
+
+    st.markdown("### 页码配置")
+    for i in range(1, int(unit_count) + 1):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.text_input(f"Unit {i} Section A 页码", value="", key=f"passage_unit_{i}_A")
+        with col_b:
+            st.text_input(f"Unit {i} Section B 页码", value="", key=f"passage_unit_{i}_B")
+
+    if st.button("开始提取课文", type="primary", key="btn_extract_passages"):
+        if not extract_api_key:
+            st.error("请先在左侧填写提取 API Key。")
+        elif not selected_pdf_bytes_p:
+            st.error("请先选择或上传教材 PDF。")
+        else:
+            doc_p = PDFCache.get_doc(selected_pdf_bytes_p)
+            total_pages_p = len(doc_p)
+
+            tasks = []
+            for i in range(1, int(unit_count) + 1):
+                for sec in ["A", "B"]:
+                    raw_range = st.session_state.get(f"passage_unit_{i}_{sec}", "")
+                    pages = parse_page_range_input(raw_range, 1, total_pages_p)
+                    if pages:
+                        tasks.append({
+                            "unit": f"Unit {i}",
+                            "section": sec,
+                            "passage_type": "dialogue" if sec == "A" else "reading",
+                            "pages": pages,
+                        })
+
+            if not tasks:
+                st.error("请至少填写一个单元的页码。")
+            else:
+                progress_p = st.progress(0)
+                status_p = st.empty()
+                results = []
+
+                for idx, task in enumerate(tasks):
+                    unit_label = task["unit"]
+                    sec_label = task["section"]
+                    pages = task["pages"]
+                    status_p.info(f"正在提取 {unit_label} Section {sec_label}，页码 {pages}")
+
+                    title = ""
+                    text_chunks = []
+                    for pno in pages:
+                        b64_img = pdf_page_to_base64_cached(doc_p, pno)
+                        page_data = extract_passage_from_page(
+                            b64_img,
+                            extract_api_key,
+                            extract_base_url,
+                            extract_model_name,
+                            unit_label,
+                            sec_label,
+                        )
+                        if (not title) and page_data.get("title"):
+                            title = page_data.get("title", "")
+                        if page_data.get("passage_text"):
+                            text_chunks.append(page_data.get("passage_text", ""))
+
+                    merged_text = "\n\n".join([c for c in text_chunks if c.strip()]).strip()
+                    results.append({
+                        "unit": unit_label,
+                        "section": sec_label,
+                        "passage_type": task["passage_type"],
+                        "title": title,
+                        "passage_text": merged_text,
+                        "source_pages": pages,
+                    })
+                    progress_p.progress((idx + 1) / len(tasks))
+
+                st.session_state.passage_results = results
+                st.session_state.passage_source_pdf = selected_pdf_name_p
+                status_p.success(f"提取完成：共生成 {len(results)} 条课文记录。")
+
+    if st.session_state.passage_results:
+        st.subheader("提取结果（可编辑）")
+        display_rows = []
+        for r in st.session_state.passage_results:
+            row = dict(r)
+            row["source_pages"] = ",".join([str(p) for p in r.get("source_pages", [])])
+            display_rows.append(row)
+
+        df_passages = pd.DataFrame(display_rows)
+        edited_passages_df = st.data_editor(
+            df_passages,
+            use_container_width=True,
+            num_rows="dynamic",
+            key="passage_editor",
+            hide_index=True
+        )
+
+        default_name_p = "passages.jsonl"
+        if st.session_state.passage_source_pdf:
+            stem_p = os.path.splitext(st.session_state.passage_source_pdf)[0]
+            default_name_p = f"{stem_p}_passages.jsonl"
+        save_name_p = st.text_input("保存文件名", value=default_name_p, key="passage_save_name")
+
+        if st.button("保存课文到 structure_data", key="btn_save_passages"):
+            os.makedirs(STRUCTURE_DIR, exist_ok=True)
+            save_path_p = os.path.join(STRUCTURE_DIR, save_name_p)
+            records_p = edited_passages_df.to_dict(orient="records")
+            with open(save_path_p, "w", encoding="utf-8") as wf:
+                for rec in records_p:
+                    raw_pages = str(rec.get("source_pages", "") or "").strip()
+                    pages = [int(x.strip()) for x in raw_pages.split(",") if x.strip().isdigit()]
+                    out = {
+                        "unit": (rec.get("unit", "") or "").strip(),
+                        "section": (rec.get("section", "") or "").strip().upper(),
+                        "passage_type": (rec.get("passage_type", "") or "").strip(),
+                        "title": (rec.get("title", "") or "").strip(),
+                        "passage_text": (rec.get("passage_text", "") or "").strip(),
+                        "source_pages": pages,
+                        "book_version": (passage_book_version or "").strip(),
+                        "grade": (passage_grade or "").strip(),
+                        "semester": (passage_semester or "").strip(),
+                    }
+                    wf.write(json.dumps(out, ensure_ascii=False) + "\n")
+            st.success(f"已保存：{save_path_p}")
+
