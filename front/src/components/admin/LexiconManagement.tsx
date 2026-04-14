@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { CheckSquare, Layers, Pencil, Plus, Save, Trash2, Upload, X } from 'lucide-react';
-import { LexiconItem, lexiconApi } from '../../lib/lexicon';
+import { LexiconItem, TextbookScopeBookRow, lexiconApi } from '../../lib/lexicon';
 import { getSessionToken } from '../../lib/session';
 
 type Props = { type: 'word' | 'phrase' };
@@ -66,6 +66,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const [bookVersions, setBookVersions] = useState<string[]>([]);
   const [grades, setGrades] = useState<string[]>([]);
   const [semesters, setSemesters] = useState<string[]>([]);
+  const [textbookTree, setTextbookTree] = useState<TextbookScopeBookRow[]>([]);
   const [selectedBookVersion, setSelectedBookVersion] = useState('');
   const [selectedGrade, setSelectedGrade] = useState('');
   const [selectedSemester, setSelectedSemester] = useState('');
@@ -86,18 +87,57 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
 
   const units = useMemo(() => Array.from(new Set(items.map((x) => x.unit || 'Unit 1'))).sort(sortUnit), [items]);
   const visibleItems = useMemo(() => items.filter((x) => x.unit === selectedUnit), [items, selectedUnit]);
+  const normalizedSemesters = useMemo(() => semesters.map(normalizeSemester), [semesters]);
+  const scopeMap = useMemo(() => {
+    const m = new Map<string, Map<string, string[]>>();
+    textbookTree.forEach((book) => {
+      const gradeMap = new Map<string, string[]>();
+      (book.grades || []).forEach((gradeRow) => {
+        const ss = (gradeRow.semesters || []).map(normalizeSemester);
+        gradeMap.set(gradeRow.grade, Array.from(new Set(ss)));
+      });
+      m.set(book.bookVersion, gradeMap);
+    });
+    return m;
+  }, [textbookTree]);
+  const gradesForSelectedBook = useMemo(() => {
+    const fromScope = Array.from(scopeMap.get(selectedBookVersion || '')?.keys() || []);
+    return fromScope.length ? fromScope : grades;
+  }, [scopeMap, selectedBookVersion, grades]);
+  const semestersForSelectedScope = useMemo(() => {
+    const fromScope = scopeMap.get(selectedBookVersion || '')?.get(selectedGrade || '') || [];
+    return fromScope.length ? fromScope : normalizedSemesters;
+  }, [scopeMap, selectedBookVersion, selectedGrade, normalizedSemesters]);
+  const getGradesForBook = (bookVersion: string) => {
+    const fromScope = Array.from(scopeMap.get(bookVersion || '')?.keys() || []);
+    return fromScope.length ? fromScope : grades;
+  };
+  const getSemestersForBookGrade = (bookVersion: string, gradeValue: string) => {
+    const fromScope = scopeMap.get(bookVersion || '')?.get(gradeValue || '') || [];
+    return fromScope.length ? fromScope : normalizedSemesters;
+  };
 
   const loadOptions = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await lexiconApi.getOptions(token, type);
-      setBookVersions(res.bookVersions || []);
-      setGrades(res.grades || []);
-      setSemesters((res.semesters || []).map(normalizeSemester));
-      setSelectedBookVersion(res.bookVersions?.[0] || '');
-      setSelectedGrade(res.grades?.[0] || '');
-      setSelectedSemester(normalizeSemester(res.semesters?.[0] || ''));
+      const [res, scopeRes] = await Promise.all([lexiconApi.getOptions(token, type), lexiconApi.getTextbookScopes(token)]);
+      const books = res.bookVersions || [];
+      const baseGrades = res.grades || [];
+      const baseSemesters = (res.semesters || []).map(normalizeSemester);
+      setBookVersions(books);
+      setGrades(baseGrades);
+      setSemesters(baseSemesters);
+      setTextbookTree(scopeRes.tree || []);
+
+      const initialBook = books[0] || '';
+      const initialGrades = Array.from((scopeRes.tree || []).find((x) => x.bookVersion === initialBook)?.grades?.map((x) => x.grade) || []);
+      const initialGrade = (initialGrades.length ? initialGrades : baseGrades)[0] || '';
+      const initialSemesters = (((scopeRes.tree || []).find((x) => x.bookVersion === initialBook)?.grades || []).find((x) => x.grade === initialGrade)?.semesters || []).map(normalizeSemester);
+      const initialSemester = (initialSemesters.length ? initialSemesters : baseSemesters)[0] || '';
+      setSelectedBookVersion(initialBook);
+      setSelectedGrade(initialGrade);
+      setSelectedSemester(initialSemester);
     } catch (e: any) {
       setError(e?.message || '加载筛选项失败');
     } finally {
@@ -130,6 +170,27 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   };
 
   useEffect(() => { loadOptions(); }, [type]);
+  useEffect(() => {
+    const scopedGrades = gradesForSelectedBook;
+    if (!scopedGrades.length) {
+      setSelectedGrade('');
+      setSelectedSemester('');
+      return;
+    }
+    if (!scopedGrades.includes(selectedGrade)) {
+      setSelectedGrade(scopedGrades[0]);
+    }
+  }, [gradesForSelectedBook, selectedGrade]);
+  useEffect(() => {
+    const scopedSemesters = semestersForSelectedScope;
+    if (!scopedSemesters.length) {
+      setSelectedSemester('');
+      return;
+    }
+    if (!scopedSemesters.includes(selectedSemester)) {
+      setSelectedSemester(scopedSemesters[0]);
+    }
+  }, [semestersForSelectedScope, selectedSemester]);
   useEffect(() => { if (selectedBookVersion && selectedGrade && selectedSemester) loadItems(selectedBookVersion, selectedGrade, selectedSemester); }, [selectedBookVersion, selectedGrade, selectedSemester]);
   useEffect(() => { if (showImportModal) setImportRows([]); }, [showImportModal, type]);
   useEffect(() => { if (showGroupModal) { setGroupUnits(new Set(units)); setGroupSize('10'); } }, [showGroupModal, units]);
@@ -240,7 +301,13 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
     return rows;
   };
   const checkImportRows = async (rows: ImportRow[]) => {
-    const semesterSet = new Set(semesters.map(normalizeSemester));
+    const hasScopedTuple = (bookVersion: string, gradeValue: string, semesterValue: string) => {
+      const gradeRows = scopeMap.get(bookVersion || '');
+      if (!gradeRows) return false;
+      const semesterRows = gradeRows.get(gradeValue || '');
+      if (!semesterRows) return false;
+      return semesterRows.includes(normalizeSemester(semesterValue));
+    };
     const next = [...rows];
     setCheckingImportRows(true);
     try {
@@ -255,8 +322,12 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
           next[i] = { ...row, status: 'invalid', note: '年级标签无效' };
           continue;
         }
-        if (!semesterSet.has(normalizeSemester(row.semester))) {
+        if (!normalizedSemesters.includes(normalizeSemester(row.semester))) {
           next[i] = { ...row, status: 'invalid', note: '册数标签无效' };
+          continue;
+        }
+        if (!hasScopedTuple(row.bookVersion, row.grade, normalizeSemester(row.semester))) {
+          next[i] = { ...row, status: 'invalid', note: '该教材/年级/册数组合未在教材管理中配置' };
           continue;
         }
         if (row.count <= 0) {
@@ -359,9 +430,9 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
     <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-2xl font-black">{type === 'word' ? '单词库' : '短语库'}</h3>
-        <select value={selectedBookVersion} onChange={(e) => { setSelectedBookVersion(e.target.value); setSelectedGrade(grades[0] || ''); setSelectedSemester(semesters[0] || ''); }} className="border rounded-lg px-3 py-2 bg-white">{bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}</select>
-        <select value={selectedGrade} onChange={(e) => setSelectedGrade(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{grades.map((g) => <option key={g} value={g}>{g}</option>)}</select>
-        <select value={selectedSemester} onChange={(e) => setSelectedSemester(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{semesters.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+        <select value={selectedBookVersion} onChange={(e) => { setSelectedBookVersion(e.target.value); }} className="border rounded-lg px-3 py-2 bg-white">{bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}</select>
+        <select value={selectedGrade} onChange={(e) => setSelectedGrade(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{gradesForSelectedBook.map((g) => <option key={g} value={g}>{g}</option>)}</select>
+        <select value={selectedSemester} onChange={(e) => setSelectedSemester(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{semestersForSelectedScope.map((s) => <option key={s} value={s}>{s}</option>)}</select>
         <select value={selectedUnit} onChange={(e) => setSelectedUnit(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{units.map((u) => <option key={u} value={u}>{u}</option>)}</select>
         <div className="ml-auto flex items-center gap-2">
           {!isEditing && <button onClick={() => setShowGroupModal(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Layers className="w-4 h-4" /> 分组</button>}
@@ -451,21 +522,21 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
                       <td className="p-2">{row.fileName}</td>
                       <td className="p-2">{row.parsedType === 'word' ? '单词表' : row.parsedType === 'phrase' ? '短语表' : row.parsedType === 'passage' ? '课文表' : '未知'}</td>
                       <td className="p-2">
-                        <select value={row.bookVersion} disabled={importingBatch || row.status === 'success'} onChange={(e) => updateImportRow(row.id, { bookVersion: e.target.value })} className="w-full border rounded px-2 py-1 bg-white">
+                        <select value={row.bookVersion} disabled={importingBatch || row.status === 'success'} onChange={(e) => { const nextBook = e.target.value; const gradeCandidates = getGradesForBook(nextBook); const nextGrade = gradeCandidates.includes(row.grade) ? row.grade : (gradeCandidates[0] || ''); const semesterCandidates = getSemestersForBookGrade(nextBook, nextGrade); const nextSemester = semesterCandidates.includes(normalizeSemester(row.semester)) ? normalizeSemester(row.semester) : (semesterCandidates[0] || ''); updateImportRow(row.id, { bookVersion: nextBook, grade: nextGrade, semester: nextSemester }); }} className="w-full border rounded px-2 py-1 bg-white">
                           <option value="">请选择教材</option>
                           {bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}
                         </select>
                       </td>
                       <td className="p-2">
-                        <select value={row.grade} disabled={importingBatch || row.status === 'success'} onChange={(e) => updateImportRow(row.id, { grade: e.target.value })} className="w-full border rounded px-2 py-1 bg-white">
+                        <select value={row.grade} disabled={importingBatch || row.status === 'success'} onChange={(e) => { const nextGrade = e.target.value; const semesterCandidates = getSemestersForBookGrade(row.bookVersion, nextGrade); const nextSemester = semesterCandidates.includes(normalizeSemester(row.semester)) ? normalizeSemester(row.semester) : (semesterCandidates[0] || ''); updateImportRow(row.id, { grade: nextGrade, semester: nextSemester }); }} className="w-full border rounded px-2 py-1 bg-white">
                           <option value="">请选择年级</option>
-                          {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                          {getGradesForBook(row.bookVersion).map((g) => <option key={g} value={g}>{g}</option>)}
                         </select>
                       </td>
                       <td className="p-2">
                         <select value={normalizeSemester(row.semester)} disabled={importingBatch || row.status === 'success'} onChange={(e) => updateImportRow(row.id, { semester: normalizeSemester(e.target.value) })} className="w-full border rounded px-2 py-1 bg-white">
                           <option value="">请选择册数</option>
-                          {semesters.map((s) => <option key={s} value={normalizeSemester(s)}>{normalizeSemester(s)}</option>)}
+                          {getSemestersForBookGrade(row.bookVersion, row.grade).map((s) => <option key={s} value={normalizeSemester(s)}>{normalizeSemester(s)}</option>)}
                         </select>
                       </td>
                       <td className="p-2 text-right">{row.count}</td>
