@@ -55,7 +55,7 @@ public class DataInitializer implements CommandLineRunner {
     }
 
     private void initGlobalTags() {
-        String[] grades = {"一年级", "二年级", "三年级", "四年级", "五年级", "六年级", "七年级", "八年级", "九年级", "高一", "高二", "高三"};
+        String[] grades = {"三年级", "四年级", "五年级", "六年级", "七年级", "八年级", "九年级", "高一", "高二", "高三"};
         for (int i = 0; i < grades.length; i++) {
             String name = grades[i];
             if (!gradeTagRepository.existsByName(name)) {
@@ -135,3 +135,4 @@ public class DataInitializer implements CommandLineRunner {
         userRepository.save(student);
     }
 }
+

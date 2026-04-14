@@ -295,3 +295,54 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
 ### 14.6 当前建议
 - 继续以 `CODEX_LOG.md` 作为唯一交接文档。
 - 每轮改动后先执行 `py_compile` 与关键流程小样本回归，再集中提交。
+
+## 15. 迭代更新（2026-04-14 管理端词库/教材管理）
+
+### 15.1 单词/短语词库管理增强
+- 新增按教材范围删除与删除预览：
+  - `GET /api/lexicon/items/delete-preview`
+  - `DELETE /api/lexicon/items`
+- 新增导入前数量检查：
+  - `GET /api/lexicon/items/count`
+- 词库导入改为批量 JSONL：
+  - 支持多文件上传、逐文件校验、逐文件状态展示。
+  - 从文件名自动识别 `bookVersion/grade/semester`。
+  - `全一册` 与 `全册` 统一映射为 `全册`。
+  - 单词页仅允许单词表，短语页仅允许短语表，课文表在该页拦截。
+  - 不支持覆盖导入：若同标签已有数据，提示先删除再导入。
+- 兼容旧后端：
+  - `items/count` 返回 404 时，前端降级用 `items` 结果计算数量，避免 Not Found 阻塞导入。
+
+### 15.2 教材管理（新）
+- 新增“教材管理”页面与侧栏入口。
+- 新增教材-年级-册数关系表：`textbook_scope_tags`（唯一键：教材+年级+册数）。
+- 新增教材管理接口：
+  - 查询结构：`GET /api/lexicon/tags/textbook-scopes`
+  - 新增教材：`POST /api/lexicon/tags/textbook-scopes/textbooks`
+  - 教材重命名：`PUT /api/lexicon/tags/textbook-scopes/textbooks/rename`
+  - 新增/删除年级：`POST/DELETE /api/lexicon/tags/textbook-scopes/grades`
+  - 新增/删除册数：`POST/DELETE /api/lexicon/tags/textbook-scopes/semesters`
+  - 删除教材：`DELETE /api/lexicon/tags/textbook-scopes/textbooks`
+- 默认结构规则更新：
+  - 年级默认改为：三年级~九年级 + 高一/高二/高三。
+  - 每个年级默认册数：上册/下册。
+  - 全册需手动添加。
+
+### 15.3 教材管理交互优化
+- 教材支持折叠/展开，默认收起。
+- 年级卡片布局压缩，减少中间留白。
+- 册数支持：
+  - 单项开关（上册/下册/全册）
+  - 一键预设（常规上/下、仅全册、清空）
+- 操作失败改为弹窗提示（同时保留页面错误区）。
+- 册数切换改为本地即时更新，减少整页刷新与回到顶部。
+
+### 15.4 稳定性修复
+- 修复删除册数时报错：`No EntityManager with actual transaction available...`
+  - 对教材管理删除接口增加事务。
+- 修复“删了上/下册又自动恢复”的问题：
+  - 仅在教材完全没有任何 scope 记录时才补默认 scope，不再覆盖管理员手动删改。
+
+### 15.5 当前已知边界
+- 标签删除占用阻断已覆盖：词库、账号、门店权限。
+- “任务占用明细（精确到门店学生任务）”尚未接入 test-service 联查，后续补齐。

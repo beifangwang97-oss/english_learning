@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://localhost:8080';
+﻿const API_BASE_URL = 'http://localhost:8080';
 
 export type LexiconMeaning = {
   pos: string;
@@ -43,6 +43,16 @@ export type LexiconTaskTreeGrade = {
 export type LexiconTaskTreeBook = {
   bookVersion: string;
   grades: LexiconTaskTreeGrade[];
+};
+
+export type TextbookScopeGradeRow = {
+  grade: string;
+  semesters: string[];
+};
+
+export type TextbookScopeBookRow = {
+  bookVersion: string;
+  grades: TextbookScopeGradeRow[];
 };
 
 export type LearningGroupSummary = {
@@ -95,6 +105,104 @@ export const lexiconApi = {
     return payload as { name: string };
   },
 
+  async getTextbookScopes(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '加载教材结构失败');
+    return payload as { tree: TextbookScopeBookRow[]; grades: string[]; semesters: string[] };
+  },
+
+  async createTextbookScopeTextbook(token: string, name: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/textbooks`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '新增教材版本失败');
+    return payload as { message: string; name: string };
+  },
+
+  async renameTextbookScopeTextbook(token: string, oldName: string, newName: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/textbooks/rename`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ oldName, newName }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '教材版本重命名失败');
+    return payload as { message: string; oldName: string; newName: string };
+  },
+
+  async addTextbookScopeGrade(token: string, bookVersion: string, grade: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/grades`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ bookVersion, grade }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '新增年级失败');
+    return payload as { message: string };
+  },
+
+  async deleteTextbookScopeGrade(token: string, bookVersion: string, grade: string) {
+    const query = new URLSearchParams({ bookVersion, grade });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/grades?${query.toString()}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '删除年级失败');
+    return payload as { message: string };
+  },
+
+  async addTextbookScopeSemester(token: string, bookVersion: string, grade: string, semester: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/semesters`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ bookVersion, grade, semester }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '新增册数失败');
+    return payload as { message: string };
+  },
+
+  async deleteTextbookScopeSemester(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/semesters?${query.toString()}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '删除册数失败');
+    return payload as { message: string };
+  },
+
+  async deleteTextbookScopeTextbook(token: string, bookVersion: string) {
+    const query = new URLSearchParams({ bookVersion });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/textbooks?${query.toString()}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || '删除教材版本失败');
+    return payload as { message: string };
+  },
+
   async getItems(
     token: string,
     type: 'word' | 'phrase',
@@ -115,9 +223,60 @@ export const lexiconApi = {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload?.error || '加载词条失败');
+      throw new Error(payload?.error || '\u52a0\u8f7d\u8bcd\u6761\u6570\u91cf\u5931\u8d25');
     }
     return payload as { file: string | null; units: string[]; items: LexiconItem[] };
+  },
+
+  async getItemsCount(
+    token: string,
+    type: 'word' | 'phrase',
+    bookVersion: string,
+    grade: string,
+    semester: string
+  ) {
+    const query = new URLSearchParams({
+      type,
+      bookVersion,
+      grade,
+      semester,
+    });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/items/count?${query.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    // Backward compatibility: running backend may not include /items/count yet.
+    if (response.status === 404) {
+      const fallback = await this.getItems(token, type, bookVersion, grade, semester);
+      return {
+        type,
+        bookVersion,
+        grade,
+        semester,
+        count: Array.isArray(fallback.items) ? fallback.items.length : 0,
+      };
+    }
+
+    let payload: any = null;
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      payload = await response.json();
+    } else {
+      const text = await response.text();
+      payload = { error: text || `HTTP ${response.status}` };
+    }
+    if (!response.ok) {
+      throw new Error(payload?.error || '\u52a0\u8f7d\u8bcd\u6761\u6570\u91cf\u5931\u8d25');
+    }
+    return payload as {
+      type: 'word' | 'phrase';
+      bookVersion: string;
+      grade: string;
+      semester: string;
+      count: number;
+    };
   },
 
   async getTaskTree(
@@ -171,9 +330,76 @@ export const lexiconApi = {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload?.error || '保存词条失败');
+      throw new Error(payload?.error || '\u52a0\u8f7d\u8bcd\u6761\u6570\u91cf\u5931\u8d25');
     }
     return payload as { message: string; file: string; count: number };
+  },
+
+  async deleteItems(
+    token: string,
+    type: 'word' | 'phrase',
+    bookVersion: string,
+    grade: string,
+    semester: string
+  ) {
+    const query = new URLSearchParams({
+      type,
+      bookVersion,
+      grade,
+      semester,
+    });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/items?${query.toString()}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '删除失败');
+    }
+    return payload as {
+      message: string;
+      type: 'word' | 'phrase';
+      bookVersion: string;
+      grade: string;
+      semester: string;
+      deletedEntries: number;
+      deletedMeanings: number;
+    };
+  },
+
+  async previewDeleteItems(
+    token: string,
+    type: 'word' | 'phrase',
+    bookVersion: string,
+    grade: string,
+    semester: string
+  ) {
+    const query = new URLSearchParams({
+      type,
+      bookVersion,
+      grade,
+      semester,
+    });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/items/delete-preview?${query.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '删除预览失败');
+    }
+    return payload as {
+      message: string;
+      type: 'word' | 'phrase';
+      bookVersion: string;
+      grade: string;
+      semester: string;
+      deletedEntries: number;
+      deletedMeanings: number;
+    };
   },
 
   async proofreadJsonl(token: string, type: 'word' | 'phrase', file: File) {
@@ -320,3 +546,5 @@ export const lexiconApi = {
     };
   },
 };
+
+

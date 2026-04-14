@@ -4,9 +4,10 @@ import { useAuth } from '../context/AuthContext';
 import { UserAccountManagement } from '../components/admin/UserAccountManagement';
 import { LexiconManagement } from '../components/admin/LexiconManagement';
 import { AdminConsole } from '../components/admin/AdminConsole';
-import { Database, LayoutDashboard, LogOut, MessageSquare, Type, Users } from 'lucide-react';
+import { TextbookScopeManagement } from '../components/admin/TextbookScopeManagement';
+import { BookOpen, Database, LayoutDashboard, LogOut, MessageSquare, Type, Users } from 'lucide-react';
 
-type Tab = 'dashboard' | 'users' | 'words' | 'phrases';
+type Tab = 'dashboard' | 'users' | 'words' | 'phrases' | 'textbooks';
 
 export const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -32,6 +33,8 @@ export const AdminDashboard: React.FC = () => {
         return <LexiconManagement key="lexicon-word" type="word" />;
       case 'phrases':
         return <LexiconManagement key="lexicon-phrase" type="phrase" />;
+      case 'textbooks':
+        return <TextbookScopeManagement />;
       default:
         return null;
     }
@@ -42,6 +45,7 @@ export const AdminDashboard: React.FC = () => {
     { key: 'users', label: '账号管理', icon: Users },
     { key: 'words', label: '单词词库', icon: Type },
     { key: 'phrases', label: '短语词库', icon: MessageSquare },
+    { key: 'textbooks', label: '教材管理', icon: BookOpen },
   ];
 
   return (
@@ -95,3 +99,4 @@ export const AdminDashboard: React.FC = () => {
     </div>
   );
 };
+

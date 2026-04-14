@@ -1,9 +1,22 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import { CheckSquare, Layers, Pencil, Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import { LexiconItem, lexiconApi } from '../../lib/lexicon';
 import { getSessionToken } from '../../lib/session';
 
 type Props = { type: 'word' | 'phrase' };
+type ImportStatus = 'invalid' | 'checking' | 'unchecked' | 'exists' | 'ready' | 'importing' | 'success' | 'failed';
+type ImportRow = {
+  id: string;
+  file: File;
+  fileName: string;
+  parsedType: 'word' | 'phrase' | 'passage' | 'unknown';
+  bookVersion: string;
+  grade: string;
+  semester: string;
+  count: number;
+  status: ImportStatus;
+  note?: string;
+};
 
 const sortUnit = (a: string, b: string) => {
   const an = Number((a || '').replace(/[^\d]/g, ''));
@@ -13,6 +26,35 @@ const sortUnit = (a: string, b: string) => {
 };
 
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+const normalizeSemester = (semester: string) => {
+  const s = (semester || '').trim();
+  if (s === '全册' || s === '全一册') return '全册';
+  if (s.includes('全') && s.includes('册')) return '全册';
+  return s;
+};
+const parseFileMeta = (fileName: string) => {
+  const base = fileName.replace(/\.jsonl$/i, '');
+  const parts = base.split('_');
+  const bookVersion = (parts[0] || '').trim();
+  const grade = (parts[1] || '').trim();
+  const semester = normalizeSemester((parts[2] || '').trim());
+  const listToken = (parts[3] || '').trim();
+  let parsedType: ImportRow['parsedType'] = 'unknown';
+  if (listToken.includes('单词表')) parsedType = 'word';
+  else if (listToken.includes('短语表')) parsedType = 'phrase';
+  else if (listToken.includes('课文表')) parsedType = 'passage';
+  return { bookVersion, grade, semester, parsedType };
+};
+const statusLabel: Record<ImportStatus, string> = {
+  invalid: '无效',
+  checking: '校验中',
+  unchecked: '待校验',
+  exists: '数据库已存在',
+  ready: '可导入',
+  importing: '导入中',
+  success: '已导入',
+  failed: '\u5931\u8d25',
+};
 
 export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const token = useMemo(() => getSessionToken(), []);
@@ -34,18 +76,13 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const [moveTargetUnit, setMoveTargetUnit] = useState('');
   const [showImportModal, setShowImportModal] = useState(false);
   const [showGroupModal, setShowGroupModal] = useState(false);
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importBookVersion, setImportBookVersion] = useState('');
-  const [importGrade, setImportGrade] = useState('');
-  const [importSemester, setImportSemester] = useState('');
-  const [newBookVersion, setNewBookVersion] = useState('');
-  const [proofreadDone, setProofreadDone] = useState(false);
-  const [proofreadStats, setProofreadStats] = useState<Record<string, number> | null>(null);
-  const [proofreading, setProofreading] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [groupUnits, setGroupUnits] = useState<Set<string>>(new Set());
   const [groupSize, setGroupSize] = useState('10');
   const [grouping, setGrouping] = useState(false);
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [checkingImportRows, setCheckingImportRows] = useState(false);
+  const [importingBatch, setImportingBatch] = useState(false);
 
   const units = useMemo(() => Array.from(new Set(items.map((x) => x.unit || 'Unit 1'))).sort(sortUnit), [items]);
   const visibleItems = useMemo(() => items.filter((x) => x.unit === selectedUnit), [items, selectedUnit]);
@@ -57,10 +94,10 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
       const res = await lexiconApi.getOptions(token, type);
       setBookVersions(res.bookVersions || []);
       setGrades(res.grades || []);
-      setSemesters(res.semesters || []);
+      setSemesters((res.semesters || []).map(normalizeSemester));
       setSelectedBookVersion(res.bookVersions?.[0] || '');
       setSelectedGrade(res.grades?.[0] || '');
-      setSelectedSemester(res.semesters?.[0] || '');
+      setSelectedSemester(normalizeSemester(res.semesters?.[0] || ''));
     } catch (e: any) {
       setError(e?.message || '加载筛选项失败');
     } finally {
@@ -94,7 +131,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
 
   useEffect(() => { loadOptions(); }, [type]);
   useEffect(() => { if (selectedBookVersion && selectedGrade && selectedSemester) loadItems(selectedBookVersion, selectedGrade, selectedSemester); }, [selectedBookVersion, selectedGrade, selectedSemester]);
-  useEffect(() => { if (showImportModal) { setImportBookVersion(selectedBookVersion || bookVersions[0] || ''); setImportGrade(selectedGrade || grades[0] || ''); setImportSemester(selectedSemester || semesters[0] || ''); setImportFile(null); setProofreadDone(false); setProofreadStats(null); } }, [showImportModal, selectedBookVersion, selectedGrade, selectedSemester, bookVersions, grades, semesters]);
+  useEffect(() => { if (showImportModal) setImportRows([]); }, [showImportModal, type]);
   useEffect(() => { if (showGroupModal) { setGroupUnits(new Set(units)); setGroupSize('10'); } }, [showGroupModal, units]);
 
   const updateItem = (id: string, patch: Partial<LexiconItem>) => setItems((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
@@ -115,10 +152,188 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
     } catch (e: any) { setError(e?.message || '保存失败'); } finally { setSaving(false); }
   };
 
-  const playAudio = (path: string) => path && new Audio(lexiconApi.audioUrl(path)).play().catch(() => setError('音频播放失败'));
-  const addBookVersion = () => { const v = newBookVersion.trim(); if (!v) return; lexiconApi.addTextbookVersion(token, v).then(() => { setBookVersions((p) => p.includes(v) ? p : [...p, v]); setImportBookVersion(v); setNewBookVersion(''); }).catch((e: any) => setError(e?.message || '新增教材版本失败')); };
-  const runProofread = async () => { if (!importFile) return; setProofreading(true); setError(null); try { const res = await lexiconApi.proofreadJsonl(token, type, importFile); setProofreadDone(true); setProofreadStats(res.stats || null); } catch (e: any) { setError(e?.message || '校对失败'); } finally { setProofreading(false); } };
-  const runImport = async () => { if (!importFile || !importBookVersion || !importGrade || !importSemester) return setError('请完整选择导入信息'); setImporting(true); setError(null); try { const res = await lexiconApi.importJsonl(token, { type, bookVersion: importBookVersion, grade: importGrade, semester: importSemester, file: importFile, proofread: true, overwrite: true }); setMessage(`导入成功：${res.count} 条`); setShowImportModal(false); setSelectedBookVersion(importBookVersion); setSelectedGrade(importGrade); setSelectedSemester(importSemester); await loadItems(importBookVersion, importGrade, importSemester); } catch (e: any) { setError(e?.message || '导入失败'); } finally { setImporting(false); } };
+  const playAudio = async (path: string) => {
+    if (!path) return;
+    try {
+      await lexiconApi.playAudioWithAuth(token, path);
+    } catch {
+      setError('音频播放失败');
+    }
+  };
+  const deleteCurrentScope = async () => {
+    if (!selectedBookVersion || !selectedGrade || !selectedSemester) {
+      setError('请先选择教材、年级和册数');
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const typeLabel = type === 'word' ? '单词' : '短语';
+      const preview = await lexiconApi.previewDeleteItems(token, type, selectedBookVersion, selectedGrade, selectedSemester);
+      if (preview.deletedEntries <= 0) {
+        setMessage('当前范围没有可删除的数据');
+        return;
+      }
+      const confirmed = window.confirm(
+        `确认删除当前${typeLabel}册数据？\n\n范围：${selectedBookVersion} / ${selectedGrade} / ${selectedSemester}\n类型：${typeLabel}\n将删除词条：${preview.deletedEntries} 条\n将删除释义：${preview.deletedMeanings} 条\n\n删除后不可恢复。`
+      );
+      if (!confirmed) return;
+
+      const res = await lexiconApi.deleteItems(token, type, selectedBookVersion, selectedGrade, selectedSemester);
+      setMessage(`删除成功：词条 ${res.deletedEntries} 条，释义 ${res.deletedMeanings} 条`);
+      await loadItems(selectedBookVersion, selectedGrade, selectedSemester);
+    } catch (e: any) {
+      setError(e?.message || '删除失败');
+    } finally {
+      setDeleting(false);
+    }
+  };
+  const updateImportRow = (id: string, patch: Partial<ImportRow>) => {
+    setImportRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        if (row.status === 'success') return row;
+        return { ...row, ...patch, status: 'unchecked', note: undefined };
+      })
+    );
+  };
+  const buildImportRows = async (files: File[]) => {
+    const rows: ImportRow[] = [];
+    for (const file of files) {
+      const { bookVersion, grade, semester, parsedType } = parseFileMeta(file.name);
+      let count = 0;
+      let status: ImportStatus = 'unchecked';
+      let note = '';
+      if (!bookVersion || !grade || !semester || parsedType === 'unknown') {
+        status = 'invalid';
+        note = '文件名不符合规则';
+      } else if (parsedType === 'passage') {
+        status = 'invalid';
+        note = '课文表请在课文管理中导入';
+      } else if (parsedType !== type) {
+        status = 'invalid';
+        note = `当前页面仅支持导入${type === 'word' ? '单词表' : '短语表'}`;
+      }
+      try {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+        count = lines.length;
+        for (const line of lines) JSON.parse(line);
+      } catch {
+        status = 'invalid';
+        note = 'JSONL 格式错误';
+      }
+      rows.push({
+        id: newId(),
+        file,
+        fileName: file.name,
+        parsedType,
+        bookVersion,
+        grade,
+        semester: normalizeSemester(semester),
+        count,
+        status,
+        note: note || undefined,
+      });
+    }
+    return rows;
+  };
+  const checkImportRows = async (rows: ImportRow[]) => {
+    const semesterSet = new Set(semesters.map(normalizeSemester));
+    const next = [...rows];
+    setCheckingImportRows(true);
+    try {
+      for (let i = 0; i < next.length; i++) {
+        const row = next[i];
+        if (row.status === 'invalid' || row.status === 'success') continue;
+        if (!bookVersions.includes(row.bookVersion)) {
+          next[i] = { ...row, status: 'invalid', note: '教材版本未在系统标签中，请先到教材管理中新增' };
+          continue;
+        }
+        if (!grades.includes(row.grade)) {
+          next[i] = { ...row, status: 'invalid', note: '年级标签无效' };
+          continue;
+        }
+        if (!semesterSet.has(normalizeSemester(row.semester))) {
+          next[i] = { ...row, status: 'invalid', note: '册数标签无效' };
+          continue;
+        }
+        if (row.count <= 0) {
+          next[i] = { ...row, status: 'invalid', note: '文件无有效数据' };
+          continue;
+        }
+        next[i] = { ...row, status: 'checking', note: undefined };
+        setImportRows([...next]);
+        try {
+          const scope = await lexiconApi.getItemsCount(token, type, row.bookVersion, row.grade, normalizeSemester(row.semester));
+          next[i] = scope.count > 0
+            ? { ...row, semester: normalizeSemester(row.semester), status: 'exists', note: `数据库已存在 ${scope.count} 条，请先删除再导入` }
+            : { ...row, semester: normalizeSemester(row.semester), status: 'ready', note: undefined };
+        } catch (e: any) {
+          next[i] = { ...row, status: 'failed', note: e?.message || '校验失败' };
+        }
+      }
+    } finally {
+      setCheckingImportRows(false);
+    }
+    return next;
+  };
+  const onImportFilesSelected = async (evt: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(evt.target.files || []);
+    if (!files.length) return;
+    setError(null);
+    setMessage(null);
+    const built = await buildImportRows(files);
+    setImportRows(built);
+    const checked = await checkImportRows(built);
+    setImportRows(checked);
+    evt.target.value = '';
+  };
+  const recheckRows = async () => {
+    const checked = await checkImportRows(importRows);
+    setImportRows(checked);
+  };
+  const runBatchImport = async () => {
+    if (!importRows.length) return setError('请先选择 JSONL 文件');
+    setError(null);
+    setMessage(null);
+    const checked = await checkImportRows(importRows);
+    setImportRows(checked);
+    const hasBlocking = checked.some((x) => x.status === 'invalid' || x.status === 'exists' || x.status === 'failed');
+    if (hasBlocking) return setError('存在不可导入文件，请先修正后再导入');
+    const readyRows = checked.filter((x) => x.status === 'ready');
+    if (!readyRows.length) return setError('没有可导入文件');
+
+    setImportingBatch(true);
+    try {
+      let success = 0;
+      let failed = 0;
+      for (const row of readyRows) {
+        setImportRows((prev) => prev.map((x) => (x.id === row.id ? { ...x, status: 'importing', note: undefined } : x)));
+        try {
+          const res = await lexiconApi.importJsonl(token, {
+            type,
+            bookVersion: row.bookVersion,
+            grade: row.grade,
+            semester: normalizeSemester(row.semester),
+            file: row.file,
+            proofread: true,
+            overwrite: false,
+          });
+          success += 1;
+          setImportRows((prev) => prev.map((x) => (x.id === row.id ? { ...x, status: 'success', note: `导入 ${res.count} 条` } : x)));
+        } catch (e: any) {
+          failed += 1;
+          setImportRows((prev) => prev.map((x) => (x.id === row.id ? { ...x, status: 'failed', note: e?.message || '导入失败' } : x)));
+        }
+      }
+      setMessage(`批量导入完成：成功 ${success} 个，失败 ${failed} 个`);
+      await loadItems(selectedBookVersion, selectedGrade, selectedSemester);
+    } finally {
+      setImportingBatch(false);
+    }
+  };
 
   const applyGrouping = async (clearOnly: boolean) => {
     if (groupUnits.size === 0) return setError('请至少选择一个单元');
@@ -140,8 +355,6 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
     } finally { setGrouping(false); }
   };
 
-  const importSemesters = semesters.length ? semesters : ['上册', '下册', '全册'];
-
   return (
     <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -152,7 +365,8 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
         <select value={selectedUnit} onChange={(e) => setSelectedUnit(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{units.map((u) => <option key={u} value={u}>{u}</option>)}</select>
         <div className="ml-auto flex items-center gap-2">
           {!isEditing && <button onClick={() => setShowGroupModal(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Layers className="w-4 h-4" /> 分组</button>}
-          {!isEditing && <button onClick={() => setShowImportModal(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Upload className="w-4 h-4" /> 导入</button>}
+          {!isEditing && <button onClick={() => setShowImportModal(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Upload className="w-4 h-4" /> 批量导入</button>}
+          {!isEditing && <button onClick={deleteCurrentScope} disabled={deleting || loading} className="px-4 py-2 rounded-lg border border-red-300 text-red-700 font-bold hover:bg-red-50 disabled:opacity-40 flex items-center gap-2"><Trash2 className="w-4 h-4" /> {deleting ? '删除中...' : '删除本册'}</button>}
           {!isEditing && <button onClick={() => setIsEditing(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Pencil className="w-4 h-4" /> 编辑</button>}
           {isEditing && <>
             <button onClick={addItem} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Plus className="w-4 h-4" /> 新增</button>
@@ -197,7 +411,83 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
       </div>
 
       {showGroupModal && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-[min(900px,96vw)] rounded-xl bg-white border border-outline-variant/30 shadow-xl p-5 space-y-4 max-h-[86vh] overflow-y-auto"><div className="flex items-center justify-between"><h4 className="text-lg font-black">{type === 'word' ? '单词分组' : '短语分组'}</h4><button onClick={() => setShowGroupModal(false)} className="rounded-md p-1 hover:bg-surface-container-low"><X className="w-4 h-4" /></button></div><div className="text-sm text-on-surface-variant">当前：{selectedBookVersion} / {selectedGrade} / {selectedSemester}</div><div className="flex gap-2"><button onClick={() => setGroupUnits(new Set(units))} className="px-3 py-1.5 rounded border text-sm font-bold">全选</button><button onClick={() => setGroupUnits(new Set())} className="px-3 py-1.5 rounded border text-sm font-bold">清空</button><span className="text-sm text-on-surface-variant px-1 py-1.5">已选 {groupUnits.size} / {units.length}</span></div><div className="max-h-52 overflow-auto border rounded-lg p-3 grid grid-cols-2 md:grid-cols-3 gap-2">{units.map((u) => <label key={u} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={groupUnits.has(u)} onChange={(e) => setGroupUnits((prev) => { const next = new Set(prev); e.target.checked ? next.add(u) : next.delete(u); return next; })} /><span>{u}</span></label>)}</div><div className="space-y-2"><label className="text-sm font-bold">每组数量</label><input value={groupSize} onChange={(e) => setGroupSize(e.target.value)} type="number" min={1} className="w-48 border rounded-lg px-3 py-2" /></div><div className="flex justify-end gap-2"><button onClick={() => setShowGroupModal(false)} className="px-4 py-2 border rounded-lg font-bold">取消</button><button onClick={() => applyGrouping(true)} disabled={grouping || groupUnits.size === 0} className="px-4 py-2 border rounded-lg font-bold disabled:opacity-40">{grouping ? '处理中...' : '取消分组'}</button><button onClick={() => applyGrouping(false)} disabled={grouping || groupUnits.size === 0} className="px-4 py-2 bg-secondary text-on-secondary rounded-lg font-bold disabled:opacity-40">{grouping ? '处理中...' : '确认分组'}</button></div></div></div>}
-      {showImportModal && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-[min(920px,96vw)] rounded-xl bg-white border border-outline-variant/30 shadow-xl p-5 space-y-4"><div className="flex items-center justify-between"><h4 className="text-lg font-black">{type === 'word' ? '导入单词 JSONL' : '导入短语 JSONL'}</h4><button onClick={() => setShowImportModal(false)} className="rounded-md p-1 hover:bg-surface-container-low"><X className="w-4 h-4" /></button></div><div className="grid grid-cols-1 md:grid-cols-2 gap-3"><div className="space-y-2"><label className="text-sm font-bold">上传 JSONL 文件</label><input type="file" accept=".jsonl" onChange={(e) => { setImportFile(e.target.files?.[0] || null); setProofreadDone(false); setProofreadStats(null); }} className="block w-full border rounded-lg px-3 py-2" /></div><div className="space-y-2"><label className="text-sm font-bold">教材版本（可新增）</label><div className="flex gap-2"><select value={importBookVersion} onChange={(e) => setImportBookVersion(e.target.value)} className="flex-1 border rounded-lg px-3 py-2 bg-white"><option value="">请选择教材版本</option>{bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}</select><input value={newBookVersion} onChange={(e) => setNewBookVersion(e.target.value)} placeholder="新增版本" className="w-32 border rounded-lg px-3 py-2" /><button onClick={addBookVersion} className="px-3 py-2 border rounded-lg font-bold">添加</button></div></div><div className="space-y-2"><label className="text-sm font-bold">年级</label><select value={importGrade} onChange={(e) => setImportGrade(e.target.value)} className="w-full border rounded-lg px-3 py-2 bg-white"><option value="">请选择年级</option>{grades.map((g) => <option key={g} value={g}>{g}</option>)}</select></div><div className="space-y-2"><label className="text-sm font-bold">册数</label><select value={importSemester} onChange={(e) => setImportSemester(e.target.value)} className="w-full border rounded-lg px-3 py-2 bg-white"><option value="">请选择册数</option>{importSemesters.map((s) => <option key={s} value={s}>{s}</option>)}</select></div></div>{proofreadStats && <div className="rounded-lg bg-surface-container-low p-3 text-sm">校对统计：共 {proofreadStats.parsedCount || 0} 条，修正音标 {proofreadStats.phoneticFixed || 0} 条，修正词性 {proofreadStats.posFixed || 0} 条</div>}<div className="flex justify-end gap-2"><button onClick={() => setShowImportModal(false)} className="px-4 py-2 border rounded-lg font-bold">取消</button><button onClick={runProofread} disabled={proofreading || !importFile} className="px-4 py-2 border rounded-lg font-bold disabled:opacity-40">{proofreading ? '校对中...' : '校对'}</button><button onClick={runImport} disabled={importing || !importFile} className="px-4 py-2 bg-secondary text-on-secondary rounded-lg font-bold disabled:opacity-40">{importing ? '导入中...' : (proofreadDone ? '导入（已校对）' : '导入')}</button></div></div></div>}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-[min(1200px,98vw)] rounded-xl bg-white border border-outline-variant/30 shadow-xl p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h4 className="text-lg font-black">{type === 'word' ? '批量导入单词 JSONL' : '批量导入短语 JSONL'}</h4>
+              <button onClick={() => setShowImportModal(false)} className="rounded-md p-1 hover:bg-surface-container-low"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="rounded-lg bg-surface-container-low p-3 text-sm text-on-surface-variant">
+              文件名规则：教材版本_年级_册数_单词表/短语表_时间戳.jsonl。系统将自动识别标签；可人工修正后再导入。
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <input type="file" accept=".jsonl" multiple onChange={onImportFilesSelected} className="block border rounded-lg px-3 py-2" />
+              <button onClick={recheckRows} disabled={checkingImportRows || importingBatch || !importRows.length} className="px-4 py-2 border rounded-lg font-bold disabled:opacity-40">
+                {checkingImportRows ? '校验中...' : '重新校验'}
+              </button>
+            </div>
+            <div className="rounded-lg border overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-surface-container-low">
+                  <tr>
+                    <th className="text-left p-2">文件名</th>
+                    <th className="text-left p-2">类型</th>
+                    <th className="text-left p-2">教材版本</th>
+                    <th className="text-left p-2">年级</th>
+                    <th className="text-left p-2">册数</th>
+                    <th className="text-right p-2">条数</th>
+                    <th className="text-left p-2">状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!importRows.length && (
+                    <tr>
+                      <td colSpan={7} className="p-4 text-center text-on-surface-variant">请选择要导入的 JSONL 文件</td>
+                    </tr>
+                  )}
+                  {importRows.map((row) => (
+                    <tr key={row.id} className="border-t">
+                      <td className="p-2">{row.fileName}</td>
+                      <td className="p-2">{row.parsedType === 'word' ? '单词表' : row.parsedType === 'phrase' ? '短语表' : row.parsedType === 'passage' ? '课文表' : '未知'}</td>
+                      <td className="p-2">
+                        <select value={row.bookVersion} disabled={importingBatch || row.status === 'success'} onChange={(e) => updateImportRow(row.id, { bookVersion: e.target.value })} className="w-full border rounded px-2 py-1 bg-white">
+                          <option value="">请选择教材</option>
+                          {bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}
+                        </select>
+                      </td>
+                      <td className="p-2">
+                        <select value={row.grade} disabled={importingBatch || row.status === 'success'} onChange={(e) => updateImportRow(row.id, { grade: e.target.value })} className="w-full border rounded px-2 py-1 bg-white">
+                          <option value="">请选择年级</option>
+                          {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                        </select>
+                      </td>
+                      <td className="p-2">
+                        <select value={normalizeSemester(row.semester)} disabled={importingBatch || row.status === 'success'} onChange={(e) => updateImportRow(row.id, { semester: normalizeSemester(e.target.value) })} className="w-full border rounded px-2 py-1 bg-white">
+                          <option value="">请选择册数</option>
+                          {semesters.map((s) => <option key={s} value={normalizeSemester(s)}>{normalizeSemester(s)}</option>)}
+                        </select>
+                      </td>
+                      <td className="p-2 text-right">{row.count}</td>
+                      <td className="p-2">
+                        <div className="font-semibold">{statusLabel[row.status]}</div>
+                        {row.note && <div className="text-xs text-on-surface-variant mt-0.5">{row.note}</div>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowImportModal(false)} className="px-4 py-2 border rounded-lg font-bold">取消</button>
+              <button onClick={runBatchImport} disabled={importingBatch || checkingImportRows || !importRows.length} className="px-4 py-2 bg-secondary text-on-secondary rounded-lg font-bold disabled:opacity-40">
+                {importingBatch ? '导入中...' : '确定导入'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
