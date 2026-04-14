@@ -76,7 +76,7 @@ export interface LearningSessionState {
   id?: number;
   userId: number;
   unitId: string;
-  module: 'vocab' | 'phrase';
+  module: 'vocab' | 'phrase' | 'reading';
   stateJson: string;
   updatedAt?: string;
 }
@@ -85,7 +85,7 @@ export interface LearningGroupProgress {
   id?: number;
   userId: number;
   unitId: string;
-  module: 'vocab' | 'phrase';
+  module: 'vocab' | 'phrase' | 'reading';
   groupNo: number;
   startedAt: string;
   completedAt?: string;
@@ -635,19 +635,20 @@ export const unitAssignmentApi = {
 };
 
 export const learningProgressApi = {
-  getSession: async (token: string, userId: number, unitId: string, module: 'vocab' | 'phrase'): Promise<LearningSessionState | null> => {
+  getSession: async (token: string, userId: number, unitId: string, module: 'vocab' | 'phrase' | 'reading'): Promise<LearningSessionState | null> => {
     const q = new URLSearchParams({ userId: String(userId), unitId, module });
     const response = await fetch(`${API_BASE_URL}/api/tests/learning/session?${q.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const payload = await response.json();
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : null;
     if (!response.ok) throw new Error(payload?.error || 'Failed to load learning session');
-    return payload;
+    return payload as LearningSessionState | null;
   },
 
   upsertSession: async (
     token: string,
-    body: { userId: number; unitId: string; module: 'vocab' | 'phrase'; stateJson: string }
+    body: { userId: number; unitId: string; module: 'vocab' | 'phrase' | 'reading'; stateJson: string }
   ): Promise<LearningSessionState> => {
     const response = await fetch(`${API_BASE_URL}/api/tests/learning/session`, {
       method: 'PUT',
@@ -666,7 +667,7 @@ export const learningProgressApi = {
     token: string,
     userId: number,
     unitId: string,
-    module: 'vocab' | 'phrase'
+    module: 'vocab' | 'phrase' | 'reading'
   ): Promise<LearningGroupProgress[]> => {
     const q = new URLSearchParams({ userId: String(userId), unitId, module });
     const response = await fetch(`${API_BASE_URL}/api/tests/learning/group-progress?${q.toString()}`, {
@@ -679,7 +680,7 @@ export const learningProgressApi = {
 
   startGroup: async (
     token: string,
-    body: { userId: number; unitId: string; module: 'vocab' | 'phrase'; groupNo: number; itemTotal: number }
+    body: { userId: number; unitId: string; module: 'vocab' | 'phrase' | 'reading'; groupNo: number; itemTotal: number }
   ): Promise<LearningGroupProgress> => {
     const response = await fetch(`${API_BASE_URL}/api/tests/learning/group-progress/start`, {
       method: 'POST',
@@ -696,7 +697,7 @@ export const learningProgressApi = {
 
   completeGroup: async (
     token: string,
-    body: { userId: number; unitId: string; module: 'vocab' | 'phrase'; groupNo: number; itemTotal: number; learnedCount: number }
+    body: { userId: number; unitId: string; module: 'vocab' | 'phrase' | 'reading'; groupNo: number; itemTotal: number; learnedCount: number }
   ): Promise<LearningGroupProgress> => {
     const response = await fetch(`${API_BASE_URL}/api/tests/learning/group-progress/complete`, {
       method: 'POST',

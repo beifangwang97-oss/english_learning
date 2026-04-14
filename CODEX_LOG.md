@@ -358,3 +358,56 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
 - 导入校验升级为“组合级”校验：
   - 除校验标签存在外，新增 `教材+年级+册数` 组合是否在教材管理中配置的校验。
   - 未配置组合直接拦截导入并提示先在教材管理中配置。
+
+---
+
+## 16. 2026-04-14 工作纪要（新增）
+
+### 16.1 课文数据与数据库兼容
+- 新增并落地课文主表/句子表能力：
+  - Passage
+  - PassageSentence
+  - PassageRepository
+  - PassageController
+- 修复 `newline_after` 列历史库兼容问题：新增启动自修复 `PassageSchemaMigrationRunner`。
+- 启动时自动执行：补列 -> 回填 0 -> 设默认值 -> 设 NOT NULL。
+
+### 16.2 管理员端课文管理
+- 新增管理员课文管理页面：`front/src/components/admin/PassageManagement.tsx`。
+- 支持课文 JSONL 批量导入、单册删除、可视化编辑。
+- 句子级字段支持展示与编辑（含段落与换行相关字段）。
+- 教材版本/年级/册次与课文数据范围关联完成。
+
+### 16.3 段落换行与句子交互
+- 后端导入时支持识别并写入：单换行、双换行（段落换行）。
+- 学生端渲染按 `newline_after` / `is_paragraph_end` 保持段落结构。
+
+### 16.4 学生端课文阅读体验优化
+- 阅读模块接入真实课文数据，按单元展示，仅显示当前单元课文。
+- 支持单句音频、整篇音频顺序播放、本篇学完打点。
+- 展示交互升级：
+  - 单句译文：点击句侧“译”，在点击位置下方悬浮卡片显示（不打断正文）。
+  - 整篇译文：左右对照双栏（左原文、右译文），段落结构一一对应。
+  - 对照模式下动态放宽阅读容器，减少两侧空白。
+
+### 16.5 稳定性与脚本排查
+- 排查并修复重启后短时 Internal Server Error 相关问题。
+- 对 `run_all.ps1` / `stop_all.bat` 做了联调与稳定性修正（端口/启动顺序/日志检查）。
+
+### 16.6 本次主要变更文件
+- 后端：
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/config/PassageSchemaMigrationRunner.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/controller/PassageController.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/model/Passage.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/model/PassageSentence.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/repository/PassageRepository.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/controller/LexiconController.java`
+- 前端：
+  - `front/src/components/admin/PassageManagement.tsx`
+  - `front/src/pages/AdminDashboard.tsx`
+  - `front/src/pages/StudentUnit.tsx`
+  - `front/src/lib/lexicon.ts`
+  - `front/src/lib/auth.ts`
+- 脚本：
+  - `run_all.ps1`
+  - `stop_all.bat`

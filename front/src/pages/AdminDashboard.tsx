@@ -5,9 +5,10 @@ import { UserAccountManagement } from '../components/admin/UserAccountManagement
 import { LexiconManagement } from '../components/admin/LexiconManagement';
 import { AdminConsole } from '../components/admin/AdminConsole';
 import { TextbookScopeManagement } from '../components/admin/TextbookScopeManagement';
-import { BookOpen, Database, LayoutDashboard, LogOut, MessageSquare, Type, Users } from 'lucide-react';
+import { PassageManagement } from '../components/admin/PassageManagement';
+import { BookOpen, Database, LayoutDashboard, LogOut, MessageSquare, ScrollText, Type, Users } from 'lucide-react';
 
-type Tab = 'dashboard' | 'users' | 'words' | 'phrases' | 'textbooks';
+type Tab = 'dashboard' | 'users' | 'words' | 'phrases' | 'passages' | 'textbooks';
 
 export const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -33,6 +34,8 @@ export const AdminDashboard: React.FC = () => {
         return <LexiconManagement key="lexicon-word" type="word" />;
       case 'phrases':
         return <LexiconManagement key="lexicon-phrase" type="phrase" />;
+      case 'passages':
+        return <PassageManagement />;
       case 'textbooks':
         return <TextbookScopeManagement />;
       default:
@@ -45,6 +48,7 @@ export const AdminDashboard: React.FC = () => {
     { key: 'users', label: '账号管理', icon: Users },
     { key: 'words', label: '单词词库', icon: Type },
     { key: 'phrases', label: '短语词库', icon: MessageSquare },
+    { key: 'passages', label: '课文管理', icon: ScrollText },
     { key: 'textbooks', label: '教材管理', icon: BookOpen },
   ];
 
@@ -88,7 +92,7 @@ export const AdminDashboard: React.FC = () => {
         <header className="h-20 bg-surface-container-lowest border-b border-outline-variant/30 flex items-center px-8 shrink-0">
           <div>
             <h1 className="text-2xl font-black text-on-surface">平台管理</h1>
-            <p className="text-sm text-on-surface-variant mt-1">账号、门店与词库统一管理</p>
+            <p className="text-sm text-on-surface-variant mt-1">账号、教材、词库与课文统一管理</p>
           </div>
         </header>
 

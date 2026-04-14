@@ -75,6 +75,34 @@ export type LearningEntry = {
   phrase_audio?: string;
 };
 
+export type PassageSentence = {
+  en: string;
+  zh: string;
+  audio: string;
+  paragraph_no?: number;
+  sentence_no_in_paragraph?: number;
+  newline_after?: number;
+  is_paragraph_end?: boolean;
+};
+
+export type PassageItem = {
+  id: string;
+  type: 'passage';
+  unit: string;
+  section: string;
+  label: string;
+  target_id: string;
+  title: string;
+  passage_text: string;
+  source_pages: number[];
+  book_version: string;
+  grade: string;
+  semester: string;
+  source_file?: string;
+  sentence_count: number;
+  sentences: PassageSentence[];
+};
+
 export const lexiconApi = {
   async getOptions(token: string, type: 'word' | 'phrase') {
     const response = await fetch(`${API_BASE_URL}/api/lexicon/options?type=${encodeURIComponent(type)}`, {
@@ -544,6 +572,109 @@ export const lexiconApi = {
       items: LearningEntry[];
       count: number;
     };
+  },
+
+  async getPassages(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/passages?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '加载课文失败');
+    }
+    return payload as { file: string; units: string[]; items: PassageItem[] };
+  },
+
+  async getPassagesCount(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/passages/count?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '加载课文数量失败');
+    }
+    return payload as { bookVersion: string; grade: string; semester: string; count: number };
+  },
+
+  async importPassageJsonl(
+    token: string,
+    params: { file: File; bookVersion: string; grade: string; semester: string; overwrite?: boolean }
+  ) {
+    const form = new FormData();
+    form.append('file', params.file);
+    form.append('bookVersion', params.bookVersion);
+    form.append('grade', params.grade);
+    form.append('semester', params.semester);
+    form.append('overwrite', String(params.overwrite ?? false));
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/passages/import`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '导入课文失败');
+    }
+    return payload as { message: string; count: number };
+  },
+
+  async updatePassage(token: string, passageUid: string, payload: PassageItem) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/passages/${encodeURIComponent(passageUid)}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '更新课文失败');
+    }
+    return data as { message: string; item: PassageItem };
+  },
+
+  async createPassage(token: string, payload: PassageItem) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/passages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '新增课文失败');
+    }
+    return data as { message: string; item: PassageItem };
+  },
+
+  async deletePassage(token: string, passageUid: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/passages/${encodeURIComponent(passageUid)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '删除课文失败');
+    }
+    return data as { message: string; passageUid: string };
+  },
+
+  async deletePassagesByScope(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/passages/scope?${query.toString()}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '删除本册课文失败');
+    }
+    return data as { message: string; count: number };
   },
 };
 

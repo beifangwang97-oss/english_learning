@@ -29,6 +29,25 @@ function Test-Listening {
     return $false
 }
 
+function Wait-Listening {
+    param(
+        [int]$Port,
+        [int]$TimeoutSeconds = 120,
+        [string]$Name = ''
+    )
+    $nameLabel = if ($Name) { "$Name($Port)" } else { "$Port" }
+    $start = Get-Date
+    while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSeconds) {
+        if (Test-Listening -Port $Port) {
+            Write-Host "  -> $nameLabel is LISTENING"
+            return $true
+        }
+        Start-Sleep -Milliseconds 800
+    }
+    Write-Host "  -> [TIMEOUT] $nameLabel not ready within ${TimeoutSeconds}s" -ForegroundColor Yellow
+    return $false
+}
+
 $mvn = Resolve-CmdPath -CommandName 'mvn.cmd' -FallbackPath 'D:\develop\apache-maven-3.9.9-bin\apache-maven-3.9.9\bin\mvn.cmd'
 if (-not $mvn) {
     Write-Host '[ERROR] Cannot find Maven (mvn.cmd).' -ForegroundColor Red
@@ -79,9 +98,21 @@ function Start-BackendService {
         -WindowStyle Hidden | Out-Null
 }
 
-foreach ($svc in @('config-server', 'user-service', 'learning-content-service', 'test-service', 'api-gateway')) {
-    Start-BackendService -Name $svc
-}
+Write-Host 'Starting backend services in dependency order...'
+Start-BackendService -Name 'config-server'
+Wait-Listening -Port 8888 -TimeoutSeconds 150 -Name 'config-server' | Out-Null
+
+Start-BackendService -Name 'user-service'
+Wait-Listening -Port 8081 -TimeoutSeconds 150 -Name 'user-service' | Out-Null
+
+Start-BackendService -Name 'learning-content-service'
+Wait-Listening -Port 8082 -TimeoutSeconds 150 -Name 'learning-content-service' | Out-Null
+
+Start-BackendService -Name 'test-service'
+Wait-Listening -Port 8083 -TimeoutSeconds 150 -Name 'test-service' | Out-Null
+
+Start-BackendService -Name 'api-gateway'
+Wait-Listening -Port 8080 -TimeoutSeconds 150 -Name 'api-gateway' | Out-Null
 
 Write-Host 'Starting frontend: front'
 Start-Process -FilePath $npm `
@@ -91,7 +122,7 @@ Start-Process -FilePath $npm `
     -RedirectStandardError (Join-Path $logRoot 'front.err.log') `
     -WindowStyle Hidden | Out-Null
 
-Start-Sleep -Seconds 35
+Wait-Listening -Port 3000 -TimeoutSeconds 90 -Name 'front' | Out-Null
 
 Write-Host ''
 Write-Host 'Port status:'

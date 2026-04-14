@@ -1,11 +1,11 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { MOCK_QUIZ, MOCK_READING } from '../data/mock';
+import { MOCK_QUIZ } from '../data/mock';
 import { useAuth } from '../context/AuthContext';
 import { useTimer } from '../context/TimerContext';
 import { cn } from '../lib/utils';
 import { learningProgressApi } from '../lib/auth';
-import { lexiconApi, LearningEntry, LearningGroupSummary } from '../lib/lexicon';
+import { lexiconApi, LearningEntry, LearningGroupSummary, PassageItem } from '../lib/lexicon';
 import { getSessionToken } from '../lib/session';
 import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileQuestion, HelpCircle, LayoutDashboard, Library, LogOut, MessageCircle, Mic2, NotebookPen, Volume2, XCircle } from 'lucide-react';
 
@@ -51,6 +51,10 @@ type UnitMeta = {
   grade: string;
   semester: string;
   unit: string;
+};
+
+type ReadingSessionState = {
+  passageNo: number;
 };
 
 const defaultEngine = (): EngineState => ({
@@ -183,11 +187,22 @@ export const StudentUnit: React.FC = () => {
   const [phraseGroupItems, setPhraseGroupItems] = useState<Record<number, LearnItem[]>>({});
   const [vocabLoadingGroups, setVocabLoadingGroups] = useState<Record<number, boolean>>({});
   const [phraseLoadingGroups, setPhraseLoadingGroups] = useState<Record<number, boolean>>({});
+  const [readingItems, setReadingItems] = useState<PassageItem[]>([]);
+  const [readingIndex, setReadingIndex] = useState(0);
+  const [readingProgress, setReadingProgress] = useState<Record<number, GroupProgressView>>({});
+  const [readingSessionLoaded, setReadingSessionLoaded] = useState(false);
+  const [showFullTranslation, setShowFullTranslation] = useState(false);
+  const [sentencePopover, setSentencePopover] = useState<{ idx: number; left: number; top: number } | null>(null);
+  const [playingSentenceNo, setPlayingSentenceNo] = useState<number | null>(null);
+  const [playingFullPassage, setPlayingFullPassage] = useState(false);
 
   const recognizeClearTimerRef = useRef<number | null>(null);
   const vocabSessionSaveRef = useRef<number | null>(null);
   const phraseSessionSaveRef = useRef<number | null>(null);
+  const readingSessionSaveRef = useRef<number | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const stopReadingAudioRef = useRef<(() => void) | null>(null);
+  const readingTextWrapRef = useRef<HTMLDivElement | null>(null);
   const fillInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const correctTimerRef = useRef<number | null>(null);
 
@@ -212,6 +227,11 @@ export const StudentUnit: React.FC = () => {
     () => (currentModuleItem ? buildBlankIndexes(currentModuleItem.en) : []),
     [currentModuleItem?.id]
   );
+  const readingPassages = useMemo(
+    () => readingItems.filter((x) => normalizeText(x.unit || '') === normalizeText(unitMeta?.unit || '')),
+    [readingItems, unitMeta?.unit]
+  );
+  const currentPassage = readingPassages[readingIndex] || null;
 
   const ensureGroupItemsLoaded = async (module: LearnModule, groupNo: number): Promise<LearnItem[]> => {
     if (!token || !unitMeta) return [];
@@ -276,7 +296,7 @@ export const StudentUnit: React.FC = () => {
       try {
         const uid = Number(user.id);
 
-        const [wordSummary, phraseSummary, vSession, pSession, vGp, pGp] = await Promise.all([
+        const [wordSummary, phraseSummary, passagesPayload, vSession, pSession, rSession, vGp, pGp, rGp] = await Promise.all([
           lexiconApi.getLearningSummary(token, {
             type: 'word',
             bookVersion: unitMeta.bookVersion,
@@ -291,10 +311,13 @@ export const StudentUnit: React.FC = () => {
             semester: unitMeta.semester,
             unit: unitMeta.unit,
           }),
+          lexiconApi.getPassages(token, unitMeta.bookVersion, unitMeta.grade, unitMeta.semester),
           learningProgressApi.getSession(token, uid, unitId, 'vocab'),
           learningProgressApi.getSession(token, uid, unitId, 'phrase'),
+          learningProgressApi.getSession(token, uid, unitId, 'reading'),
           learningProgressApi.getGroupProgress(token, uid, unitId, 'vocab'),
           learningProgressApi.getGroupProgress(token, uid, unitId, 'phrase'),
+          learningProgressApi.getGroupProgress(token, uid, unitId, 'reading'),
         ]);
 
         setVocabGroupSummary(wordSummary.groups || []);
@@ -307,9 +330,22 @@ export const StudentUnit: React.FC = () => {
         const pMap: Record<number, GroupProgressView> = {};
         pGp.forEach((x) => { pMap[x.groupNo] = x; });
         setPhraseProgress(pMap);
+        const rMap: Record<number, GroupProgressView> = {};
+        rGp.forEach((x) => { rMap[x.groupNo] = x; });
+        setReadingProgress(rMap);
+
+        const allPassages = passagesPayload.items || [];
+        const unitPassages = allPassages.filter((x) => normalizeText(x.unit || '') === normalizeText(unitMeta.unit));
+        setReadingItems(allPassages);
 
         const vSaved = safeParseSession(vSession?.stateJson);
         const pSaved = safeParseSession(pSession?.stateJson);
+        let readingSaved: ReadingSessionState | null = null;
+        try {
+          if (rSession?.stateJson) readingSaved = JSON.parse(rSession.stateJson) as ReadingSessionState;
+        } catch {
+          readingSaved = null;
+        }
 
         const wordGroupNos = (wordSummary.groups || []).map((x) => Number(x.groupNo)).filter((x) => x > 0);
         const phraseGroupNos = (phraseSummary.groups || []).map((x) => Number(x.groupNo)).filter((x) => x > 0);
@@ -346,6 +382,10 @@ export const StudentUnit: React.FC = () => {
           index: pIndex,
           stepDone: (pSaved?.stepDone as Record<number, boolean>) || {},
         }));
+        const savedPassageNo = Number(readingSaved?.passageNo || 1);
+        const nextReadingIndex = Math.min(Math.max(0, savedPassageNo - 1), Math.max(0, unitPassages.length - 1));
+        setReadingIndex(nextReadingIndex);
+        setReadingSessionLoaded(true);
       } catch (e: any) {
         setPageError(e?.message || '词库加载失败');
       } finally {
@@ -415,6 +455,41 @@ export const StudentUnit: React.FC = () => {
   useEffect(() => {
     if (!loadingProgress) scheduleSaveSession('phrase', phraseEngine);
   }, [phraseEngine.groupNo, phraseEngine.step, phraseEngine.queue, phraseEngine.index, loadingProgress]);
+
+  useEffect(() => {
+    if (!token || !user?.id || !unitId || !readingSessionLoaded) return;
+    if (readingSessionSaveRef.current) window.clearTimeout(readingSessionSaveRef.current);
+    readingSessionSaveRef.current = window.setTimeout(() => {
+      learningProgressApi.upsertSession(token, {
+        userId: Number(user.id),
+        unitId,
+        module: 'reading',
+        stateJson: JSON.stringify({ passageNo: readingIndex + 1 }),
+      }).catch(() => {});
+    }, 400);
+  }, [token, user?.id, unitId, readingIndex, readingSessionLoaded]);
+
+  useEffect(() => {
+    setSentencePopover(null);
+    setShowFullTranslation(false);
+    stopReadingPlayback();
+    if (!token || !user?.id || !unitId || !currentPassage) return;
+    const groupNo = readingIndex + 1;
+    if (readingProgress[groupNo]?.startedAt) return;
+    learningProgressApi.startGroup(token, {
+      userId: Number(user.id),
+      unitId,
+      module: 'reading',
+      groupNo,
+      itemTotal: currentPassage.sentences?.length || 0,
+    }).then((saved) => {
+      setReadingProgress((prev) => ({ ...prev, [groupNo]: saved }));
+    }).catch(() => {});
+  }, [currentPassage?.id, readingIndex, token, user?.id, unitId]);
+
+  useEffect(() => {
+    if (showFullTranslation) setSentencePopover(null);
+  }, [showFullTranslation]);
 
   const getOptions = (module: LearnModule, item: LearnItem) => {
     const pool = module === 'vocab' ? (vocabGroupItems[vocabEngine.groupNo] || []) : (phraseGroupItems[phraseEngine.groupNo] || []);
@@ -533,6 +608,142 @@ export const StudentUnit: React.FC = () => {
       currentAudioRef.current = null;
     } catch {
       // ignore audio error
+    }
+  };
+
+  const playAudioAwaitEnd = async (path: string): Promise<void> => {
+    if (!token || !path) return;
+    const response = await fetch(lexiconApi.audioUrl(path), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error('audio load failed');
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+
+    await new Promise<void>((resolve, reject) => {
+      const audio = new Audio(objectUrl);
+      currentAudioRef.current = audio;
+      const cleanup = () => {
+        URL.revokeObjectURL(objectUrl);
+        if (currentAudioRef.current === audio) currentAudioRef.current = null;
+      };
+      audio.addEventListener('ended', () => {
+        cleanup();
+        resolve();
+      }, { once: true });
+      audio.addEventListener('error', () => {
+        cleanup();
+        reject(new Error('audio playback error'));
+      }, { once: true });
+      audio.play().catch((e) => {
+        cleanup();
+        reject(e);
+      });
+    });
+  };
+
+  const stopReadingPlayback = () => {
+    if (stopReadingAudioRef.current) {
+      stopReadingAudioRef.current();
+      stopReadingAudioRef.current = null;
+    }
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      currentAudioRef.current = null;
+    }
+    setPlayingSentenceNo(null);
+    setPlayingFullPassage(false);
+  };
+
+  const playSentenceAudio = async (audioPath?: string, sentenceNo?: number) => {
+    if (!audioPath) return;
+    stopReadingPlayback();
+    setPlayingSentenceNo(sentenceNo ?? null);
+    try {
+      await playAudioAwaitEnd(audioPath);
+    } catch {
+      // ignore sentence audio error
+    } finally {
+      setPlayingSentenceNo(null);
+    }
+  };
+
+  const toggleSentencePopover = (e: React.MouseEvent<HTMLButtonElement>, idx: number) => {
+    if (showFullTranslation) return;
+    if (sentencePopover?.idx === idx) {
+      setSentencePopover(null);
+      return;
+    }
+
+    const wrap = readingTextWrapRef.current;
+    if (!wrap) {
+      setSentencePopover({ idx, left: 160, top: 40 });
+      return;
+    }
+
+    const wrapRect = wrap.getBoundingClientRect();
+    const btnRect = e.currentTarget.getBoundingClientRect();
+    const cardWidth = 320;
+    const edge = 12;
+    const half = cardWidth / 2;
+    let left = btnRect.left - wrapRect.left + (btnRect.width / 2);
+    left = Math.max(edge + half, Math.min(wrap.clientWidth - edge - half, left));
+    const top = Math.max(8, btnRect.bottom - wrapRect.top + 8);
+    setSentencePopover({ idx, left, top });
+  };
+
+  const playFullPassageAudio = async () => {
+    if (!currentPassage) return;
+    const queue = (currentPassage.sentences || []).filter((x) => Boolean(x.audio));
+    if (!queue.length) return;
+
+    stopReadingPlayback();
+    let cancelled = false;
+    stopReadingAudioRef.current = () => { cancelled = true; };
+    setPlayingFullPassage(true);
+
+    try {
+      for (let i = 0; i < queue.length; i += 1) {
+        if (cancelled) break;
+        setPlayingSentenceNo(i);
+        await playAudioAwaitEnd(queue[i].audio);
+      }
+    } catch {
+      // ignore full passage audio error
+    } finally {
+      setPlayingSentenceNo(null);
+      setPlayingFullPassage(false);
+      stopReadingAudioRef.current = null;
+    }
+  };
+
+  const markCurrentPassageDone = async () => {
+    if (!token || !user?.id || !unitId || !currentPassage) return;
+    const groupNo = readingIndex + 1;
+    try {
+      const started = await learningProgressApi.startGroup(token, {
+        userId: Number(user.id),
+        unitId,
+        module: 'reading',
+        groupNo,
+        itemTotal: currentPassage.sentences?.length || 0,
+      });
+      const done = await learningProgressApi.completeGroup(token, {
+        userId: Number(user.id),
+        unitId,
+        module: 'reading',
+        groupNo,
+        itemTotal: currentPassage.sentences?.length || 0,
+        learnedCount: currentPassage.sentences?.length || 0,
+      });
+      setReadingProgress((prev) => ({
+        ...prev,
+        [groupNo]: done || started,
+      }));
+    } catch {
+      // ignore mark done error
     }
   };
 
@@ -906,10 +1117,184 @@ export const StudentUnit: React.FC = () => {
       </div>
     );
   };
+
+  const renderReadingModule = () => {
+    if (loadingProgress) return <div className="text-sm text-on-surface-variant">正在加载课文...</div>;
+    if (!readingPassages.length) {
+      return <div className="text-sm text-on-surface-variant">本单元暂未配置课文内容</div>;
+    }
+    if (!currentPassage) return null;
+
+    const done = Boolean(readingProgress[readingIndex + 1]?.completedAt);
+
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap gap-2">
+          {readingPassages.map((item, idx) => {
+            const itemDone = Boolean(readingProgress[idx + 1]?.completedAt);
+            return (
+              <button
+                key={item.id}
+                onClick={() => setReadingIndex(idx)}
+                className={cn(
+                  'px-3 py-1 rounded-full text-sm font-bold border',
+                  idx === readingIndex ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant/40'
+                )}
+              >
+                {item.section}{item.label} {itemDone ? '· 已学完' : ''}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="rounded-2xl bg-gradient-to-br from-emerald-50 via-white to-cyan-50 border border-emerald-200/60 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold text-emerald-700">
+                {currentPassage.unit} · Section {currentPassage.section} · {currentPassage.label}
+              </p>
+              {currentPassage.title && <h3 className="text-2xl font-black mt-1">{currentPassage.title}</h3>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setShowFullTranslation((prev) => !prev)}
+                className="px-3 py-2 rounded-lg border border-emerald-300 bg-white text-emerald-800 text-sm font-bold"
+              >
+                {showFullTranslation ? '收起整篇译文' : '显示整篇译文'}
+              </button>
+              <button
+                onClick={() => (playingFullPassage ? stopReadingPlayback() : playFullPassageAudio())}
+                className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-bold inline-flex items-center gap-1"
+              >
+                <Volume2 className="w-4 h-4" />
+                {playingFullPassage ? '停止整篇播放' : '播放整篇音频'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div
+          ref={readingTextWrapRef}
+          className={cn(
+            'relative rounded-2xl border border-amber-200/70 bg-gradient-to-b from-amber-50/50 to-white p-6 md:p-8 shadow-sm',
+            showFullTranslation && 'md:-mx-10 xl:-mx-20 2xl:-mx-28'
+          )}
+        >
+          <div className={cn('items-start', showFullTranslation ? 'grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8' : 'block')}>
+            <section className={cn('min-w-0', showFullTranslation && 'rounded-xl border border-amber-200/70 bg-white/70 p-4 md:p-5')}>
+              <p className="mb-3 text-xs font-bold uppercase tracking-[0.15em] text-amber-700">English</p>
+              <article className="text-[19px] leading-[2.1] text-slate-900 font-serif tracking-[0.01em]">
+                {currentPassage.sentences.map((sentence, idx) => (
+                  <span key={`${currentPassage.id}-en-${idx}`} className="inline">
+                    {sentence.en}
+                    <button
+                      onClick={() => playSentenceAudio(sentence.audio, idx)}
+                      disabled={!sentence.audio}
+                      className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-amber-300 text-amber-700 align-middle opacity-80 hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="播放本句"
+                    >
+                      <Volume2 className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => toggleSentencePopover(e, idx)}
+                      className={cn(
+                        'ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-black align-middle',
+                        sentencePopover?.idx === idx ? 'bg-amber-300 text-amber-900' : 'bg-amber-100 text-amber-800'
+                      )}
+                      title="显示本句译文"
+                    >
+                      译
+                    </button>{' '}
+                    {(Number(sentence.newline_after ?? (sentence.is_paragraph_end ? 2 : 0)) >= 1) && (
+                      <>
+                        <br />
+                        {(Number(sentence.newline_after ?? (sentence.is_paragraph_end ? 2 : 0)) >= 2) && <br />}
+                      </>
+                    )}
+                  </span>
+                ))}
+              </article>
+            </section>
+
+            {showFullTranslation && (
+              <section className="min-w-0 rounded-xl border border-slate-200 bg-white/80 p-4 md:p-5">
+                <p className="mb-3 text-xs font-bold uppercase tracking-[0.15em] text-slate-500">中文译文</p>
+                <article className="text-[19px] leading-[2.1] text-slate-700 tracking-[0.01em]">
+                  {currentPassage.sentences.map((sentence, idx) => (
+                    <span key={`${currentPassage.id}-zh-${idx}`} className="inline">
+                      {sentence.zh}
+                      {(Number(sentence.newline_after ?? (sentence.is_paragraph_end ? 2 : 0)) >= 1) && (
+                        <>
+                          <br />
+                          {(Number(sentence.newline_after ?? (sentence.is_paragraph_end ? 2 : 0)) >= 2) && <br />}
+                        </>
+                      )}
+                    </span>
+                  ))}
+                </article>
+              </section>
+            )}
+          </div>
+
+          {!showFullTranslation && sentencePopover && currentPassage.sentences[sentencePopover.idx] && (
+            <div
+              className="absolute z-20 w-[320px] max-w-[calc(100%-24px)] rounded-xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur-sm"
+              style={{ left: sentencePopover.left, top: sentencePopover.top, transform: 'translate(-50%, 0)' }}
+            >
+              <p className="text-xs font-bold text-slate-500 mb-1">当前句译文</p>
+              <p className="text-sm leading-6 text-slate-700">
+                {currentPassage.sentences[sentencePopover.idx].zh}
+              </p>
+            </div>
+          )}
+
+          {playingSentenceNo !== null && (
+            <div className="mt-4 text-xs text-emerald-700 font-bold">
+              正在播放第 {playingSentenceNo + 1} 句
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap justify-between items-center gap-3 pt-2">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setReadingIndex((prev) => Math.max(0, prev - 1))}
+              disabled={readingIndex <= 0}
+              className="px-4 py-2 rounded-lg border border-outline-variant/40 font-bold inline-flex items-center gap-1 disabled:opacity-40"
+            >
+              <ChevronLeft className="w-4 h-4" /> 上一篇
+            </button>
+            <button
+              onClick={() => setReadingIndex((prev) => Math.min(readingPassages.length - 1, prev + 1))}
+              disabled={readingIndex >= readingPassages.length - 1}
+              className="px-4 py-2 rounded-lg border border-outline-variant/40 font-bold inline-flex items-center gap-1 disabled:opacity-40"
+            >
+              下一篇 <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+          <button
+            onClick={markCurrentPassageDone}
+            className={cn(
+              'px-4 py-2 rounded-lg font-bold',
+              done ? 'bg-emerald-100 text-emerald-700 border border-emerald-300' : 'bg-primary text-white'
+            )}
+          >
+            {done ? '本篇已学完' : '点击本篇已学完'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
+
+  useEffect(() => () => {
+    stopReadingPlayback();
+    if (readingSessionSaveRef.current) window.clearTimeout(readingSessionSaveRef.current);
+  }, []);
 
   return (
     <div className="flex w-full">
@@ -937,7 +1322,7 @@ export const StudentUnit: React.FC = () => {
       </aside>
 
       <main className="md:ml-64 flex-1 p-8 bg-background relative min-h-screen">
-        <div className="max-w-5xl mx-auto">
+        <div className={cn('mx-auto', currentModule === 'reading' && showFullTranslation ? 'max-w-[1700px]' : 'max-w-5xl')}>
           <div className="flex justify-between items-end mb-8">
             <div>
               <div className="flex items-center gap-2 text-sm font-bold text-emerald-700 mb-3 cursor-pointer" onClick={() => navigate('/student/dashboard')}><ArrowRight className="w-4 h-4 rotate-180" />返回控制面板</div>
@@ -952,12 +1337,7 @@ export const StudentUnit: React.FC = () => {
           <div className="bg-surface-container-lowest rounded-xl p-8 shadow-sm border-b-4 border-surface-container min-h-[420px]">
             {currentModule === 'vocab' && renderLearnModule('vocab')}
             {currentModule === 'phrase' && renderLearnModule('phrase')}
-            {currentModule === 'reading' && (
-              <div>
-                <h3 className="text-2xl font-black mb-3">{MOCK_READING.title}</h3>
-                <p className="text-lg leading-relaxed">{MOCK_READING.content}</p>
-              </div>
-            )}
+            {currentModule === 'reading' && renderReadingModule()}
             {currentModule === 'quiz' && (
               <div className="space-y-4">
                 {MOCK_QUIZ.map((q) => <div key={q.id} className="bg-surface-container-low p-4 rounded-lg"><p className="font-bold">{q.question}</p></div>)}
@@ -986,3 +1366,8 @@ export const StudentUnit: React.FC = () => {
     </div>
   );
 };
+
+
+
+
+

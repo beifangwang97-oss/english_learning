@@ -15,6 +15,7 @@ import com.kineticscholar.userservice.repository.StoreRepository;
 import com.kineticscholar.userservice.repository.TextbookScopeTagRepository;
 import com.kineticscholar.userservice.repository.TextbookVersionTagRepository;
 import com.kineticscholar.userservice.repository.UserRepository;
+import com.kineticscholar.userservice.repository.PassageRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -64,6 +65,8 @@ public class LexiconController {
     private UserRepository userRepository;
     @Autowired
     private StoreRepository storeRepository;
+    @Autowired
+    private PassageRepository passageRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -370,6 +373,16 @@ public class LexiconController {
             }
             if (storeUpdated > 0) storeRepository.saveAll(stores);
 
+            long passageUpdated = 0;
+            var passages = passageRepository.findAll();
+            for (var passage : passages) {
+                if (oldName.equals(safeStr(passage.getBookVersion()))) {
+                    passage.setBookVersion(newName);
+                    passageUpdated += 1;
+                }
+            }
+            if (passageUpdated > 0) passageRepository.saveAll(passages);
+
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("message", "renamed");
             data.put("oldName", oldName);
@@ -377,6 +390,7 @@ public class LexiconController {
             data.put("updatedEntries", entryUpdated);
             data.put("updatedUsers", userUpdated);
             data.put("updatedStores", storeUpdated);
+            data.put("updatedPassages", passageUpdated);
             return new ResponseEntity<>(data, HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
@@ -535,6 +549,7 @@ public class LexiconController {
             textbookVersionTagRepository.findAll().forEach(t -> textbookCandidates.add(safeStr(t.getName())));
             userRepository.findAll().forEach(u -> textbookCandidates.add(safeStr(u.getTextbookVersion())));
             entryRepository.findAll().forEach(e -> textbookCandidates.add(safeStr(e.getBookVersion())));
+            passageRepository.findAll().forEach(p -> textbookCandidates.add(safeStr(p.getBookVersion())));
             textbookCandidates.add("人教版");
 
             Set<String> normalizedTextbooks = new LinkedHashSet<>();
@@ -915,8 +930,8 @@ public class LexiconController {
                 return new ResponseEntity<>(Map.of("error", "path is required"), HttpStatus.BAD_REQUEST);
             }
             String filename = Paths.get(audioPath.replace("\\", "/")).getFileName().toString();
-            Path audioFile = audioDir().resolve(filename).normalize();
-            if (!audioFile.startsWith(audioDir()) || !Files.exists(audioFile)) {
+            Path audioFile = resolveAudioFile(filename);
+            if (audioFile == null) {
                 return new ResponseEntity<>(Map.of("error", "Audio not found"), HttpStatus.NOT_FOUND);
             }
             Resource resource = new FileSystemResource(audioFile);
@@ -927,6 +942,18 @@ public class LexiconController {
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
+    }
+
+    private Path resolveAudioFile(String filename) {
+        if (safeStr(filename).isBlank()) return null;
+        List<Path> roots = List.of(wordAudioDir(), passageAudioDir());
+        for (Path root : roots) {
+            Path candidate = root.resolve(filename).normalize();
+            if (candidate.startsWith(root) && Files.exists(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private ParseResult parseJsonl(MultipartFile file, String forcedType, boolean proofread) throws IOException {
@@ -1258,6 +1285,11 @@ public class LexiconController {
                 .filter(e -> g.isBlank() || g.equals(safeStr(e.getGrade())))
                 .filter(e -> s.isBlank() || s.equals(normalizeSemesterTag(e.getSemester())))
                 .toList();
+        long passageCount = passageRepository.findAll().stream()
+                .filter(p -> bv.isBlank() || bv.equals(safeStr(p.getBookVersion())))
+                .filter(p -> g.isBlank() || g.equals(safeStr(p.getGrade())))
+                .filter(p -> s.isBlank() || s.equals(normalizeSemesterTag(p.getSemester())))
+                .count();
 
         // Users/stores are scoped by textbook+grade only. When deleting a specific semester tag,
         // do not block by user/store mappings, otherwise it causes false positives.
@@ -1299,7 +1331,7 @@ public class LexiconController {
 
         long wordCount = lexiconMatches.stream().filter(e -> WORD.equals(safeStr(e.getType()))).count();
         long phraseCount = lexiconMatches.stream().filter(e -> PHRASE.equals(safeStr(e.getType()))).count();
-        boolean blocked = !lexiconMatches.isEmpty() || !userMatches.isEmpty() || !storeMatches.isEmpty();
+        boolean blocked = !lexiconMatches.isEmpty() || passageCount > 0 || !userMatches.isEmpty() || !storeMatches.isEmpty();
 
         Map<String, Object> usage = new LinkedHashMap<>();
         usage.put("bookVersion", bv);
@@ -1307,6 +1339,7 @@ public class LexiconController {
         usage.put("semester", s);
         usage.put("wordLexiconCount", wordCount);
         usage.put("phraseLexiconCount", phraseCount);
+        usage.put("passageCount", passageCount);
         usage.put("userCount", users.size());
         usage.put("users", users);
         usage.put("storeCount", stores.size());
@@ -1340,7 +1373,7 @@ public class LexiconController {
         }
     }
 
-    private Path audioDir() {
+    private Path wordAudioDir() {
         return Paths.get(System.getProperty("user.dir"))
                 .toAbsolutePath()
                 .normalize()
@@ -1348,6 +1381,17 @@ public class LexiconController {
                 .resolve("..")
                 .resolve("tool")
                 .resolve("audio")
+                .normalize();
+    }
+
+    private Path passageAudioDir() {
+        return Paths.get(System.getProperty("user.dir"))
+                .toAbsolutePath()
+                .normalize()
+                .resolve("..")
+                .resolve("..")
+                .resolve("tool")
+                .resolve("passage_audio")
                 .normalize();
     }
 
