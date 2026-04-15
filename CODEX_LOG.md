@@ -411,3 +411,107 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
 - 脚本：
   - `run_all.ps1`
   - `stop_all.bat`
+
+---
+
+## 17. 2026-04-15 管理员端单元管理（新增）
+
+### 17.1 单元目录唯一数据源
+- 新增教材单元目录表对应实体：`TextbookUnit`
+- 唯一键口径：`book_version + grade + semester + unit_code`
+- 字段覆盖：
+  - `unit_code`
+  - `unit_title`
+  - `unit_desc_short`
+  - `sort_order`
+  - `source_file`
+  - `source_pages`
+  - `active`
+- 单元目录作为后续“单元”的唯一数据源，教师/学生侧树查询改由该表提供。
+
+### 17.2 后端接口与规则
+- 在 `LexiconController` 中新增单元管理接口：
+  - `GET /api/lexicon/units`
+  - `GET /api/lexicon/units/count`
+  - `GET /api/lexicon/units/delete-preview`
+  - `POST /api/lexicon/units`
+  - `PUT /api/lexicon/units/{id}`
+  - `DELETE /api/lexicon/units/{id}`
+  - `DELETE /api/lexicon/units`
+  - `POST /api/lexicon/units/import`
+- `task-tree` 查询已切换为从 `textbook_units` 表读取单元树，不再从词库反推单元。
+- 单元导入规则：
+  - 仅接受模式四生成的单元 JSONL
+  - 首行必须为 `record_type=meta`
+  - `book_version/grade/semester` 必须与当前导入范围一致
+  - 批量记录仅接收 `record_type=unit`
+  - 同一文件内禁止重复单元
+  - 当前前端导入采用“整册覆盖导入”
+
+### 17.3 管理员端页面
+- 新增页面：`front/src/components/admin/UnitManagement.tsx`
+- 已接入管理员侧栏入口：`单元管理`
+- 页面能力：
+  - 按教材版本/年级/册次筛选
+  - 单元列表查看
+  - 单条新增、编辑、删除
+  - JSONL 批量导入
+  - 整册删除
+- 交互风格与教材管理/课文管理保持一致，继续使用严格教材范围联动。
+
+### 17.4 占用阻断与当前边界
+- 删除单元、整册删除单元时，已阻断以下占用：
+  - 单词词库
+  - 短语词库
+  - 课文
+- 当前仍未接入 `test-service` 的单元任务占用联查，因此：
+  - 单元任务占用明细尚未纳入删除阻断
+  - 文案已在接口返回中明确标注为后续补充项
+- 为避免误伤历史数据，当前若单元编号已被词库/课文引用，则后端禁止直接修改 `unit_code`。
+
+### 17.5 本轮主要变更文件
+- 后端：
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/model/TextbookUnit.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/repository/TextbookUnitRepository.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/controller/LexiconController.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/repository/LexiconEntryRepository.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/repository/PassageRepository.java`
+- 前端：
+  - `front/src/components/admin/UnitManagement.tsx`
+  - `front/src/lib/lexicon.ts`
+  - `front/src/pages/AdminDashboard.tsx`
+
+### 17.6 学生端单元卡片改造
+- 学生端单元列表页已切换为通过单元管理表读取卡片内容，不再仅依赖 `task-tree` 的 unit 名称拼装展示。
+- 卡片左上角标签由“第 N 单元”改为直接显示数据库中的 `unit`，例如 `Unit 1`。
+- `教材版本 + 年级 + 册数` 现在仅显示一行，且来源于单元管理表对应 scope。
+- 卡片标题改为显示 `unit_title`。
+- 卡片简介改为显示 `unit_desc_short`。
+- 相关文件：
+  - `front/src/pages/StudentDashboard.tsx`
+
+### 17.7 学生端当前进度口径
+- 先前学生端首页单元卡片中的 `progress` 为固定值 `0`，未接真实学习记录。
+- 本轮已接入真实进度计算，当前口径为：
+  - 单词进度：基于 `learning summary(word)` 与 `learning_group_progress(module=vocab)`
+  - 短语进度：基于 `learning summary(phrase)` 与 `learning_group_progress(module=phrase)`
+  - 课文进度：基于当前单元课文篇数与 `learning_group_progress(module=reading)`
+- 卡片最终百分比口径：
+  - `(单词已学 + 短语已学 + 课文已学) / (单词总数 + 短语总数 + 课文总数)`
+- 当前进度仍基于 `unitId = bookVersion||grade||semester||unit` 这套主键口径。
+
+### 17.8 停启脚本修正
+- `run_all.ps1`
+  - 启动前会先检查并清理受管端口：`8888/8080/8081/8082/8083/3000`
+  - 各服务启动前会重置对应日志文件，避免旧日志干扰排查
+  - 等待端口时增加“进程提前退出”检测，失败时会尽早返回并输出日志尾部，而不是长时间超时等待
+  - 前端启动参数改为直接使用 `npm run dev`，避免重复传入 `--host/--port`
+- `stop_all.bat`
+  - 由 `taskkill /PID /F` 改为 `taskkill /PID /T /F`
+  - 停服时会一起杀掉进程树，降低残留父子进程导致的假释放/假占用问题
+
+### 17.9 本轮验证
+- 前端：
+  - `cmd /c npm run build` 通过
+- 后端：
+  - `mvn -q -DskipTests compile`（`backend/user-service`）通过

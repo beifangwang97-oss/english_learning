@@ -39,6 +39,13 @@ public interface LexiconEntryRepository extends JpaRepository<LexiconEntry, Long
             Integer groupNo
     );
 
+    long countByBookVersionAndGradeAndSemesterAndUnit(
+            String bookVersion,
+            String grade,
+            String semester,
+            String unit
+    );
+
     @Query("""
             select e.groupNo, count(e.id)
             from LexiconEntry e

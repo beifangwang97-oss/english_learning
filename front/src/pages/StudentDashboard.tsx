@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTimer } from '../context/TimerContext';
 import { useAuth } from '../context/AuthContext';
-import { adminStoreApi, authApi, unitAssignmentApi } from '../lib/auth';
+import { adminStoreApi, authApi, learningProgressApi, unitAssignmentApi } from '../lib/auth';
 import { getSessionToken } from '../lib/session';
-import { lexiconApi } from '../lib/lexicon';
+import { lexiconApi, TextbookUnitItem } from '../lib/lexicon';
 import { BookOpen, Play, Lock, CheckCircle2, Hourglass, Flame, Award, LayoutDashboard, Library, NotebookPen, ArrowRight, MessageCircle, FileQuestion, LogOut, Mic2, ClipboardList } from 'lucide-react';
 import { PhoneticsView } from '../components/student/PhoneticsView';
 import { WordTestView } from '../components/student/WordTestView';
@@ -12,12 +12,19 @@ import { WordReviewView } from '../components/student/WordReviewView';
 
 type StudentUnitCard = {
   id: string;
-  title: string;
-  subtitle: string;
+  unitCode: string;
+  scopeLabel: string;
   desc: string;
+  title: string;
   progress: number;
   locked: boolean;
   isSpecial: boolean;
+};
+
+type UnitScope = {
+  bookVersion: string;
+  grade: string;
+  semester: string;
 };
 
 function normalizeLegacyTextbookPermission(permission: string, mergedTextbooks: string[]) {
@@ -112,7 +119,7 @@ export const StudentDashboard: React.FC = () => {
           (assignments || []).map((a) => `${a.textbookVersion}||${a.grade}||${a.semester}||${a.unitName}`)
         );
 
-        const cards: StudentUnitCard[] = [];
+        const unitScopes: UnitScope[] = [];
         rawTree.forEach((book) => {
           if (book.bookVersion !== studentTextbook) return;
           if (hasStorePermission && !allowedTextbooksRaw.includes(book.bookVersion)) return;
@@ -120,21 +127,96 @@ export const StudentDashboard: React.FC = () => {
             if (gradeNode.grade !== studentGrade) return;
             if (hasStorePermission && !allowedGrades.includes(gradeNode.grade)) return;
             (gradeNode.semesters || []).forEach((semesterNode) => {
-              (semesterNode.units || []).forEach((unitName, idx) => {
-                const key = `${book.bookVersion}||${gradeNode.grade}||${semesterNode.semester}||${unitName}`;
-                cards.push({
-                  id: key,
-                  title: unitName,
-                  subtitle: `${semesterNode.semester} · ${gradeNode.grade}`,
-                  desc: `${book.bookVersion}｜${gradeNode.grade}｜${semesterNode.semester}`,
-                  progress: 0,
-                  locked: !unlockedSet.has(key),
-                  isSpecial: false,
-                });
+              unitScopes.push({
+                bookVersion: book.bookVersion,
+                grade: gradeNode.grade,
+                semester: semesterNode.semester,
               });
             });
           });
         });
+
+        const uniqueScopes = Array.from(
+          new Map(unitScopes.map((scope) => [`${scope.bookVersion}||${scope.grade}||${scope.semester}`, scope])).values()
+        );
+
+        const scopeUnitsList = await Promise.all(
+          uniqueScopes.map(async (scope) => {
+            const unitPayload = await lexiconApi.getUnits(token, scope.bookVersion, scope.grade, scope.semester);
+            return {
+              scope,
+              items: (unitPayload.items || []).slice().sort((a, b) => {
+                const byOrder = (a.sort_order || 0) - (b.sort_order || 0);
+                if (byOrder !== 0) return byOrder;
+                return a.unit.localeCompare(b.unit, 'zh-CN');
+              }),
+            };
+          })
+        );
+
+        const unlockedUnits = new Set(
+          scopeUnitsList
+            .flatMap((scopeRow) => scopeRow.items)
+            .map((item) => `${item.book_version}||${item.grade}||${item.semester}||${item.unit}`)
+            .filter((key) => unlockedSet.has(key))
+        );
+
+        const progressEntries = await Promise.all(
+          Array.from(unlockedUnits).map(async (unitId) => {
+            const [bookVersion, grade, semester, unitName] = unitId.split('||');
+            const [wordSummary, phraseSummary, allPassages, vocabRows, phraseRows, readingRows] = await Promise.all([
+              lexiconApi.getLearningSummary(token, { type: 'word', bookVersion, grade, semester, unit: unitName }).catch(() => null),
+              lexiconApi.getLearningSummary(token, { type: 'phrase', bookVersion, grade, semester, unit: unitName }).catch(() => null),
+              lexiconApi.getPassages(token, bookVersion, grade, semester).catch(() => ({ items: [] as any[] })),
+              learningProgressApi.getGroupProgress(token, Number(user.id), unitId, 'vocab').catch(() => []),
+              learningProgressApi.getGroupProgress(token, Number(user.id), unitId, 'phrase').catch(() => []),
+              learningProgressApi.getGroupProgress(token, Number(user.id), unitId, 'reading').catch(() => []),
+            ]);
+
+            const calcLearned = (rows: Array<{ completedAt?: string; learnedCount?: number; itemTotal?: number }>) =>
+              rows.reduce((sum, row) => {
+                if (typeof row.learnedCount === 'number' && row.learnedCount >= 0) {
+                  return sum + row.learnedCount;
+                }
+                if (row.completedAt && typeof row.itemTotal === 'number' && row.itemTotal >= 0) {
+                  return sum + row.itemTotal;
+                }
+                return sum;
+              }, 0);
+
+            const wordTotal = Number(wordSummary?.total || 0);
+            const phraseTotal = Number(phraseSummary?.total || 0);
+            const readingTotal = Array.isArray(allPassages?.items)
+              ? allPassages.items.filter((x: any) => (x.unit || '').trim().toLowerCase() === unitName.trim().toLowerCase()).length
+              : 0;
+
+            const wordLearned = Math.min(wordTotal, calcLearned(vocabRows as any[]));
+            const phraseLearned = Math.min(phraseTotal, calcLearned(phraseRows as any[]));
+            const readingLearned = Math.min(readingTotal, calcLearned(readingRows as any[]));
+
+            const total = wordTotal + phraseTotal + readingTotal;
+            const learned = wordLearned + phraseLearned + readingLearned;
+            const progress = total > 0 ? Math.max(0, Math.min(100, Math.round((learned / total) * 100))) : 0;
+            return [unitId, progress] as const;
+          })
+        );
+
+        const progressMap = new Map(progressEntries);
+        const cards: StudentUnitCard[] = scopeUnitsList.flatMap(({ scope, items }) =>
+          items.map((unit: TextbookUnitItem) => {
+            const key = `${unit.book_version}||${unit.grade}||${unit.semester}||${unit.unit}`;
+            return {
+              id: key,
+              unitCode: unit.unit,
+              scopeLabel: `${unit.book_version} · ${unit.grade} · ${unit.semester}`,
+              title: (unit.unit_title || '').trim() || unit.unit,
+              desc: (unit.unit_desc_short || '').trim() || '暂无单元简介',
+              progress: progressMap.get(key) ?? 0,
+              locked: !unlockedSet.has(key),
+              isSpecial: false,
+            };
+          })
+        );
 
         setAllUnits(cards);
       } catch (e: any) {
@@ -306,14 +388,17 @@ export const StudentDashboard: React.FC = () => {
                   <div className="relative z-10 flex-1">
                     <div className="flex justify-between items-start mb-6">
                       <div className={`px-4 py-1.5 rounded-full font-headline font-extrabold text-xs tracking-widest ${index === 0 ? 'bg-secondary-container text-on-secondary-container' : index === 1 ? 'bg-primary-container text-on-primary-container' : unit.isSpecial ? 'bg-secondary text-white uppercase' : 'bg-tertiary-container text-on-tertiary-container'}`}>
-                        {unit.isSpecial ? '特别单元' : `第 ${index + 1} 单元`}
+                        {unit.unitCode}
                       </div>
                       {unit.locked ? <Lock className="w-5 h-5 text-tertiary/40" /> : index === 0 ? <CheckCircle2 className="w-5 h-5 text-secondary-fixed-dim" /> : <Hourglass className="w-5 h-5 text-primary" />}
                     </div>
                     
                     <h3 className={`font-headline font-extrabold text-2xl text-on-surface mb-2 ${unit.isSpecial ? 'text-4xl' : ''}`}>
-                      {unit.title} <span className={`text-lg font-bold block mt-1 ${index === 0 ? 'text-secondary/70' : index === 1 ? 'text-primary/70' : 'text-tertiary/70'}`}>{unit.subtitle}</span>
+                      {unit.title}
                     </h3>
+                    <p className={`text-sm font-bold mb-3 ${index === 0 ? 'text-secondary/70' : index === 1 ? 'text-primary/70' : 'text-tertiary/70'}`}>
+                      {unit.scopeLabel}
+                    </p>
                     <p className="text-on-surface-variant text-sm mb-8 leading-relaxed max-w-md">{unit.desc}</p>
                     
                     {!unit.isSpecial && (

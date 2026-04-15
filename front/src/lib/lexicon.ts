@@ -103,6 +103,20 @@ export type PassageItem = {
   sentences: PassageSentence[];
 };
 
+export type TextbookUnitItem = {
+  id: number;
+  book_version: string;
+  grade: string;
+  semester: string;
+  unit: string;
+  unit_title: string;
+  unit_desc_short: string;
+  sort_order: number;
+  source_file?: string;
+  source_pages: number[];
+  active: boolean;
+};
+
 export const lexiconApi = {
   async getOptions(token: string, type: 'word' | 'phrase') {
     const response = await fetch(`${API_BASE_URL}/api/lexicon/options?type=${encodeURIComponent(type)}`, {
@@ -675,6 +689,131 @@ export const lexiconApi = {
       throw new Error(data?.error || '删除本册课文失败');
     }
     return data as { message: string; count: number };
+  },
+
+  async getUnits(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '加载单元失败');
+    }
+    return payload as { bookVersion: string; grade: string; semester: string; count: number; items: TextbookUnitItem[] };
+  },
+
+  async getUnitsCount(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units/count?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '加载单元数量失败');
+    }
+    return payload as { bookVersion: string; grade: string; semester: string; count: number };
+  },
+
+  async getUnitsDeletePreview(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units/delete-preview?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '加载删除预览失败');
+    }
+    return payload as {
+      bookVersion: string;
+      grade: string;
+      semester: string;
+      unitCount: number;
+      wordLexiconCount: number;
+      phraseLexiconCount: number;
+      passageCount: number;
+      blocked: boolean;
+      note?: string;
+    };
+  },
+
+  async createUnit(token: string, payload: Omit<TextbookUnitItem, 'id'>) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '新增单元失败');
+    }
+    return data as { message: string; item: TextbookUnitItem };
+  },
+
+  async updateUnit(token: string, id: number, payload: Omit<TextbookUnitItem, 'id'>) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units/${id}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '更新单元失败');
+    }
+    return data as { message: string; item: TextbookUnitItem };
+  },
+
+  async deleteUnit(token: string, id: number) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '删除单元失败');
+    }
+    return data as { message: string; id: number };
+  },
+
+  async deleteUnitsByScope(token: string, bookVersion: string, grade: string, semester: string) {
+    const query = new URLSearchParams({ bookVersion, grade, semester });
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units?${query.toString()}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '整册删除单元失败');
+    }
+    return data as { message: string; count: number };
+  },
+
+  async importUnitJsonl(
+    token: string,
+    params: { file: File; bookVersion: string; grade: string; semester: string; overwrite?: boolean }
+  ) {
+    const form = new FormData();
+    form.append('file', params.file);
+    form.append('bookVersion', params.bookVersion);
+    form.append('grade', params.grade);
+    form.append('semester', params.semester);
+    form.append('overwrite', String(params.overwrite ?? true));
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/units/import`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '导入单元失败');
+    }
+    return data as { message: string; count: number; bookVersion: string; grade: string; semester: string };
   },
 };
 

@@ -6,16 +6,18 @@ import com.kineticscholar.userservice.model.LexiconEntry;
 import com.kineticscholar.userservice.model.LexiconMeaning;
 import com.kineticscholar.userservice.model.Store;
 import com.kineticscholar.userservice.model.TextbookScopeTag;
+import com.kineticscholar.userservice.model.TextbookUnit;
 import com.kineticscholar.userservice.model.TextbookVersionTag;
 import com.kineticscholar.userservice.model.User;
 import com.kineticscholar.userservice.repository.LexiconEntryRepository;
 import com.kineticscholar.userservice.repository.GradeTagRepository;
+import com.kineticscholar.userservice.repository.PassageRepository;
 import com.kineticscholar.userservice.repository.SemesterTagRepository;
 import com.kineticscholar.userservice.repository.StoreRepository;
 import com.kineticscholar.userservice.repository.TextbookScopeTagRepository;
+import com.kineticscholar.userservice.repository.TextbookUnitRepository;
 import com.kineticscholar.userservice.repository.TextbookVersionTagRepository;
 import com.kineticscholar.userservice.repository.UserRepository;
-import com.kineticscholar.userservice.repository.PassageRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -67,6 +69,8 @@ public class LexiconController {
     private StoreRepository storeRepository;
     @Autowired
     private PassageRepository passageRepository;
+    @Autowired
+    private TextbookUnitRepository textbookUnitRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -141,7 +145,6 @@ public class LexiconController {
             Set<String> filterBookVersions = parseCsvQuery(bookVersionsRaw);
             Set<String> filterGrades = parseCsvQuery(gradesRaw);
 
-            List<LexiconEntry> entries = entryRepository.findByTypeIn(List.of(WORD, PHRASE));
             Map<String, Integer> gradeOrder = new HashMap<>();
             gradeTagRepository.findAll().forEach(tag -> gradeOrder.put(
                     safeStr(tag.getName()),
@@ -153,12 +156,13 @@ public class LexiconController {
                     Optional.ofNullable(tag.getSortOrder()).orElse(999)
             ));
 
+            List<TextbookUnit> unitRows = textbookUnitRepository.findAll();
             Map<String, Map<String, Map<String, Set<String>>>> grouped = new TreeMap<>();
-            for (LexiconEntry entry : entries) {
-                String bv = safeStr(entry.getBookVersion());
-                String grade = safeStr(entry.getGrade());
-                String semester = safeStr(entry.getSemester());
-                String unit = safeStr(entry.getUnit());
+            for (TextbookUnit row : unitRows) {
+                String bv = safeStr(row.getBookVersion());
+                String grade = safeStr(row.getGrade());
+                String semester = normalizeSemesterTag(row.getSemester());
+                String unit = safeStr(row.getUnitCode());
                 if (bv.isBlank() || grade.isBlank() || semester.isBlank() || unit.isBlank()) continue;
                 if (!filterBookVersions.isEmpty() && !filterBookVersions.contains(bv)) continue;
                 if (!filterGrades.isEmpty() && !filterGrades.contains(grade)) continue;
@@ -179,12 +183,12 @@ public class LexiconController {
                     var semesterEntries = new ArrayList<>(gradeEntry.getValue().entrySet());
                     semesterEntries.sort(Comparator.comparingInt(e -> semesterOrder.getOrDefault(e.getKey(), 999)));
                     for (var semesterEntry : semesterEntries) {
-                        List<String> units = new ArrayList<>(semesterEntry.getValue());
-                        units.sort(this::compareUnit);
-                        if (units.isEmpty()) continue;
+                        List<String> unitNames = new ArrayList<>(semesterEntry.getValue());
+                        unitNames.sort(this::compareUnit);
+                        if (unitNames.isEmpty()) continue;
                         Map<String, Object> semData = new LinkedHashMap<>();
                         semData.put("semester", semesterEntry.getKey());
-                        semData.put("units", units);
+                        semData.put("units", unitNames);
                         semesters.add(semData);
                     }
                     if (semesters.isEmpty()) continue;
@@ -201,6 +205,259 @@ public class LexiconController {
             }
 
             return new ResponseEntity<>(Map.of("tree", tree), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @GetMapping("/units")
+    public ResponseEntity<?> getUnits(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester
+    ) {
+        try {
+            String bv = safeStr(bookVersion);
+            String g = safeStr(grade);
+            String s = normalizeSemesterTag(semester);
+            List<TextbookUnit> rows = textbookUnitRepository.findByBookVersionAndGradeAndSemesterOrderBySortOrderAscIdAsc(bv, g, s);
+            List<Map<String, Object>> items = rows.stream().map(this::toUnitResponse).toList();
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("bookVersion", bv);
+            data.put("grade", g);
+            data.put("semester", s);
+            data.put("count", items.size());
+            data.put("items", items);
+            return new ResponseEntity<>(data, HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @GetMapping("/units/count")
+    public ResponseEntity<?> getUnitsCount(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester
+    ) {
+        try {
+            String bv = safeStr(bookVersion);
+            String g = safeStr(grade);
+            String s = normalizeSemesterTag(semester);
+            long count = textbookUnitRepository.countByBookVersionAndGradeAndSemester(bv, g, s);
+            return new ResponseEntity<>(Map.of(
+                    "bookVersion", bv,
+                    "grade", g,
+                    "semester", s,
+                    "count", count
+            ), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @GetMapping("/units/delete-preview")
+    public ResponseEntity<?> deleteUnitsPreview(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester
+    ) {
+        try {
+            String bv = safeStr(bookVersion);
+            String g = safeStr(grade);
+            String s = normalizeSemesterTag(semester);
+            long unitCount = textbookUnitRepository.countByBookVersionAndGradeAndSemester(bv, g, s);
+            long wordCount = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(WORD, bv, g, s).size();
+            long phraseCount = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(PHRASE, bv, g, s).size();
+            long passageCount = passageRepository.countByBookVersionAndGradeAndSemester(bv, g, s);
+            boolean blocked = wordCount > 0 || phraseCount > 0 || passageCount > 0;
+            return new ResponseEntity<>(Map.of(
+                    "bookVersion", bv,
+                    "grade", g,
+                    "semester", s,
+                    "unitCount", unitCount,
+                    "wordLexiconCount", wordCount,
+                    "phraseLexiconCount", phraseCount,
+                    "passageCount", passageCount,
+                    "blocked", blocked,
+                    "note", "任务占用明细将在后续版本补充到该校验中"
+            ), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping("/units")
+    public ResponseEntity<?> createUnit(@RequestBody Map<String, Object> body) {
+        try {
+            TextbookUnit entity = mapUnitBodyToEntity(null, body);
+            if (textbookUnitRepository.existsByBookVersionAndGradeAndSemesterAndUnitCode(
+                    entity.getBookVersion(), entity.getGrade(), entity.getSemester(), entity.getUnitCode()
+            )) {
+                throw new RuntimeException("当前册已存在同名单元");
+            }
+            TextbookUnit saved = textbookUnitRepository.save(entity);
+            return new ResponseEntity<>(Map.of("message", "created", "item", toUnitResponse(saved)), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PutMapping("/units/{id}")
+    public ResponseEntity<?> updateUnit(@PathVariable("id") Long id, @RequestBody Map<String, Object> body) {
+        try {
+            TextbookUnit existing = textbookUnitRepository.findById(id)
+                    .orElseThrow(() -> new RuntimeException("单元不存在"));
+            String oldUnitCode = safeStr(existing.getUnitCode());
+            TextbookUnit entity = mapUnitBodyToEntity(existing, body);
+            Optional<TextbookUnit> duplicate = textbookUnitRepository.findByBookVersionAndGradeAndSemesterAndUnitCode(
+                    entity.getBookVersion(), entity.getGrade(), entity.getSemester(), entity.getUnitCode()
+            );
+            if (duplicate.isPresent() && !Objects.equals(duplicate.get().getId(), entity.getId())) {
+                throw new RuntimeException("当前册已存在同名单元");
+            }
+
+            boolean unitCodeChanged = !oldUnitCode.equals(entity.getUnitCode());
+            if (unitCodeChanged) {
+                long wordCount = entryRepository.countByBookVersionAndGradeAndSemesterAndUnit(
+                        existing.getBookVersion(), existing.getGrade(), existing.getSemester(), oldUnitCode
+                );
+                long phraseCount = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndUnitOrderByGroupNoAscIdAsc(
+                        PHRASE, existing.getBookVersion(), existing.getGrade(), existing.getSemester(), oldUnitCode
+                ).size();
+                long passageCount = passageRepository.countByBookVersionAndGradeAndSemesterAndUnitName(
+                        existing.getBookVersion(), existing.getGrade(), existing.getSemester(), oldUnitCode
+                );
+                if (wordCount > 0 || phraseCount > 0 || passageCount > 0) {
+                    throw new RuntimeException("当前单元已被词库或课文引用，暂不支持直接修改单元编号");
+                }
+            }
+
+            TextbookUnit saved = textbookUnitRepository.save(entity);
+            return new ResponseEntity<>(Map.of("message", "updated", "item", toUnitResponse(saved)), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/units/{id}")
+    public ResponseEntity<?> deleteUnit(@PathVariable("id") Long id) {
+        try {
+            TextbookUnit existing = textbookUnitRepository.findById(id)
+                    .orElseThrow(() -> new RuntimeException("单元不存在"));
+            String bv = safeStr(existing.getBookVersion());
+            String g = safeStr(existing.getGrade());
+            String s = normalizeSemesterTag(existing.getSemester());
+            String u = safeStr(existing.getUnitCode());
+            long wordCount = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndUnitOrderByGroupNoAscIdAsc(
+                    WORD, bv, g, s, u
+            ).size();
+            long phraseCount = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndUnitOrderByGroupNoAscIdAsc(
+                    PHRASE, bv, g, s, u
+            ).size();
+            long passageCount = passageRepository.countByBookVersionAndGradeAndSemesterAndUnitName(bv, g, s, u);
+            if (wordCount > 0 || phraseCount > 0 || passageCount > 0) {
+                return new ResponseEntity<>(Map.of(
+                        "error", "当前单元已被词库或课文引用，禁止删除",
+                        "usage", Map.of(
+                                "wordLexiconCount", wordCount,
+                                "phraseLexiconCount", phraseCount,
+                                "passageCount", passageCount,
+                                "note", "任务占用明细将在后续版本补充到该校验中"
+                        )
+                ), HttpStatus.CONFLICT);
+            }
+            textbookUnitRepository.delete(existing);
+            return new ResponseEntity<>(Map.of("message", "deleted", "id", id), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/units")
+    @Transactional
+    public ResponseEntity<?> deleteUnitsByScope(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester
+    ) {
+        try {
+            String bv = safeStr(bookVersion);
+            String g = safeStr(grade);
+            String s = normalizeSemesterTag(semester);
+            long unitCount = textbookUnitRepository.countByBookVersionAndGradeAndSemester(bv, g, s);
+            long wordCount = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(WORD, bv, g, s).size();
+            long phraseCount = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(PHRASE, bv, g, s).size();
+            long passageCount = passageRepository.countByBookVersionAndGradeAndSemester(bv, g, s);
+            if (wordCount > 0 || phraseCount > 0 || passageCount > 0) {
+                return new ResponseEntity<>(Map.of(
+                        "error", "当前册已被词库或课文引用，禁止整册删除",
+                        "usage", Map.of(
+                                "unitCount", unitCount,
+                                "wordLexiconCount", wordCount,
+                                "phraseLexiconCount", phraseCount,
+                                "passageCount", passageCount,
+                                "note", "任务占用明细将在后续版本补充到该校验中"
+                        )
+                ), HttpStatus.CONFLICT);
+            }
+            textbookUnitRepository.deleteByBookVersionAndGradeAndSemester(bv, g, s);
+            return new ResponseEntity<>(Map.of("message", "deleted", "count", unitCount), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping(value = "/units/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Transactional
+    public ResponseEntity<?> importUnits(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester,
+            @RequestParam(value = "overwrite", required = false, defaultValue = "true") boolean overwrite
+    ) {
+        try {
+            String bv = safeStr(bookVersion);
+            String g = safeStr(grade);
+            String s = normalizeSemesterTag(semester);
+            ensureTagExists(bv, g, s);
+            UnitImportParseResult parseResult = parseUnitJsonl(file, bv, g, s);
+            if (overwrite) {
+                textbookUnitRepository.deleteByBookVersionAndGradeAndSemester(bv, g, s);
+            } else if (textbookUnitRepository.countByBookVersionAndGradeAndSemester(bv, g, s) > 0) {
+                throw new RuntimeException("当前册已存在单元，请先删除或使用覆盖导入");
+            }
+            List<TextbookUnit> toSave = new ArrayList<>();
+            Set<String> seenUnits = new LinkedHashSet<>();
+            int index = 1;
+            for (Map<String, Object> row : parseResult.items()) {
+                String unitCode = safeStr(row.get("unit"));
+                if (unitCode.isBlank()) continue;
+                if (!seenUnits.add(unitCode)) {
+                    throw new RuntimeException("导入文件内存在重复单元: " + unitCode);
+                }
+                TextbookUnit entity = new TextbookUnit();
+                entity.setBookVersion(bv);
+                entity.setGrade(g);
+                entity.setSemester(s);
+                entity.setUnitCode(unitCode);
+                entity.setUnitTitle(safeStr(row.get("unit_title")));
+                entity.setUnitDescShort(safeStr(row.get("unit_desc_short")));
+                entity.setSortOrder(index++);
+                entity.setSourceFile(parseResult.sourceFile());
+                entity.setSourcePages(parseResult.sourcePages());
+                entity.setActive(true);
+                toSave.add(entity);
+            }
+            textbookUnitRepository.saveAll(toSave);
+            return new ResponseEntity<>(Map.of(
+                    "message", "imported",
+                    "count", toSave.size(),
+                    "bookVersion", bv,
+                    "grade", g,
+                    "semester", s
+            ), HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
@@ -383,6 +640,16 @@ public class LexiconController {
             }
             if (passageUpdated > 0) passageRepository.saveAll(passages);
 
+            long unitUpdated = 0;
+            var units = textbookUnitRepository.findAll();
+            for (var unit : units) {
+                if (oldName.equals(safeStr(unit.getBookVersion()))) {
+                    unit.setBookVersion(newName);
+                    unitUpdated += 1;
+                }
+            }
+            if (unitUpdated > 0) textbookUnitRepository.saveAll(units);
+
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("message", "renamed");
             data.put("oldName", oldName);
@@ -391,6 +658,7 @@ public class LexiconController {
             data.put("updatedUsers", userUpdated);
             data.put("updatedStores", storeUpdated);
             data.put("updatedPassages", passageUpdated);
+            data.put("updatedUnits", unitUpdated);
             return new ResponseEntity<>(data, HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
@@ -1120,6 +1388,47 @@ public class LexiconController {
         return item;
     }
 
+    private Map<String, Object> toUnitResponse(TextbookUnit unit) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", unit.getId());
+        row.put("book_version", safeStr(unit.getBookVersion()));
+        row.put("grade", safeStr(unit.getGrade()));
+        row.put("semester", normalizeSemesterTag(unit.getSemester()));
+        row.put("unit", safeStr(unit.getUnitCode()));
+        row.put("unit_title", safeStr(unit.getUnitTitle()));
+        row.put("unit_desc_short", safeStr(unit.getUnitDescShort()));
+        row.put("sort_order", Optional.ofNullable(unit.getSortOrder()).orElse(0));
+        row.put("source_file", safeStr(unit.getSourceFile()));
+        row.put("source_pages", parseSourcePagesText(unit.getSourcePages()));
+        row.put("active", Boolean.TRUE.equals(unit.getActive()));
+        return row;
+    }
+
+    private TextbookUnit mapUnitBodyToEntity(TextbookUnit base, Map<String, Object> body) {
+        TextbookUnit entity = base == null ? new TextbookUnit() : base;
+        String bookVersion = safeStr(body.get("book_version"));
+        String grade = safeStr(body.get("grade"));
+        String semester = normalizeSemesterTag(safeStr(body.get("semester")));
+        String unitCode = safeStr(body.get("unit"));
+        if (bookVersion.isBlank() || grade.isBlank() || semester.isBlank() || unitCode.isBlank()) {
+            throw new RuntimeException("教材版本、年级、册数、单元编号不能为空");
+        }
+        ensureTagExists(bookVersion, grade, semester);
+        entity.setBookVersion(bookVersion);
+        entity.setGrade(grade);
+        entity.setSemester(semester);
+        entity.setUnitCode(unitCode);
+        entity.setUnitTitle(safeStr(body.get("unit_title")));
+        entity.setUnitDescShort(safeStr(body.get("unit_desc_short")));
+        Integer sortOrder = parseNullablePositiveInt(body.get("sort_order"));
+        entity.setSortOrder(sortOrder == null ? Optional.ofNullable(entity.getSortOrder()).orElse(0) : sortOrder);
+        entity.setSourceFile(safeStr(body.get("source_file")));
+        entity.setSourcePages(sourcePagesToText(body.get("source_pages")));
+        Object activeRaw = body.get("active");
+        entity.setActive(activeRaw == null ? Optional.ofNullable(entity.getActive()).orElse(true) : Boolean.parseBoolean(String.valueOf(activeRaw)));
+        return entity;
+    }
+
     private String normalizeType(String type) {
         String t = safeStr(type).toLowerCase(Locale.ROOT);
         if (!WORD.equals(t) && !PHRASE.equals(t)) {
@@ -1245,6 +1554,78 @@ public class LexiconController {
         }
     }
 
+    private String sourcePagesToText(Object value) {
+        if (value == null) return "";
+        if (value instanceof List<?> list) {
+            List<String> rows = new ArrayList<>();
+            for (Object item : list) {
+                String s = safeStr(item);
+                if (!s.isBlank()) rows.add(s);
+            }
+            return String.join(",", rows);
+        }
+        return safeStr(value);
+    }
+
+    private List<Integer> parseSourcePagesText(String value) {
+        String raw = safeStr(value);
+        if (raw.isBlank()) return List.of();
+        List<Integer> rows = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String s = safeStr(part);
+            if (s.isBlank()) continue;
+            try {
+                rows.add(Integer.parseInt(s));
+            } catch (Exception ignore) {
+            }
+        }
+        return rows;
+    }
+
+    private UnitImportParseResult parseUnitJsonl(
+            MultipartFile file,
+            String expectedBookVersion,
+            String expectedGrade,
+            String expectedSemester
+    ) throws IOException {
+        if (file == null || file.isEmpty()) {
+            throw new RuntimeException("文件不能为空");
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        String sourcePages = "";
+        boolean metaFound = false;
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) continue;
+                Map<String, Object> raw = objectMapper.readValue(line, new TypeReference<>() {});
+                String recordType = safeStr(raw.get("record_type"));
+                if ("meta".equalsIgnoreCase(recordType)) {
+                    metaFound = true;
+                    String fileBookVersion = safeStr(raw.get("book_version"));
+                    String fileGrade = safeStr(raw.get("grade"));
+                    String fileSemester = normalizeSemesterTag(safeStr(raw.get("semester")));
+                    if (!expectedBookVersion.equals(fileBookVersion) || !expectedGrade.equals(fileGrade) || !expectedSemester.equals(fileSemester)) {
+                        throw new RuntimeException("导入文件元信息与当前选择范围不一致");
+                    }
+                    sourcePages = sourcePagesToText(raw.get("source_pages"));
+                    continue;
+                }
+                if (!"unit".equalsIgnoreCase(recordType)) continue;
+                items.add(raw);
+            }
+        }
+
+        if (!metaFound) {
+            throw new RuntimeException("单元 JSONL 缺少 meta 首行");
+        }
+        if (items.isEmpty()) {
+            throw new RuntimeException("未解析到任何单元记录");
+        }
+        return new UnitImportParseResult(items, safeStr(file.getOriginalFilename()), sourcePages);
+    }
+
     private void ensureDefaultScopesForExistingTextbooks() {
         List<String> textbooks = textbookVersionTagRepository.findAll().stream()
                 .map(TextbookVersionTag::getName)
@@ -1290,6 +1671,11 @@ public class LexiconController {
                 .filter(p -> g.isBlank() || g.equals(safeStr(p.getGrade())))
                 .filter(p -> s.isBlank() || s.equals(normalizeSemesterTag(p.getSemester())))
                 .count();
+        long unitCount = textbookUnitRepository.findAll().stream()
+                .filter(u -> bv.isBlank() || bv.equals(safeStr(u.getBookVersion())))
+                .filter(u -> g.isBlank() || g.equals(safeStr(u.getGrade())))
+                .filter(u -> s.isBlank() || s.equals(normalizeSemesterTag(u.getSemester())))
+                .count();
 
         // Users/stores are scoped by textbook+grade only. When deleting a specific semester tag,
         // do not block by user/store mappings, otherwise it causes false positives.
@@ -1331,7 +1717,7 @@ public class LexiconController {
 
         long wordCount = lexiconMatches.stream().filter(e -> WORD.equals(safeStr(e.getType()))).count();
         long phraseCount = lexiconMatches.stream().filter(e -> PHRASE.equals(safeStr(e.getType()))).count();
-        boolean blocked = !lexiconMatches.isEmpty() || passageCount > 0 || !userMatches.isEmpty() || !storeMatches.isEmpty();
+        boolean blocked = !lexiconMatches.isEmpty() || passageCount > 0 || unitCount > 0 || !userMatches.isEmpty() || !storeMatches.isEmpty();
 
         Map<String, Object> usage = new LinkedHashMap<>();
         usage.put("bookVersion", bv);
@@ -1339,6 +1725,7 @@ public class LexiconController {
         usage.put("semester", s);
         usage.put("wordLexiconCount", wordCount);
         usage.put("phraseLexiconCount", phraseCount);
+        usage.put("unitCount", unitCount);
         usage.put("passageCount", passageCount);
         usage.put("userCount", users.size());
         usage.put("users", users);
@@ -1396,5 +1783,6 @@ public class LexiconController {
     }
 
     private record ParseResult(List<Map<String, Object>> items, Map<String, Integer> stats) {}
+    private record UnitImportParseResult(List<Map<String, Object>> items, String sourceFile, String sourcePages) {}
 }
 

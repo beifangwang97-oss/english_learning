@@ -21,10 +21,16 @@ public interface PassageRepository extends JpaRepository<Passage, Long> {
 
     long countByBookVersionAndGradeAndSemester(String bookVersion, String grade, String semester);
 
+    long countByBookVersionAndGradeAndSemesterAndUnitName(
+            String bookVersion,
+            String grade,
+            String semester,
+            String unitName
+    );
+
     long countByBookVersionAndGrade(String bookVersion, String grade);
 
     long countByBookVersion(String bookVersion);
 
     void deleteByBookVersionAndGradeAndSemester(String bookVersion, String grade, String semester);
 }
-
