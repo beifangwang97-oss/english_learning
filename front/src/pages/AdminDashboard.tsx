@@ -7,9 +7,10 @@ import { AdminConsole } from '../components/admin/AdminConsole';
 import { TextbookScopeManagement } from '../components/admin/TextbookScopeManagement';
 import { PassageManagement } from '../components/admin/PassageManagement';
 import { UnitManagement } from '../components/admin/UnitManagement';
-import { BookOpen, Database, LayoutDashboard, LogOut, MessageSquare, ScrollText, Type, Users } from 'lucide-react';
+import { PhoneticManagement } from '../components/admin/PhoneticManagement';
+import { BookOpen, Database, LayoutDashboard, LogOut, MessageSquare, ScrollText, Type, Users, Volume2 } from 'lucide-react';
 
-type Tab = 'dashboard' | 'users' | 'words' | 'phrases' | 'passages' | 'units' | 'textbooks';
+type Tab = 'dashboard' | 'users' | 'words' | 'phrases' | 'passages' | 'units' | 'phonetics' | 'textbooks';
 
 export const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
@@ -17,7 +18,7 @@ export const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
 
   useEffect(() => {
-    document.title = '虎子英语_管理员端';
+    document.title = '管理员后台';
   }, []);
 
   const handleLogout = () => {
@@ -39,6 +40,8 @@ export const AdminDashboard: React.FC = () => {
         return <PassageManagement />;
       case 'units':
         return <UnitManagement />;
+      case 'phonetics':
+        return <PhoneticManagement />;
       case 'textbooks':
         return <TextbookScopeManagement />;
       default:
@@ -48,11 +51,12 @@ export const AdminDashboard: React.FC = () => {
 
   const navItems: Array<{ key: Tab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { key: 'dashboard', label: '控制台', icon: LayoutDashboard },
-    { key: 'users', label: '账号管理', icon: Users },
-    { key: 'words', label: '单词词库', icon: Type },
-    { key: 'phrases', label: '短语词库', icon: MessageSquare },
+    { key: 'users', label: '用户管理', icon: Users },
+    { key: 'words', label: '单词库', icon: Type },
+    { key: 'phrases', label: '短语库', icon: MessageSquare },
     { key: 'passages', label: '课文管理', icon: ScrollText },
     { key: 'units', label: '单元管理', icon: BookOpen },
+    { key: 'phonetics', label: '音标管理', icon: Volume2 },
     { key: 'textbooks', label: '教材管理', icon: BookOpen },
   ];
 
@@ -62,7 +66,7 @@ export const AdminDashboard: React.FC = () => {
         <div className="p-6 border-b border-outline-variant/30">
           <h2 className="text-xl font-black text-primary flex items-center gap-2">
             <Database className="w-6 h-6" />
-            管理员后台
+            管理后台
           </h2>
         </div>
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto custom-scrollbar">
@@ -95,8 +99,8 @@ export const AdminDashboard: React.FC = () => {
       <div className="flex-1 flex flex-col overflow-hidden relative">
         <header className="h-20 bg-surface-container-lowest border-b border-outline-variant/30 flex items-center px-8 shrink-0">
           <div>
-            <h1 className="text-2xl font-black text-on-surface">平台管理</h1>
-            <p className="text-sm text-on-surface-variant mt-1">账号、教材、单元、词库与课文统一管理</p>
+            <h1 className="text-2xl font-black text-on-surface">管理员后台</h1>
+            <p className="text-sm text-on-surface-variant mt-1">统一维护用户、教材、单元、词库、课文与音标数据。</p>
           </div>
         </header>
 

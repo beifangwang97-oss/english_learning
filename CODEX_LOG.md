@@ -515,3 +515,133 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
   - `cmd /c npm run build` 通过
 - 后端：
   - `mvn -q -DskipTests compile`（`backend/user-service`）通过
+
+---
+
+## 18. 2026-04-15 工具端音标数据与模式六（新增）
+
+### 18.1 音标种子数据
+- 新增音标种子文件：
+  - `tool/word_data/phonetics_data/english_phonemes_seed.jsonl`
+- 当前口径采用中国中小学英语教学常见版本：
+  - `48` 个音标
+  - `20` 个元音
+  - `28` 个辅音
+- 当前字段结构以模式六输入为准：
+  - `id`
+  - `type`
+  - `phonetic`
+  - `category`
+  - `phoneme_audio`
+  - `example_words`
+- `phonetic` 统一要求使用双斜线包裹，如：`/i:/`、`/tʃ/`
+- 当前阶段暂不生成音标本体单独配音，`phoneme_audio` 先保留空值，后续再补。
+
+### 18.2 模式六（例词与单词录音）
+- 新增独立工具入口：
+  - `tool/mode6_phoneme_examples_audio.py`
+  - `tool/run_mode6.bat`
+- 模式六输入：
+  - `tool/word_data/phonetics_data/english_phonemes_seed.jsonl`
+- 模式六输出：
+  - 默认在同目录输出工作文件：`*_mode6_working.jsonl`
+  - 若工作文件已存在，则优先继续在该文件上续跑
+- 模式六当前能力：
+  - 已拆分为两个独立步骤：
+    - 步骤一：补全例词
+    - 步骤二：生成单词录音
+    - 步骤三：生成音标录音
+  - 对每个音标调用 LLM 生成 3 个常见、简单、适合中小学生的例词
+  - 自动补齐 `example_words` 数组
+  - 对每个例词调用 `edge_tts` 生成单词录音
+  - 音频输出目录：
+    - `tool/audio/phonetics/`
+  - 音频命名规则：
+    - `{id}_word_1.mp3`
+    - `{id}_word_2.mp3`
+    - `{id}_word_3.mp3`
+  - `example_words` 中回填：
+    - `word`
+    - `phonetic`
+    - `zh`
+    - `word_audio`
+- 执行方式已调整为“逐条同步写入”：
+  - 每处理完 1 条音标，即刻写回 JSONL
+  - 中途中断后，可直接基于工作文件续跑
+- 当前已增加音标单独录音按钮：
+  - 输出字段：`phoneme_audio`
+  - 输出文件：`./audio/phonetics/{id}_phoneme.mp3`
+  - 当前为实验性实现：通过“音标 -> 近似可读文本”映射交给 TTS 生成，先用于联调与页面接入
+- 模式六侧栏已增加：
+  - `直接覆盖源文件` 开关，默认开启
+  - `录制音标音频时覆盖已有 phoneme_audio` 开关
+- 模式六页面已增加试听区：
+  - 可选择某一条音标记录
+  - 可试听 `phoneme_audio`
+  - 可试听 3 个例词对应的 `word_audio`
+
+### 18.3 当前边界
+- 模式六当前只处理“例词 + 单词录音”，不处理音标本体独立录音。
+- LLM 例词生成已做基础合法性校验，但仍建议人工抽检少量结果，重点关注：
+  - 例词是否足够常见
+  - 例词音标是否准确
+  - 目标音是否典型
+
+### 18.4 本轮验证
+- `tool/mode6_phoneme_examples_audio.py`
+  - `py_compile` 通过
+
+---
+
+## 19. 2026-04-15 音标管理与学生端音标学习
+### 19.1 管理员端音标管理
+- 新增音标数据库实体与仓库
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/model/PhoneticSymbol.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/repository/PhoneticSymbolRepository.java`
+- 在 `LexiconController` 中新增音标接口
+  - `GET /api/lexicon/phonetics`
+  - `POST /api/lexicon/phonetics`
+  - `PUT /api/lexicon/phonetics/{phonemeUid}`
+  - `DELETE /api/lexicon/phonetics/{phonemeUid}`
+  - `DELETE /api/lexicon/phonetics/all`
+  - `POST /api/lexicon/phonetics/import`
+- 音标表作为后续统一音标数据源
+- `example_words` 先按 JSON 文本落库，方便和现有 `jsonl` 工作流对齐
+- 管理员端新增音标管理页面
+  - `front/src/components/admin/PhoneticManagement.tsx`
+- 后台导航接入音标管理
+  - `front/src/pages/AdminDashboard.tsx`
+- 管理能力已实现
+  - 数据库导入 `jsonl`
+  - 可视化查看
+  - 新增 / 编辑 / 删除
+  - 全部删除
+  - 音标音频试听
+  - 示例单词音频试听
+
+### 19.2 管理员端音标管理优化
+- 修复音标与例词试听失败
+  - 后端音频解析新增 `tool/audio/phonetics/` 目录支持
+- 优化管理页左右布局
+  - 左侧列表改为固定高度
+  - 左侧改为内部滚动
+  - 适度加宽左侧列表，平衡左右区域比例
+
+### 19.3 学生端音标学习第一版
+- 学生端音标学习不做权限控制，所有学生可直接使用
+- 学生端音标页由 mock 数据切换为数据库真实数据
+  - `front/src/components/student/PhoneticsView.tsx`
+- 第一版页面能力
+  - 顶部学习页头图
+  - 全部 / 元音 / 辅音筛选
+  - 按 `20个元音`、`28个辅音` 分组展示
+  - 点击音标查看详情
+  - 音标试听
+  - 三个例词展示
+  - 每个例词支持单独试听
+
+### 19.4 验证
+- 后端编译通过
+  - `mvn -q -DskipTests compile`
+- 前端构建通过
+  - `cmd /c npm run build`

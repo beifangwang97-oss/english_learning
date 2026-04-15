@@ -117,6 +117,22 @@ export type TextbookUnitItem = {
   active: boolean;
 };
 
+export type PhoneticExampleWord = {
+  word: string;
+  phonetic: string;
+  zh: string;
+  word_audio: string;
+};
+
+export type PhoneticItem = {
+  id: string;
+  type: string;
+  phonetic: string;
+  category: 'vowel' | 'consonant' | string;
+  phoneme_audio?: string;
+  example_words: PhoneticExampleWord[];
+};
+
 export const lexiconApi = {
   async getOptions(token: string, type: 'word' | 'phrase') {
     const response = await fetch(`${API_BASE_URL}/api/lexicon/options?type=${encodeURIComponent(type)}`, {
@@ -814,6 +830,89 @@ export const lexiconApi = {
       throw new Error(data?.error || '导入单元失败');
     }
     return data as { message: string; count: number; bookVersion: string; grade: string; semester: string };
+  },
+
+  async getPhonetics(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/phonetics`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '加载音标数据失败');
+    }
+    return payload as { file: string; count: number; items: PhoneticItem[] };
+  },
+
+  async createPhonetic(token: string, payload: PhoneticItem) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/phonetics`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '新增音标失败');
+    }
+    return data as { message: string; item: PhoneticItem };
+  },
+
+  async updatePhonetic(token: string, phonemeUid: string, payload: PhoneticItem) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/phonetics/${encodeURIComponent(phonemeUid)}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '更新音标失败');
+    }
+    return data as { message: string; item: PhoneticItem };
+  },
+
+  async deletePhonetic(token: string, phonemeUid: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/phonetics/${encodeURIComponent(phonemeUid)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '删除音标失败');
+    }
+    return data as { message: string; id: string };
+  },
+
+  async deleteAllPhonetics(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/phonetics/all`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '全部删除音标失败');
+    }
+    return data as { message: string; count: number };
+  },
+
+  async importPhoneticJsonl(token: string, params: { file: File; overwrite?: boolean }) {
+    const form = new FormData();
+    form.append('file', params.file);
+    form.append('overwrite', String(params.overwrite ?? true));
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/phonetics/import`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error || '导入音标 JSONL 失败');
+    }
+    return data as { message: string; count: number; meta?: Record<string, unknown> };
   },
 };
 

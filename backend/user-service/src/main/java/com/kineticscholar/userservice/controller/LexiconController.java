@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kineticscholar.userservice.model.LexiconEntry;
 import com.kineticscholar.userservice.model.LexiconMeaning;
+import com.kineticscholar.userservice.model.PhoneticSymbol;
 import com.kineticscholar.userservice.model.Store;
 import com.kineticscholar.userservice.model.TextbookScopeTag;
 import com.kineticscholar.userservice.model.TextbookUnit;
@@ -12,6 +13,7 @@ import com.kineticscholar.userservice.model.User;
 import com.kineticscholar.userservice.repository.LexiconEntryRepository;
 import com.kineticscholar.userservice.repository.GradeTagRepository;
 import com.kineticscholar.userservice.repository.PassageRepository;
+import com.kineticscholar.userservice.repository.PhoneticSymbolRepository;
 import com.kineticscholar.userservice.repository.SemesterTagRepository;
 import com.kineticscholar.userservice.repository.StoreRepository;
 import com.kineticscholar.userservice.repository.TextbookScopeTagRepository;
@@ -71,6 +73,8 @@ public class LexiconController {
     private PassageRepository passageRepository;
     @Autowired
     private TextbookUnitRepository textbookUnitRepository;
+    @Autowired
+    private PhoneticSymbolRepository phoneticSymbolRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -229,6 +233,129 @@ public class LexiconController {
             data.put("count", items.size());
             data.put("items", items);
             return new ResponseEntity<>(data, HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @GetMapping("/phonetics")
+    public ResponseEntity<?> getPhonetics() {
+        try {
+            List<PhoneticSymbol> rows = phoneticSymbolRepository.findAllByOrderByCategoryAscPhonemeUidAscIdAsc();
+            List<Map<String, Object>> items = rows.stream().map(this::toPhoneticResponse).toList();
+            return new ResponseEntity<>(Map.of(
+                    "file", "db://phonetic_symbols",
+                    "count", items.size(),
+                    "items", items
+            ), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping("/phonetics")
+    public ResponseEntity<?> createPhonetic(@RequestBody Map<String, Object> body) {
+        try {
+            PhoneticSymbol entity = mapPhoneticBodyToEntity(null, body);
+            if (phoneticSymbolRepository.existsByPhonemeUid(entity.getPhonemeUid())) {
+                throw new RuntimeException("音标ID已存在");
+            }
+            Optional<PhoneticSymbol> duplicatePhonetic = phoneticSymbolRepository.findAllByOrderByCategoryAscPhonemeUidAscIdAsc().stream()
+                    .filter(item -> safeStr(item.getPhonetic()).equals(safeStr(entity.getPhonetic())))
+                    .findFirst();
+            if (duplicatePhonetic.isPresent()) {
+                throw new RuntimeException("音标内容已存在");
+            }
+            PhoneticSymbol saved = phoneticSymbolRepository.save(entity);
+            return new ResponseEntity<>(Map.of("message", "created", "item", toPhoneticResponse(saved)), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PutMapping("/phonetics/{phonemeUid}")
+    public ResponseEntity<?> updatePhonetic(
+            @PathVariable("phonemeUid") String phonemeUid,
+            @RequestBody Map<String, Object> body
+    ) {
+        try {
+            PhoneticSymbol existing = phoneticSymbolRepository.findByPhonemeUid(safeStr(phonemeUid))
+                    .orElseThrow(() -> new RuntimeException("音标不存在"));
+            PhoneticSymbol entity = mapPhoneticBodyToEntity(existing, body);
+            Optional<PhoneticSymbol> duplicateUid = phoneticSymbolRepository.findByPhonemeUid(entity.getPhonemeUid());
+            if (duplicateUid.isPresent() && !Objects.equals(duplicateUid.get().getId(), existing.getId())) {
+                throw new RuntimeException("音标ID已存在");
+            }
+            Optional<PhoneticSymbol> duplicatePhonetic = phoneticSymbolRepository.findAllByOrderByCategoryAscPhonemeUidAscIdAsc().stream()
+                    .filter(item -> safeStr(item.getPhonetic()).equals(safeStr(entity.getPhonetic())))
+                    .filter(item -> !Objects.equals(item.getId(), existing.getId()))
+                    .findFirst();
+            if (duplicatePhonetic.isPresent()) {
+                throw new RuntimeException("音标内容已存在");
+            }
+            PhoneticSymbol saved = phoneticSymbolRepository.save(entity);
+            return new ResponseEntity<>(Map.of("message", "updated", "item", toPhoneticResponse(saved)), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/phonetics/{phonemeUid}")
+    public ResponseEntity<?> deletePhonetic(@PathVariable("phonemeUid") String phonemeUid) {
+        try {
+            PhoneticSymbol existing = phoneticSymbolRepository.findByPhonemeUid(safeStr(phonemeUid))
+                    .orElseThrow(() -> new RuntimeException("音标不存在"));
+            phoneticSymbolRepository.delete(existing);
+            return new ResponseEntity<>(Map.of("message", "deleted", "id", safeStr(phonemeUid)), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/phonetics/all")
+    @Transactional
+    public ResponseEntity<?> deleteAllPhonetics() {
+        try {
+            long count = phoneticSymbolRepository.count();
+            phoneticSymbolRepository.deleteAllInBatch();
+            return new ResponseEntity<>(Map.of("message", "deleted", "count", count), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping(value = "/phonetics/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Transactional
+    public ResponseEntity<?> importPhonetics(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "overwrite", required = false, defaultValue = "true") boolean overwrite
+    ) {
+        try {
+            PhoneticImportParseResult parseResult = parsePhoneticJsonl(file);
+            if (overwrite) {
+                phoneticSymbolRepository.deleteAllInBatch();
+            } else if (phoneticSymbolRepository.count() > 0) {
+                throw new RuntimeException("数据库已存在音标数据，请先全部删除或启用覆盖导入");
+            }
+            List<PhoneticSymbol> toSave = new ArrayList<>();
+            Set<String> seenIds = new LinkedHashSet<>();
+            Set<String> seenPhonetics = new LinkedHashSet<>();
+            for (Map<String, Object> row : parseResult.items()) {
+                PhoneticSymbol entity = mapPhoneticBodyToEntity(null, row);
+                if (!seenIds.add(entity.getPhonemeUid())) {
+                    throw new RuntimeException("JSONL 中存在重复音标ID: " + entity.getPhonemeUid());
+                }
+                if (!seenPhonetics.add(entity.getPhonetic())) {
+                    throw new RuntimeException("JSONL 中存在重复音标内容: " + entity.getPhonetic());
+                }
+                toSave.add(entity);
+            }
+            phoneticSymbolRepository.saveAll(toSave);
+            return new ResponseEntity<>(Map.of(
+                    "message", "imported",
+                    "count", toSave.size(),
+                    "meta", parseResult.meta()
+            ), HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
@@ -1214,7 +1341,7 @@ public class LexiconController {
 
     private Path resolveAudioFile(String filename) {
         if (safeStr(filename).isBlank()) return null;
-        List<Path> roots = List.of(wordAudioDir(), passageAudioDir());
+        List<Path> roots = List.of(wordAudioDir(), phoneticAudioDir(), passageAudioDir());
         for (Path root : roots) {
             Path candidate = root.resolve(filename).normalize();
             if (candidate.startsWith(root) && Files.exists(candidate)) {
@@ -1404,6 +1531,17 @@ public class LexiconController {
         return row;
     }
 
+    private Map<String, Object> toPhoneticResponse(PhoneticSymbol entity) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", safeStr(entity.getPhonemeUid()));
+        row.put("type", safeStr(entity.getType()).isBlank() ? "phoneme" : safeStr(entity.getType()));
+        row.put("phonetic", safeStr(entity.getPhonetic()));
+        row.put("category", safeStr(entity.getCategory()));
+        row.put("phoneme_audio", safeStr(entity.getPhonemeAudio()));
+        row.put("example_words", parseExampleWordsJson(entity.getExampleWordsJson()));
+        return row;
+    }
+
     private TextbookUnit mapUnitBodyToEntity(TextbookUnit base, Map<String, Object> body) {
         TextbookUnit entity = base == null ? new TextbookUnit() : base;
         String bookVersion = safeStr(body.get("book_version"));
@@ -1426,6 +1564,24 @@ public class LexiconController {
         entity.setSourcePages(sourcePagesToText(body.get("source_pages")));
         Object activeRaw = body.get("active");
         entity.setActive(activeRaw == null ? Optional.ofNullable(entity.getActive()).orElse(true) : Boolean.parseBoolean(String.valueOf(activeRaw)));
+        return entity;
+    }
+
+    private PhoneticSymbol mapPhoneticBodyToEntity(PhoneticSymbol base, Map<String, Object> body) {
+        PhoneticSymbol entity = base == null ? new PhoneticSymbol() : base;
+        String phonemeUid = safeStr(body.get("id"));
+        String type = safeStr(body.get("type"));
+        String phonetic = normalizePhonemeValue(body.get("phonetic"));
+        String category = normalizePhonemeCategory(body.get("category"));
+        if (phonemeUid.isBlank() || phonetic.isBlank() || category.isBlank()) {
+            throw new RuntimeException("音标ID、音标内容、分类不能为空");
+        }
+        entity.setPhonemeUid(phonemeUid);
+        entity.setType(type.isBlank() ? "phoneme" : type);
+        entity.setPhonetic(phonetic);
+        entity.setCategory(category);
+        entity.setPhonemeAudio(safeStr(body.get("phoneme_audio")));
+        entity.setExampleWordsJson(exampleWordsToJson(body.get("example_words")));
         return entity;
     }
 
@@ -1461,6 +1617,23 @@ public class LexiconController {
         cleaned = cleaned.replace("/", "").trim();
         if (cleaned.isBlank()) return "";
         return "/" + cleaned + "/";
+    }
+
+    private String normalizePhonemeValue(Object value) {
+        String s = safeStr(value);
+        if (s.isBlank()) return "";
+        s = s.replace(" ", "");
+        if (!s.startsWith("/")) s = "/" + s;
+        if (!s.endsWith("/")) s = s + "/";
+        return s;
+    }
+
+    private String normalizePhonemeCategory(Object value) {
+        String category = safeStr(value).toLowerCase(Locale.ROOT);
+        if ("vowel".equals(category) || "consonant".equals(category)) {
+            return category;
+        }
+        return category;
     }
 
     private String normalizePos(String value) {
@@ -1626,6 +1799,72 @@ public class LexiconController {
         return new UnitImportParseResult(items, safeStr(file.getOriginalFilename()), sourcePages);
     }
 
+    private PhoneticImportParseResult parsePhoneticJsonl(MultipartFile file) throws IOException {
+        if (file == null || file.isEmpty()) {
+            throw new RuntimeException("请上传 JSONL 文件");
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        Map<String, Object> meta = new LinkedHashMap<>();
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) continue;
+                Map<String, Object> raw = objectMapper.readValue(line, new TypeReference<>() {});
+                String recordType = safeStr(raw.get("record_type"));
+                if ("meta".equalsIgnoreCase(recordType)) {
+                    meta = raw;
+                    continue;
+                }
+                String type = safeStr(raw.get("type"));
+                if (!"phoneme".equalsIgnoreCase(type)) continue;
+                items.add(raw);
+            }
+        }
+
+        if (items.isEmpty()) {
+            throw new RuntimeException("JSONL 中没有可导入的音标数据");
+        }
+        return new PhoneticImportParseResult(items, meta);
+    }
+
+    private List<Map<String, Object>> parseExampleWordsJson(String json) {
+        String raw = safeStr(json);
+        if (raw.isBlank()) return new ArrayList<>();
+        try {
+            return objectMapper.readValue(raw, new TypeReference<>() {});
+        } catch (Exception ignore) {
+            return new ArrayList<>();
+        }
+    }
+
+    private String exampleWordsToJson(Object value) {
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> rawMap)) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("word", safeStr(rawMap.get("word")));
+                row.put("phonetic", normalizePhonemeValue(rawMap.get("phonetic")));
+                row.put("zh", safeStr(rawMap.get("zh")));
+                row.put("word_audio", safeStr(rawMap.get("word_audio")));
+                if (
+                        !safeStr(row.get("word")).isBlank()
+                                || !safeStr(row.get("phonetic")).isBlank()
+                                || !safeStr(row.get("zh")).isBlank()
+                                || !safeStr(row.get("word_audio")).isBlank()
+                ) {
+                    normalized.add(row);
+                }
+            }
+        }
+        try {
+            return objectMapper.writeValueAsString(normalized);
+        } catch (Exception e) {
+            throw new RuntimeException("示例单词数据格式错误");
+        }
+    }
+
     private void ensureDefaultScopesForExistingTextbooks() {
         List<String> textbooks = textbookVersionTagRepository.findAll().stream()
                 .map(TextbookVersionTag::getName)
@@ -1771,6 +2010,18 @@ public class LexiconController {
                 .normalize();
     }
 
+    private Path phoneticAudioDir() {
+        return Paths.get(System.getProperty("user.dir"))
+                .toAbsolutePath()
+                .normalize()
+                .resolve("..")
+                .resolve("..")
+                .resolve("tool")
+                .resolve("audio")
+                .resolve("phonetics")
+                .normalize();
+    }
+
     private Path passageAudioDir() {
         return Paths.get(System.getProperty("user.dir"))
                 .toAbsolutePath()
@@ -1784,5 +2035,6 @@ public class LexiconController {
 
     private record ParseResult(List<Map<String, Object>> items, Map<String, Integer> stats) {}
     private record UnitImportParseResult(List<Map<String, Object>> items, String sourceFile, String sourcePages) {}
+    private record PhoneticImportParseResult(List<Map<String, Object>> items, Map<String, Object> meta) {}
 }
 
