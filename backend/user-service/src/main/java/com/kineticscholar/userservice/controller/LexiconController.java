@@ -48,6 +48,12 @@ public class LexiconController {
 
     private static final String WORD = "word";
     private static final String PHRASE = "phrase";
+    private static final String SOURCE_CURRENT_BOOK = "current_book";
+    private static final String SOURCE_PRIMARY_SCHOOL_REVIEW = "primary_school_review";
+    private static final List<String> SUPPORTED_SOURCE_TAGS = List.of(
+            SOURCE_CURRENT_BOOK,
+            SOURCE_PRIMARY_SCHOOL_REVIEW
+    );
     private static final Pattern SLASH_PHONETIC = Pattern.compile("/[^/]+/");
     private static final Pattern BRACKET_PHONETIC = Pattern.compile("\\[([^\\]]+)]");
     private static final List<String> DEFAULT_TEXTBOOK_GRADES = List.of(
@@ -81,6 +87,7 @@ public class LexiconController {
     @GetMapping("/options")
     public ResponseEntity<?> getOptions(@RequestParam(value = "type", required = false) String type) {
         try {
+            entryRepository.backfillMissingSourceTags(SOURCE_CURRENT_BOOK);
             ensureDefaultScopesForExistingTextbooks();
             List<TextbookScopeTag> scopes = textbookScopeTagRepository.findAll();
             Set<String> scopeBooks = new TreeSet<>();
@@ -134,6 +141,7 @@ public class LexiconController {
             data.put("bookVersions", bookVersions);
             data.put("grades", grades);
             data.put("semesters", semesters);
+            data.put("sourceTags", SUPPORTED_SOURCE_TAGS);
             return new ResponseEntity<>(data, HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
@@ -1003,16 +1011,21 @@ public class LexiconController {
             @RequestParam("type") String type,
             @RequestParam("bookVersion") String bookVersion,
             @RequestParam("grade") String grade,
-            @RequestParam("semester") String semester
+            @RequestParam("semester") String semester,
+            @RequestParam(value = "sourceTag", required = false) String sourceTag
     ) {
         try {
             String normalizedType = normalizeType(type);
-            List<LexiconEntry> entries = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(
-                    normalizedType,
-                    safeStr(bookVersion),
-                    safeStr(grade),
-                    normalizeSemesterTag(semester)
-            );
+            String bv = safeStr(bookVersion);
+            String g = safeStr(grade);
+            String s = normalizeSemesterTag(semester);
+            String normalizedSourceTag = normalizeSourceTag(sourceTag, false);
+            entryRepository.backfillMissingSourceTags(SOURCE_CURRENT_BOOK);
+            List<LexiconEntry> entries = normalizedSourceTag.isBlank()
+                    ? entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(normalizedType, bv, g, s)
+                    : entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndSourceTagOrderByUnitAscIdAsc(
+                            normalizedType, bv, g, s, normalizedSourceTag
+                    );
 
             List<Map<String, Object>> items = entries.stream()
                     .sorted((a, b) -> compareUnit(safeStr(a.getUnit()), safeStr(b.getUnit())))
@@ -1031,6 +1044,7 @@ public class LexiconController {
             data.put("file", "db://lexicon_entries");
             data.put("units", units.stream().sorted(this::compareUnit).toList());
             data.put("items", items);
+            data.put("sourceTag", normalizedSourceTag);
             return new ResponseEntity<>(data, HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
@@ -1042,23 +1056,29 @@ public class LexiconController {
             @RequestParam("type") String type,
             @RequestParam("bookVersion") String bookVersion,
             @RequestParam("grade") String grade,
-            @RequestParam("semester") String semester
+            @RequestParam("semester") String semester,
+            @RequestParam(value = "sourceTag", required = false) String sourceTag
     ) {
         try {
             String normalizedType = normalizeType(type);
             String bv = safeStr(bookVersion);
             String g = safeStr(grade);
             String s = normalizeSemesterTag(semester);
-            List<LexiconEntry> entries = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(
-                    normalizedType, bv, g, s
-            );
+            String normalizedSourceTag = normalizeSourceTag(sourceTag, false);
+            entryRepository.backfillMissingSourceTags(SOURCE_CURRENT_BOOK);
+            long count = normalizedSourceTag.isBlank()
+                    ? entryRepository.countByTypeAndBookVersionAndGradeAndSemester(normalizedType, bv, g, s)
+                    : entryRepository.countByTypeAndBookVersionAndGradeAndSemesterAndSourceTag(
+                            normalizedType, bv, g, s, normalizedSourceTag
+                    );
 
             Map<String, Object> data = new HashMap<>();
             data.put("type", normalizedType);
             data.put("bookVersion", bv);
             data.put("grade", g);
             data.put("semester", s);
-            data.put("count", entries.size());
+            data.put("sourceTag", normalizedSourceTag);
+            data.put("count", count);
             return new ResponseEntity<>(data, HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
@@ -1159,6 +1179,7 @@ public class LexiconController {
             String bv = safeStr(bookVersion);
             String g = safeStr(grade);
             String s = normalizeSemesterTag(semester);
+            entryRepository.backfillMissingSourceTags(SOURCE_CURRENT_BOOK);
             ensureTagExists(bv, g, s);
 
             List<LexiconEntry> existing = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(
@@ -1196,6 +1217,7 @@ public class LexiconController {
             String bv = safeStr(bookVersion);
             String g = safeStr(grade);
             String s = normalizeSemesterTag(semester);
+            entryRepository.backfillMissingSourceTags(SOURCE_CURRENT_BOOK);
 
             List<LexiconEntry> existing = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(
                     normalizedType, bv, g, s
@@ -1234,6 +1256,7 @@ public class LexiconController {
             String bv = safeStr(bookVersion);
             String g = safeStr(grade);
             String s = normalizeSemesterTag(semester);
+            entryRepository.backfillMissingSourceTags(SOURCE_CURRENT_BOOK);
 
             List<LexiconEntry> existing = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(
                     normalizedType, bv, g, s
@@ -1281,6 +1304,7 @@ public class LexiconController {
             @RequestParam("bookVersion") String bookVersion,
             @RequestParam("grade") String grade,
             @RequestParam("semester") String semester,
+            @RequestParam(value = "sourceTag", required = false) String sourceTag,
             @RequestParam(value = "proofread", required = false, defaultValue = "true") boolean proofread,
             @RequestParam(value = "overwrite", required = false, defaultValue = "false") boolean overwrite
     ) {
@@ -1289,20 +1313,29 @@ public class LexiconController {
             String bv = safeStr(bookVersion);
             String g = safeStr(grade);
             String s = normalizeSemesterTag(semester);
+            String normalizedSourceTag = normalizeSourceTag(sourceTag, true);
             ensureTagExists(bv, g, s);
             ParseResult parseResult = parseJsonl(file, normalizedType, proofread);
+            entryRepository.backfillMissingSourceTags(SOURCE_CURRENT_BOOK);
 
             if (overwrite) {
-                List<LexiconEntry> existing = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterOrderByUnitAscIdAsc(
-                        normalizedType, bv, g, s
+                List<LexiconEntry> existing = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndSourceTagOrderByUnitAscIdAsc(
+                        normalizedType, bv, g, s, normalizedSourceTag
                 );
                 if (!existing.isEmpty()) {
                     entryRepository.deleteAll(existing);
                 }
+            } else if (entryRepository.countByTypeAndBookVersionAndGradeAndSemesterAndSourceTag(
+                    normalizedType, bv, g, s, normalizedSourceTag
+            ) > 0) {
+                throw new RuntimeException("当前范围下该来源的数据已存在，请先删除同来源数据或启用覆盖导入");
             }
 
             List<LexiconEntry> entities = new ArrayList<>();
             for (Map<String, Object> item : parseResult.items) {
+                item.put("source_tag", normalizeSourceTag(item.get("source_tag"), true).isBlank()
+                        ? normalizedSourceTag
+                        : normalizeSourceTag(item.get("source_tag"), true));
                 entities.add(mapToEntity(item, normalizedType, bv, g, s, false));
             }
             entryRepository.saveAll(entities);
@@ -1312,6 +1345,7 @@ public class LexiconController {
             data.put("count", entities.size());
             data.put("proofread", proofread);
             data.put("stats", parseResult.stats);
+            data.put("sourceTag", normalizedSourceTag);
             return new ResponseEntity<>(data, HttpStatus.OK);
         } catch (Exception e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
@@ -1400,6 +1434,7 @@ public class LexiconController {
         item.put("book_version", safeStr(raw.get("book_version")));
         item.put("grade", safeStr(raw.get("grade")));
         item.put("semester", safeStr(raw.get("semester")));
+        item.put("source_tag", normalizeSourceTag(raw.get("source_tag"), true));
 
         List<Map<String, Object>> meanings = new ArrayList<>();
         Object rawMeanings = raw.get("meanings");
@@ -1453,6 +1488,7 @@ public class LexiconController {
         entry.setBookVersion(useEmbeddedMeta ? safeStr(item.get("book_version")) : bookVersion);
         entry.setGrade(useEmbeddedMeta ? safeStr(item.get("grade")) : grade);
         entry.setSemester(useEmbeddedMeta ? safeStr(item.get("semester")) : semester);
+        entry.setSourceTag(normalizeSourceTag(item.get("source_tag"), true));
         entry.setWordAudio(safeStr(item.get("word_audio")));
         entry.setPhraseAudio(safeStr(item.get("phrase_audio")));
 
@@ -1499,6 +1535,7 @@ public class LexiconController {
         item.put("book_version", safeStr(e.getBookVersion()));
         item.put("grade", safeStr(e.getGrade()));
         item.put("semester", safeStr(e.getSemester()));
+        item.put("source_tag", normalizeSourceTag(e.getSourceTag(), true));
         item.put("word_audio", safeStr(e.getWordAudio()));
         item.put("phrase_audio", safeStr(e.getPhraseAudio()));
         List<Map<String, Object>> meanings = new ArrayList<>();
@@ -1591,6 +1628,23 @@ public class LexiconController {
             throw new RuntimeException("type must be word or phrase");
         }
         return t;
+    }
+
+    private String normalizeSourceTag(Object value, boolean useDefault) {
+        String raw = safeStr(value).toLowerCase(Locale.ROOT);
+        if (raw.isBlank()) {
+            return useDefault ? SOURCE_CURRENT_BOOK : "";
+        }
+        if (SUPPORTED_SOURCE_TAGS.contains(raw)) {
+            return raw;
+        }
+        if ("primary".equals(raw) || "primary_school".equals(raw) || "review".equals(raw) || "primary_review".equals(raw)) {
+            return SOURCE_PRIMARY_SCHOOL_REVIEW;
+        }
+        if ("current".equals(raw) || "book".equals(raw) || "currentbook".equals(raw)) {
+            return SOURCE_CURRENT_BOOK;
+        }
+        return useDefault ? SOURCE_CURRENT_BOOK : "";
     }
 
     private String normalizePhonetic(String value) {

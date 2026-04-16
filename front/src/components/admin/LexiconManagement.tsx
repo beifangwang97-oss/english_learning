@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { CheckSquare, Layers, Pencil, Plus, Save, Trash2, Upload, X } from 'lucide-react';
-import { LexiconItem, TextbookScopeBookRow, lexiconApi } from '../../lib/lexicon';
+import { LexiconItem, TextbookScopeBookRow, formatSourceTagLabel, lexiconApi } from '../../lib/lexicon';
 import { getSessionToken } from '../../lib/session';
 
 type Props = { type: 'word' | 'phrase' };
@@ -13,6 +13,7 @@ type ImportRow = {
   bookVersion: string;
   grade: string;
   semester: string;
+  sourceTag: string;
   count: number;
   status: ImportStatus;
   note?: string;
@@ -38,12 +39,15 @@ const parseFileMeta = (fileName: string) => {
   const bookVersion = (parts[0] || '').trim();
   const grade = (parts[1] || '').trim();
   const semester = normalizeSemester((parts[2] || '').trim());
-  const listToken = (parts[3] || '').trim();
+  const token3 = (parts[3] || '').trim();
+  const token4 = (parts[4] || '').trim();
+  const sourceTag = token4 ? (token3 || 'current_book') : 'current_book';
+  const listToken = token4 || token3;
   let parsedType: ImportRow['parsedType'] = 'unknown';
   if (listToken.includes('单词表')) parsedType = 'word';
   else if (listToken.includes('短语表')) parsedType = 'phrase';
   else if (listToken.includes('课文表')) parsedType = 'passage';
-  return { bookVersion, grade, semester, parsedType };
+  return { bookVersion, grade, semester, parsedType, sourceTag };
 };
 const statusLabel: Record<ImportStatus, string> = {
   invalid: '无效',
@@ -54,6 +58,11 @@ const statusLabel: Record<ImportStatus, string> = {
   importing: '导入中',
   success: '已导入',
   failed: '\u5931\u8d25',
+};
+
+const resolveSourceTag = (value?: string) => {
+  const normalized = (value || '').trim();
+  return normalized || 'current_book';
 };
 
 export const LexiconManagement: React.FC<Props> = ({ type }) => {
@@ -70,6 +79,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const [selectedBookVersion, setSelectedBookVersion] = useState('');
   const [selectedGrade, setSelectedGrade] = useState('');
   const [selectedSemester, setSelectedSemester] = useState('');
+  const [selectedSourceTag, setSelectedSourceTag] = useState('all');
   const [selectedUnit, setSelectedUnit] = useState('');
   const [items, setItems] = useState<LexiconItem[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -84,9 +94,17 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [checkingImportRows, setCheckingImportRows] = useState(false);
   const [importingBatch, setImportingBatch] = useState(false);
+  const availableSourceTags = useMemo(
+    () => Array.from(new Set(items.map((x) => resolveSourceTag(x.source_tag)).filter(Boolean))).sort(),
+    [items]
+  );
 
-  const units = useMemo(() => Array.from(new Set(items.map((x) => x.unit || 'Unit 1'))).sort(sortUnit), [items]);
-  const visibleItems = useMemo(() => items.filter((x) => x.unit === selectedUnit), [items, selectedUnit]);
+  const filteredBySource = useMemo(
+    () => selectedSourceTag === 'all' ? items : items.filter((x) => resolveSourceTag(x.source_tag) === selectedSourceTag),
+    [items, selectedSourceTag]
+  );
+  const units = useMemo(() => Array.from(new Set(filteredBySource.map((x) => x.unit || 'Unit 1'))).sort(sortUnit), [filteredBySource]);
+  const visibleItems = useMemo(() => filteredBySource.filter((x) => x.unit === selectedUnit), [filteredBySource, selectedUnit]);
   const normalizedSemesters = useMemo(() => semesters.map(normalizeSemester), [semesters]);
   const scopeMap = useMemo(() => {
     const m = new Map<string, Map<string, string[]>>();
@@ -153,6 +171,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
       const res = await lexiconApi.getItems(token, type, bookVersion, grade, semester);
       const normalized = (res.items || []).map((x) => ({
         ...x,
+        source_tag: x.source_tag || 'current_book',
         meanings: Array.isArray(x.meanings) && x.meanings.length ? x.meanings : [{ pos: '', meaning: '', example: '', example_zh: '', example_audio: '' }],
       }));
       setItems(normalized);
@@ -192,6 +211,21 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
     }
   }, [semestersForSelectedScope, selectedSemester]);
   useEffect(() => { if (selectedBookVersion && selectedGrade && selectedSemester) loadItems(selectedBookVersion, selectedGrade, selectedSemester); }, [selectedBookVersion, selectedGrade, selectedSemester]);
+  useEffect(() => {
+    if (selectedSourceTag === 'all') return;
+    if (!availableSourceTags.includes(selectedSourceTag)) {
+      setSelectedSourceTag('all');
+    }
+  }, [availableSourceTags, selectedSourceTag]);
+  useEffect(() => {
+    if (!units.length) {
+      setSelectedUnit('');
+      return;
+    }
+    if (!units.includes(selectedUnit)) {
+      setSelectedUnit(units[0]);
+    }
+  }, [units, selectedUnit]);
   useEffect(() => { if (showImportModal) setImportRows([]); }, [showImportModal, type]);
   useEffect(() => { if (showGroupModal) { setGroupUnits(new Set(units)); setGroupSize('10'); } }, [showGroupModal, units]);
 
@@ -200,7 +234,21 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const toggleSelected = (id: string, checked: boolean) => setSelectedIds((prev) => { const next = new Set(prev); checked ? next.add(id) : next.delete(id); return next; });
   const addMeaning = (id: string) => setItems((prev) => prev.map((x) => x.id === id ? { ...x, meanings: [...x.meanings, { pos: '', meaning: '', example: '', example_zh: '', example_audio: '' }] } : x));
   const removeMeaning = (id: string, idx: number) => setItems((prev) => prev.map((x) => x.id === id && x.meanings.length > 1 ? { ...x, meanings: x.meanings.filter((_, i) => i !== idx) } : x));
-  const addItem = () => selectedUnit && setItems((prev) => [{ id: newId(), word: '', phonetic: '', unit: selectedUnit, group_no: undefined, type, book_version: selectedBookVersion, grade: selectedGrade, semester: selectedSemester, meanings: [{ pos: type === 'word' ? '' : 'phrase', meaning: '', example: '', example_zh: '', example_audio: '' }], word_audio: '', phrase_audio: '' }, ...prev]);
+  const addItem = () => selectedUnit && setItems((prev) => [{
+    id: newId(),
+    word: '',
+    phonetic: '',
+    unit: selectedUnit,
+    group_no: undefined,
+    type,
+    book_version: selectedBookVersion,
+    grade: selectedGrade,
+    semester: selectedSemester,
+    source_tag: selectedSourceTag === 'all' ? 'current_book' : selectedSourceTag,
+    meanings: [{ pos: type === 'word' ? '' : 'phrase', meaning: '', example: '', example_zh: '', example_audio: '' }],
+    word_audio: '',
+    phrase_audio: ''
+  }, ...prev]);
   const deleteSelected = () => { setItems((prev) => prev.filter((x) => !selectedIds.has(x.id))); setSelectedIds(new Set()); };
   const moveSelected = () => { if (!moveTargetUnit) return; setItems((prev) => prev.map((x) => selectedIds.has(x.id) ? { ...x, unit: moveTargetUnit } : x)); setSelectedUnit(moveTargetUnit); setSelectedIds(new Set()); };
 
@@ -262,7 +310,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const buildImportRows = async (files: File[]) => {
     const rows: ImportRow[] = [];
     for (const file of files) {
-      const { bookVersion, grade, semester, parsedType } = parseFileMeta(file.name);
+      const { bookVersion, grade, semester, parsedType, sourceTag } = parseFileMeta(file.name);
       let count = 0;
       let status: ImportStatus = 'unchecked';
       let note = '';
@@ -293,6 +341,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
         bookVersion,
         grade,
         semester: normalizeSemester(semester),
+        sourceTag,
         count,
         status,
         note: note || undefined,
@@ -337,7 +386,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
         next[i] = { ...row, status: 'checking', note: undefined };
         setImportRows([...next]);
         try {
-          const scope = await lexiconApi.getItemsCount(token, type, row.bookVersion, row.grade, normalizeSemester(row.semester));
+          const scope = await lexiconApi.getItemsCount(token, type, row.bookVersion, row.grade, normalizeSemester(row.semester), resolveSourceTag(row.sourceTag));
           next[i] = scope.count > 0
             ? { ...row, semester: normalizeSemester(row.semester), status: 'exists', note: `数据库已存在 ${scope.count} 条，请先删除再导入` }
             : { ...row, semester: normalizeSemester(row.semester), status: 'ready', note: undefined };
@@ -388,6 +437,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
             bookVersion: row.bookVersion,
             grade: row.grade,
             semester: normalizeSemester(row.semester),
+            sourceTag: resolveSourceTag(row.sourceTag),
             file: row.file,
             proofread: true,
             overwrite: false,
@@ -433,6 +483,10 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
         <select value={selectedBookVersion} onChange={(e) => { setSelectedBookVersion(e.target.value); }} className="border rounded-lg px-3 py-2 bg-white">{bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}</select>
         <select value={selectedGrade} onChange={(e) => setSelectedGrade(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{gradesForSelectedBook.map((g) => <option key={g} value={g}>{g}</option>)}</select>
         <select value={selectedSemester} onChange={(e) => setSelectedSemester(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{semestersForSelectedScope.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+        <select value={selectedSourceTag} onChange={(e) => setSelectedSourceTag(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">
+          <option value="all">全部来源</option>
+          {availableSourceTags.map((tag) => <option key={tag} value={tag}>{formatSourceTagLabel(tag)}</option>)}
+        </select>
         <select value={selectedUnit} onChange={(e) => setSelectedUnit(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{units.map((u) => <option key={u} value={u}>{u}</option>)}</select>
         <div className="ml-auto flex items-center gap-2">
           {!isEditing && <button onClick={() => setShowGroupModal(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Layers className="w-4 h-4" /> 分组</button>}

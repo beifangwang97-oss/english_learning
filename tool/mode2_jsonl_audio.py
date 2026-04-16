@@ -77,6 +77,8 @@ if "split_mode" not in st.session_state:
     st.session_state.split_mode = {}
 if "stop_extraction" not in st.session_state:
     st.session_state.stop_extraction = False
+if "mode2_pause_requested" not in st.session_state:
+    st.session_state.mode2_pause_requested = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
@@ -89,11 +91,16 @@ STRUCTURE_DIR = os.path.join(BASE_DIR, "structure_data")
 TARGET_TEXTBOOK_DIR = os.path.join(BASE_DIR, "待处理教材")
 PASSAGE_OUTPUT_DIR = UNRECORDED_DIR
 PASSAGE_AUDIO_DIR = os.path.join(BASE_DIR, "passage_audio")
-MAX_CONCURRENT_TTS = 4
+MAX_CONCURRENT_TTS = 2
 LLM_TIMEOUT_SECONDS = 90
 LLM_MAX_RETRIES = 4
 LLM_CLIENT_CACHE = {}
 STAGE1_ITEM_RETRY_LIMIT = 2
+
+if "audio_max_concurrent_input" not in st.session_state:
+    st.session_state.audio_max_concurrent_input = MAX_CONCURRENT_TTS
+if "audio_max_concurrent_applied" not in st.session_state:
+    st.session_state.audio_max_concurrent_applied = MAX_CONCURRENT_TTS
 
 def ensure_runtime_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -140,6 +147,59 @@ def build_recorded_output_base(uploaded_name, source_type):
     if safe_stem and safe_stem != "unknown":
         return safe_stem
     return f"{sanitize_filename(source_type)}_source"
+
+
+def infer_source_tag_from_filename(filename):
+    stem = os.path.splitext(os.path.basename(str(filename or "")))[0]
+    if "_current_book_" in stem or stem.endswith("_current_book"):
+        return "current_book"
+    if "_primary_school_review_" in stem or stem.endswith("_primary_school_review"):
+        return "primary_school_review"
+    return ""
+
+
+def is_valid_audio_file(audio_path):
+    return bool(audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0)
+
+
+def find_audio_filename_by_rule(uid, expected_filename, audio_dir=AUDIO_DIR, example_idx=None):
+    expected_abs = os.path.join(audio_dir, expected_filename)
+    if is_valid_audio_file(expected_abs):
+        return expected_filename
+
+    if not os.path.exists(audio_dir):
+        return ""
+
+    try:
+        files = [f for f in os.listdir(audio_dir) if f.endswith('.mp3') and f.startswith(f"{uid}_")]
+    except Exception:
+        files = []
+
+    if example_idx is None:
+        candidates = [f for f in files if '_ex_' not in f and '_sent_' not in f]
+    else:
+        suffix_a = f"_ex_{example_idx}.mp3"
+        suffix_b = f"_sent_{example_idx}.mp3"
+        candidates = [f for f in files if f.endswith(suffix_a) or f.endswith(suffix_b)]
+
+    for name in sorted(candidates):
+        abs_path = os.path.join(audio_dir, name)
+        if is_valid_audio_file(abs_path):
+            return name
+    return ""
+
+
+def resolve_audio_rel(current_rel_path, uid, expected_filename, audio_dir=AUDIO_DIR, rel_prefix="audio", example_idx=None):
+    if current_rel_path:
+        abs_from_rel = to_abs_audio_path(current_rel_path)
+        if is_valid_audio_file(abs_from_rel):
+            return current_rel_path, True
+
+    found_name = find_audio_filename_by_rule(uid, expected_filename, audio_dir=audio_dir, example_idx=example_idx)
+    if found_name:
+        return f"./{rel_prefix}/{found_name}", True
+
+    return f"./{rel_prefix}/{expected_filename}", False
 
 
 def list_existing_recorded_versions(base_name):
@@ -1044,8 +1104,8 @@ def pdf_page_to_image_bytes_cached(doc, page_number):
     return pix.tobytes("png")
 
 
-def get_unique_id(word, unit, grade):
-    raw_str = f"{word}_{unit}_{grade}"
+def get_unique_id(word, unit, grade, semester="", book_version="", source_tag=""):
+    raw_str = f"{word}_{unit}_{grade}_{semester}_{book_version}_{source_tag}"
     return hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:10]
 
 
@@ -1072,7 +1132,21 @@ def check_audio_cache(text, audio_dir):
     return None, audio_hash
 
 
-async def _generate_single_audio_with_retry(text, filepath, semaphore, voice="en-US-GuyNeural", max_retries=3):
+def _is_tts_service_unavailable(error_msg: str) -> bool:
+    normalized = str(error_msg or "")
+    keywords = (
+        "503",
+        "Cannot connect",
+        "Connection timeout",
+        "Server disconnected",
+        "ClientConnectorError",
+        "WSServerHandshakeError",
+        "timeout to host",
+    )
+    return any(keyword in normalized for keyword in keywords)
+
+
+async def _generate_single_audio_with_retry(text, filepath, semaphore, voice="en-US-GuyNeural", max_retries=4):
     async with semaphore:
         if not text or not str(text).strip():
             return True
@@ -1101,8 +1175,8 @@ async def _generate_single_audio_with_retry(text, filepath, semaphore, voice="en
                     print(f"TTS 被服务端拒绝(403) [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
                     await asyncio.sleep(wait_time)
                     continue
-                if "503" in error_msg or "Cannot connect" in error_msg:
-                    wait_time = 6 * (attempt + 1)
+                if _is_tts_service_unavailable(error_msg):
+                    wait_time = 8 * (attempt + 1)
                     print(f"TTS 服务暂时不可用 [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
                     await asyncio.sleep(wait_time)
                     continue
@@ -1138,6 +1212,7 @@ def generate_audios_in_batch(audio_tasks, progress_bar=None, status_text=None, m
         
         async def process_one(text, path, idx):
             async with semaphore:
+                await asyncio.sleep(min(0.35 * idx, 1.2))
                 result = await _generate_single_audio_concurrent(text, path)
                 completed[0] += 1
                 if result:
@@ -1165,7 +1240,7 @@ def generate_audios_in_batch(audio_tasks, progress_bar=None, status_text=None, m
     return loop.run_until_complete(run_all())
 
 
-async def _generate_single_audio_concurrent(text, filepath, voice="en-US-GuyNeural", max_retries=3):
+async def _generate_single_audio_concurrent(text, filepath, voice="en-US-GuyNeural", max_retries=4):
     if not text or not str(text).strip():
         return True
 
@@ -1193,8 +1268,8 @@ async def _generate_single_audio_concurrent(text, filepath, voice="en-US-GuyNeur
                 print(f"TTS 被服务端拒绝(403) [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
                 await asyncio.sleep(wait_time)
                 continue
-            if "503" in error_msg or "Cannot connect" in error_msg:
-                wait_time = 4 * (attempt + 1)
+            if _is_tts_service_unavailable(error_msg):
+                wait_time = 8 * (attempt + 1)
                 print(f"TTS 服务暂时不可用 [{text}]，等待 {wait_time} 秒后重试 (尝试 {attempt + 1}/{max_retries})")
                 await asyncio.sleep(wait_time)
                 continue
@@ -1481,19 +1556,163 @@ def flatten_meanings_for_display(item):
         }
 
 
+def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
+    ensure_runtime_dirs()
+    inferred_source_tag = infer_source_tag_from_filename(uploaded_file.name)
+    fixed_rows = []
+    repair_tasks = []
+    path_fixed_count = 0
+    generated_task_count = 0
+
+    for line in uploaded_file.getvalue().decode("utf-8-sig", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        item = _load_json_line(line)
+        if inferred_source_tag and not str(item.get("source_tag", "") or "").strip():
+            item["source_tag"] = inferred_source_tag
+
+        item_type = (item.get("type", "") or "word").strip().lower()
+
+        if item_type == "passage":
+            target_id = (item.get("target_id", "") or "").strip()
+            if not target_id:
+                target_id = f"{item.get('unit', 'Unit ?')} Section {item.get('section', '')} {item.get('label', '')}".strip()
+            uid_seed = f"{target_id}|{item.get('book_version','')}|{item.get('grade','')}|{item.get('semester','')}|{item.get('source_tag','')}"
+            uid = (item.get("id", "") or "").strip() or hashlib.md5(uid_seed.encode("utf-8")).hexdigest()[:12]
+            item["id"] = uid
+
+            sentences = item.get("sentences", [])
+            if isinstance(sentences, list):
+                for sent_idx, s_item in enumerate(sentences):
+                    if not isinstance(s_item, dict):
+                        continue
+                    sent_en = (s_item.get("en", "") or "").strip()
+                    if not sent_en:
+                        continue
+                    current_audio = s_item.get("audio", "")
+                    expected_filename = f"{uid}_sent_{sent_idx}.mp3"
+                    resolved_rel, exists = resolve_audio_rel(
+                        current_audio,
+                        uid,
+                        expected_filename,
+                        audio_dir=PASSAGE_AUDIO_DIR,
+                        rel_prefix="passage_audio",
+                        example_idx=sent_idx,
+                    )
+                    if resolved_rel != current_audio:
+                        path_fixed_count += 1
+                    s_item["audio"] = resolved_rel
+                    if not exists:
+                        repair_tasks.append((sent_en, to_abs_audio_path(resolved_rel)))
+                        generated_task_count += 1
+
+            fixed_rows.append(item)
+            continue
+
+        word = (item.get("word", "") or "").strip()
+        if not word:
+            fixed_rows.append(item)
+            continue
+
+        word_clean = "".join([c for c in word if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
+        uid = (item.get("id", "") or "").strip() or get_unique_id(
+            word_clean,
+            item.get("unit", "unk"),
+            item.get("grade", "unk"),
+            item.get("semester", ""),
+            item.get("book_version", ""),
+            item.get("source_tag", ""),
+        )
+        item["id"] = uid
+
+        main_field = "word_audio" if item_type == "word" else "phrase_audio"
+        expected_main_filename = f"{uid}_{word_clean}.mp3"
+        current_main_rel = item.get(main_field, "")
+        resolved_main_rel, main_exists = resolve_audio_rel(
+            current_main_rel,
+            uid,
+            expected_main_filename,
+            audio_dir=AUDIO_DIR,
+            rel_prefix="audio",
+            example_idx=None,
+        )
+        if resolved_main_rel != current_main_rel:
+            path_fixed_count += 1
+        item[main_field] = resolved_main_rel
+        if not main_exists:
+            repair_tasks.append((word, to_abs_audio_path(resolved_main_rel)))
+            generated_task_count += 1
+
+        meanings = item.get("meanings", [])
+        if isinstance(meanings, list):
+            for meaning_idx, meaning in enumerate(meanings):
+                if not isinstance(meaning, dict):
+                    continue
+                example = (meaning.get("example", "") or "").strip()
+                if not example:
+                    continue
+                current_ex_rel = meaning.get("example_audio", "")
+                expected_ex_filename = f"{uid}_{word_clean}_ex_{meaning_idx}.mp3"
+                resolved_ex_rel, ex_exists = resolve_audio_rel(
+                    current_ex_rel,
+                    uid,
+                    expected_ex_filename,
+                    audio_dir=AUDIO_DIR,
+                    rel_prefix="audio",
+                    example_idx=meaning_idx,
+                )
+                if resolved_ex_rel != current_ex_rel:
+                    path_fixed_count += 1
+                meaning["example_audio"] = resolved_ex_rel
+                if not ex_exists:
+                    repair_tasks.append((example, to_abs_audio_path(resolved_ex_rel)))
+                    generated_task_count += 1
+
+        fixed_rows.append(item)
+
+    success = 0
+    fail = 0
+    if repair_tasks:
+        success, fail = generate_audios_in_batch(repair_tasks, None, None, max_concurrent=audio_max_concurrent)
+
+    save_name = os.path.basename(str(uploaded_file.name or "repaired_recorded.jsonl"))
+    save_path = os.path.join(RECORDED_DIR, save_name)
+    with open(save_path, "w", encoding="utf-8") as wf:
+        for row in fixed_rows:
+            wf.write(json.dumps(_sanitize_item_for_jsonl(row), ensure_ascii=False) + "\n")
+
+    return {
+        "save_path": save_path,
+        "row_count": len(fixed_rows),
+        "path_fixed_count": path_fixed_count,
+        "generated_task_count": generated_task_count,
+        "success": success,
+        "fail": fail,
+    }
+
+
 st.title("Tiger English - 模式二：JSONL导入与音频生成")
 
 with st.sidebar:
     st.header("音频并发配置")
-    audio_max_concurrent = st.slider(
+    st.number_input(
         "TTS 并发数",
         min_value=1,
         max_value=20,
-        value=int(st.session_state.get("audio_max_concurrent", MAX_CONCURRENT_TTS)),
         step=1,
-        key="audio_max_concurrent",
-        help="仅用于音频生成/修复；数值越大速度越快，但失败风险也可能上升。",
+        key="audio_max_concurrent_input",
+        disabled=st.session_state.is_generating_audio,
+        help="输入本次音频生成使用的并发数。建议 1-2 更稳，值越大速度越快，但失败风险也会提高。",
     )
+    if st.button("确定并发数", disabled=st.session_state.is_generating_audio, use_container_width=True):
+        st.session_state.audio_max_concurrent_applied = int(st.session_state.audio_max_concurrent_input)
+        st.success(f"本次已锁定 TTS 并发数：{st.session_state.audio_max_concurrent_applied}")
+    audio_max_concurrent = int(st.session_state.get("audio_max_concurrent_applied", MAX_CONCURRENT_TTS))
+    st.caption(f"当前已确认并发数：{audio_max_concurrent}")
+    if st.session_state.is_generating_audio:
+        st.info(f"生成进行中，本次任务固定使用并发数：{audio_max_concurrent}")
+    else:
+        st.caption("当前模式不做续跑；如果中断，本次任务结束。下次重新开始时会重新检查现有音频与路径。")
 
 tab2 = st.tabs(["模式二：JSONL 导入与音频生成"])[0]
 
@@ -1515,6 +1734,25 @@ with tab2:
         upload_tasks.append((pf, "phrase"))
     for tf in (uploaded_passages or []):
         upload_tasks.append((tf, "passage"))
+
+    with st.expander("已录音 JSONL 兜底修复", expanded=False):
+        st.caption("上传已录音目录中的 JSONL。系统会逐行检查音频路径、扫描 audio 目录补路径；若路径和音频都缺失，则自动补生成。")
+        recorded_repair_file = st.file_uploader(
+            "上传已录音 JSONL 文件",
+            type=["jsonl"],
+            accept_multiple_files=False,
+            key="recorded_jsonl_repair_uploader",
+        )
+        if recorded_repair_file is not None:
+            st.write(f"待修复文件：{recorded_repair_file.name}")
+        if st.button("执行兜底修复", disabled=st.session_state.is_generating_audio or recorded_repair_file is None, key="btn_repair_recorded_jsonl"):
+            with st.spinner("正在检查路径并补全缺失音频..."):
+                repair_summary = repair_recorded_jsonl_file(recorded_repair_file, audio_max_concurrent)
+            st.success(
+                f"修复完成：共 {repair_summary['row_count']} 行，补路径 {repair_summary['path_fixed_count']} 处，"
+                f"待生成 {repair_summary['generated_task_count']} 个，成功 {repair_summary['success']} 个，失败 {repair_summary['fail']} 个。"
+            )
+            st.code(repair_summary["save_path"])
 
     overwrite_mode = "保留历史"
     btn_jsonl = False
@@ -1632,10 +1870,13 @@ with tab2:
 
         def load_items_from_uploaded(uploaded_file, source_type):
             parsed = []
+            inferred_source_tag = infer_source_tag_from_filename(uploaded_file.name)
             for line in uploaded_file.getvalue().decode("utf-8-sig", errors="replace").splitlines():
                 if not line.strip():
                     continue
                 item = _load_json_line(line)
+                if inferred_source_tag and not str(item.get("source_tag", "") or "").strip():
+                    item["source_tag"] = inferred_source_tag
                 item["_source_type"] = source_type
                 item["_source_file"] = uploaded_file.name
                 parsed.append(item)
@@ -1807,8 +2048,8 @@ with tab2:
                     if not target_id:
                         target_id = f"{uploaded_item.get('unit','Unit ?')} Section {uploaded_item.get('section','')} {uploaded_item.get('label','')}".strip()
 
-                    uid_seed = f"{target_id}|{uploaded_item.get('book_version','')}|{uploaded_item.get('grade','')}|{uploaded_item.get('semester','')}"
-                    uid = uploaded_item.get("id", hashlib.md5(uid_seed.encode("utf-8")).hexdigest()[:12])
+                    uid_seed = f"{target_id}|{uploaded_item.get('book_version','')}|{uploaded_item.get('grade','')}|{uploaded_item.get('semester','')}|{uploaded_item.get('source_tag','')}"
+                    uid = hashlib.md5(uid_seed.encode("utf-8")).hexdigest()[:12]
                     uploaded_item["id"] = uid
 
                     item = existing_items_map.get(uid, uploaded_item)
@@ -1852,7 +2093,14 @@ with tab2:
                         continue
 
                     word_clean = "".join([c for c in word if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
-                    uid = uploaded_item.get("id", get_unique_id(word_clean, uploaded_item.get("unit", "unk"), uploaded_item.get("grade", "unk")))
+                    uid = get_unique_id(
+                        word_clean,
+                        uploaded_item.get("unit", "unk"),
+                        uploaded_item.get("grade", "unk"),
+                        uploaded_item.get("semester", ""),
+                        uploaded_item.get("book_version", ""),
+                        uploaded_item.get("source_tag", ""),
+                    )
                     uploaded_item["id"] = uid
 
                     item = existing_items_map.get(uid, uploaded_item)

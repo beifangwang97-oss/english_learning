@@ -102,6 +102,10 @@ LLM_TIMEOUT_SECONDS = 30
 LLM_MAX_RETRIES = 1
 LLM_CLIENT_CACHE = {}
 STAGE1_ITEM_RETRY_LIMIT = 2
+SOURCE_TAG_OPTIONS = {
+    "当前册单词": "current_book",
+    "复习单词（小学）": "primary_school_review",
+}
 
 def ensure_runtime_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -167,8 +171,11 @@ def build_book_key(book_version, grade, semester, pdf_filename):
     return f"{sanitize_filename(book_version)}|{sanitize_filename(grade)}|{sanitize_filename(semester)}|{sanitize_filename(pdf_filename)}"
 
 
-def build_result_filename(book_version, grade, semester, kind_text, task_id):
-    return f"{sanitize_filename(book_version)}_{sanitize_filename(grade)}_{sanitize_filename(semester)}_{kind_text}_{task_id}.jsonl"
+def build_result_filename(book_version, grade, semester, source_tag, kind_text, task_id):
+    return (
+        f"{sanitize_filename(book_version)}_{sanitize_filename(grade)}_{sanitize_filename(semester)}_"
+        f"{sanitize_filename(source_tag)}_{kind_text}_{task_id}.jsonl"
+    )
 
 
 def get_pdf_stem(filename):
@@ -292,6 +299,71 @@ def load_preprocess_profile_from_file(file_path):
 def get_preprocess_profile_for_pdf(pdf_filename):
     path = get_preprocess_profile_path_for_pdf(pdf_filename)
     return load_preprocess_profile_from_file(path)
+
+
+def preprocess_filename_for_pdf(pdf_filename, source_tag=None):
+    stem = get_pdf_stem(pdf_filename)
+    if not source_tag:
+        runtime_source_label = st.session_state.get("mode1_source_tag_label", "")
+        source_tag = SOURCE_TAG_OPTIONS.get(runtime_source_label, "")
+    if source_tag:
+        return f"{stem}.{sanitize_filename(source_tag)}.preprocess.jsonl"
+    return f"{stem}.预处理.jsonl"
+
+
+def get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag=None):
+    if not source_tag:
+        return []
+    return [os.path.join(PREPROCESS_DOC_DIR, preprocess_filename_for_pdf(pdf_filename, source_tag))]
+
+
+def get_preprocess_profile_path_for_pdf(pdf_filename, source_tag=None):
+    return get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag)[0]
+
+
+def save_preprocess_profile_by_pdf(pdf_filename, start_page, end_page, preprocessed_pages, odd_default_split=None, odd_left_ratio=None, even_default_split=None, even_left_ratio=None, source_tag=None):
+    ensure_runtime_dirs()
+    save_path = get_preprocess_profile_path_for_pdf(pdf_filename, source_tag)
+
+    meta = {
+        "record_type": "meta",
+        "pdf_filename": os.path.basename(str(pdf_filename or "")),
+        "source_tag": str(source_tag or "").strip(),
+        "start_page": int(start_page),
+        "end_page": int(end_page),
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "defaults": {
+            "odd_default_split": bool(odd_default_split) if odd_default_split is not None else None,
+            "odd_left_ratio": float(odd_left_ratio) if odd_left_ratio is not None else None,
+            "even_default_split": bool(even_default_split) if even_default_split is not None else None,
+            "even_left_ratio": float(even_left_ratio) if even_left_ratio is not None else None,
+        }
+    }
+
+    with open(save_path, "w", encoding="utf-8") as wf:
+        wf.write(json.dumps(meta, ensure_ascii=False) + "\n")
+        for p_num in sorted((preprocessed_pages or {}).keys(), key=lambda x: int(x)):
+            info = (preprocessed_pages or {}).get(p_num, {})
+            if not isinstance(info, dict):
+                continue
+            mode = info.get("mode", "none")
+            row = {
+                "record_type": "page",
+                "page": int(p_num),
+                "mode": "split" if mode == "split" else "none",
+                "left_ratio": float(info.get("left_ratio", 0.5)) if mode == "split" else None,
+            }
+            wf.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    return save_path
+
+
+def get_preprocess_profile_for_pdf(pdf_filename, source_tag=None):
+    for path in get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag):
+        profile = load_preprocess_profile_from_file(path)
+        if profile:
+            return profile
+    return None
 
 
 def build_preprocessed_pages_from_profile(doc, start_page, end_page, profile):
@@ -1063,8 +1135,8 @@ def pdf_page_to_image_bytes_cached(doc, page_number):
     return pix.tobytes("png")
 
 
-def get_unique_id(word, unit, grade):
-    raw_str = f"{word}_{unit}_{grade}"
+def get_unique_id(word, unit, grade, semester="", book_version="", source_tag=""):
+    raw_str = f"{word}_{unit}_{grade}_{semester}_{book_version}_{source_tag}"
     return hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:10]
 
 
@@ -1306,15 +1378,27 @@ def generate_html_table(data_list):
     return html_content
 
 
-def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last_unit, grade_level, stop_event=None):
+def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last_unit, grade_level, source_tag="current_book", stop_event=None):
     client = get_openai_client(api_key, base_url)
     use_zh_prompt = is_chinese_prompt_model(model_name)
+    is_primary_review = str(source_tag or "").strip() == "primary_school_review"
+    zh_unit_rule = (
+        "8. 当前 source_tag=primary_school_review，这类复习词可能只覆盖部分单元，因此出现单元跳号是正常情况。不要因为跳号而复核连续性，也不要尝试按 +1 规律修正 unit。"
+        if is_primary_review else
+        "8. last_unit 仅作弱参考：如果本页第一个单元看起来跳号，请优先复核蓝色单元标题；若仍不确定，保留视觉识别结果，不要强行改成 +1。"
+    )
+    en_unit_rule = (
+        "- Current source_tag is primary_school_review. Review words may skip units, so non-consecutive unit numbers are normal. Do not treat unit jumps as suspicious, and do not try to correct them by continuity."
+        if is_primary_review else
+        "- Use last_unit as a weak reference only: if first unit seems to jump, re-check blue headers first; if still uncertain, keep visual evidence result instead of forcing +1."
+    )
 
     if use_zh_prompt:
         context_info = f"已知上一页结尾的单元是：{last_unit}。" if last_unit else "这是提取的第一页。"
         prompt = f"""
 你是一个专业的英语教材教研专家，正在处理【{grade_level}】级别的词汇数据。
 背景信息：{context_info}
+当前 source_tag：{source_tag}
 
 任务：识别图片中的英语单词表和短语表，按从上到下的视觉顺序提取为 JSON 数组。
 本阶段一次性完成提取，不进行第二轮补全。
@@ -1366,7 +1450,7 @@ def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last
 5. type=word 时，每个 meanings 元素只能对应一个词性；不要使用 "adj. & pron." 这类合并词性写法。
 6. 若同一单词有多个词性，请拆分为多个 meanings 元素，并确保每个词性都有自己对应的中文释义、英文例句和中文例句。
 7. meanings 必须是非空数组。
-8. last_unit 仅作弱参考：如果本页第一个单元看起来跳号，请优先复核蓝色单元标题；若仍不确定，保留视觉识别结果，不要强行改成 +1。
+{zh_unit_rule}
 9. 只输出 JSON 数组，不要输出 Markdown 代码块。
 """
     else:
@@ -1374,6 +1458,7 @@ def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last
         prompt = f"""
 You are extracting textbook vocabulary from one page image (grade context: {grade_level}).
 {context_info}
+Current source_tag: {source_tag}
 
 This pass must finish extraction completely in one shot (no second completion pass).
 Return a JSON array only (no markdown), using schema by type:
@@ -1427,7 +1512,7 @@ Rules:
 - For type=word, each meanings item must map to exactly one POS. Do not merge POS like "adj. & pron." in one item.
 - If a word has multiple POS, split them into separate meanings items, and each POS must have its own aligned meaning/example/example_zh.
 - meanings must be a non-empty array.
-- Use last_unit as a weak reference only: if first unit seems to jump, re-check blue headers first; if still uncertain, keep visual evidence result instead of forcing +1.
+{en_unit_rule}
 - Do not output audio fields.
 """
 
@@ -1589,6 +1674,15 @@ with tab1:
     st.subheader("模式一：PDF 提取（自动匹配预处理 + 边提取边写入）")
     st.caption("上传一个或多个教材 PDF，系统会自动匹配 `教材预处理文档` 下同名 `.预处理.jsonl`，并实时提取写入 `word_data/未录音`。")
 
+    selected_source_label = st.radio(
+        "提取来源",
+        options=list(SOURCE_TAG_OPTIONS.keys()),
+        horizontal=True,
+        key="mode1_source_tag_label"
+    )
+    selected_source_tag = SOURCE_TAG_OPTIONS[selected_source_label]
+    st.caption(f"当前提取结果将写入 source_tag = `{selected_source_tag}`，并写入输出文件名。")
+
     uploaded_pdfs_mode1 = st.file_uploader(
         "上传教材 PDF（可多文件）",
         type=["pdf"],
@@ -1620,7 +1714,7 @@ with tab1:
     if mode1_uploaded_items:
         for item in mode1_uploaded_items:
             uf = item["uploaded"]
-            profile = get_preprocess_profile_for_pdf(uf.name)
+            profile = get_preprocess_profile_for_pdf(uf.name, selected_source_tag)
             if profile:
                 src_bv, src_grade, src_sem = _parse_book_meta_from_filename(item["raw_name"])
                 if not (src_bv and src_grade and src_sem):
@@ -1757,6 +1851,7 @@ with tab1:
                     "pdf_bytes": pdf_bytes,
                     "tasks": tasks,
                     "file_meta": file_meta,
+                    "source_tag": selected_source_tag,
                 })
                 total_steps += len(tasks)
 
@@ -1782,11 +1877,28 @@ with tab1:
             for job_idx, job in enumerate(prepared_jobs):
                 job_api_key = pick_api_key_for_job(extract_api_keys, job_idx)
                 api_index = (job_idx % len(extract_api_keys)) + 1 if extract_api_keys else 1
+                filename_prefix = ""
                 task_id = f"{make_task_id()}_{job_idx + 1}"
                 file_meta = job["file_meta"]
-                filename_prefix = f"{job['pdf_stem']}_"
+                source_tag = job.get("source_tag", "current_book")
                 words_filename = f"{filename_prefix}单词表_{task_id}.jsonl"
                 phrases_filename = f"{filename_prefix}短语表_{task_id}.jsonl"
+                words_filename = build_result_filename(
+                    file_meta["book_version"],
+                    file_meta["grade"],
+                    file_meta["semester"],
+                    source_tag,
+                    "单词表",
+                    task_id,
+                )
+                phrases_filename = build_result_filename(
+                    file_meta["book_version"],
+                    file_meta["grade"],
+                    file_meta["semester"],
+                    source_tag,
+                    "短语表",
+                    task_id,
+                )
                 words_file_path = os.path.join(UNRECORDED_DIR, words_filename)
                 phrases_file_path = os.path.join(UNRECORDED_DIR, phrases_filename)
 
@@ -1887,6 +1999,7 @@ with tab1:
                             extract_model_name,
                             last_unit_context,
                             grade_level,
+                            job_payload.get("source_tag", "current_book"),
                             stop_event=stop_event,
                         )
 
@@ -1912,6 +2025,7 @@ with tab1:
                                 item["book_version"] = file_meta.get("book_version", "")
                                 item["grade"] = file_meta.get("grade", "")
                                 item["semester"] = file_meta.get("semester", "")
+                                item["source_tag"] = job_payload.get("source_tag", "current_book")
 
                                 if "type" not in item:
                                     word_text = item.get("word", "")
@@ -1928,7 +2042,14 @@ with tab1:
                                     }]
 
                                 word_clean = "".join([c for c in item.get("word", "") if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
-                                item["id"] = get_unique_id(word_clean, last_unit_context, file_meta.get("grade", ""))
+                                item["id"] = get_unique_id(
+                                    word_clean,
+                                    last_unit_context,
+                                    file_meta.get("grade", ""),
+                                    file_meta.get("semester", ""),
+                                    file_meta.get("book_version", ""),
+                                    job_payload.get("source_tag", "current_book"),
+                                )
                                 unit_name = item.get("unit", "Unit ?")
 
                                 if item["type"] == "word":

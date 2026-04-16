@@ -77,6 +77,8 @@ if "split_mode" not in st.session_state:
     st.session_state.split_mode = {}
 if "stop_extraction" not in st.session_state:
     st.session_state.stop_extraction = False
+if "preprocess_context_signature" not in st.session_state:
+    st.session_state.preprocess_context_signature = ""
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
@@ -94,6 +96,10 @@ LLM_TIMEOUT_SECONDS = 90
 LLM_MAX_RETRIES = 4
 LLM_CLIENT_CACHE = {}
 STAGE1_ITEM_RETRY_LIMIT = 2
+SOURCE_TAG_OPTIONS = {
+    "当前册单词": "current_book",
+    "复习单词（小学）": "primary_school_review",
+}
 
 def ensure_runtime_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -103,6 +109,14 @@ def ensure_runtime_dirs():
     os.makedirs(PASSAGE_AUDIO_DIR, exist_ok=True)
     os.makedirs(RUNS_DIR, exist_ok=True)
     os.makedirs(PREPROCESS_DOC_DIR, exist_ok=True)
+
+
+def reset_preprocess_editor_state():
+    st.session_state.preprocessed_pages = {}
+    st.session_state.split_mode = {}
+    for key in list(st.session_state.keys()):
+        if key.startswith("split_option_") or key.startswith("left_ratio_"):
+            del st.session_state[key]
 
 
 def make_task_id():
@@ -284,6 +298,82 @@ def load_preprocess_profile_from_file(file_path):
 def get_preprocess_profile_for_pdf(pdf_filename):
     path = get_preprocess_profile_path_for_pdf(pdf_filename)
     return load_preprocess_profile_from_file(path)
+
+
+def preprocess_filename_for_pdf(pdf_filename, source_tag=None):
+    stem = get_pdf_stem(pdf_filename)
+    if source_tag:
+        return f"{stem}.{sanitize_filename(source_tag)}.preprocess.jsonl"
+    return f"{stem}.preprocess.jsonl"
+
+
+def get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag=None):
+    paths = []
+    if source_tag:
+        paths.append(os.path.join(PREPROCESS_DOC_DIR, preprocess_filename_for_pdf(pdf_filename, source_tag)))
+    paths.append(os.path.join(PREPROCESS_DOC_DIR, preprocess_filename_for_pdf(pdf_filename)))
+    deduped = []
+    seen = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        deduped.append(path)
+    return deduped
+
+
+def get_preprocess_profile_path_for_pdf(pdf_filename, source_tag=None):
+    return get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag)[0]
+
+
+def save_preprocess_profile_by_pdf(pdf_filename, start_page, end_page, preprocessed_pages, odd_default_split=None, odd_left_ratio=None, even_default_split=None, even_left_ratio=None, source_tag=None):
+    ensure_runtime_dirs()
+    save_path = get_preprocess_profile_path_for_pdf(pdf_filename, source_tag)
+    start_page = int(start_page)
+    end_page = int(end_page)
+
+    meta = {
+        "record_type": "meta",
+        "pdf_filename": os.path.basename(str(pdf_filename or "")),
+        "source_tag": str(source_tag or "").strip(),
+        "start_page": start_page,
+        "end_page": end_page,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "defaults": {
+            "odd_default_split": bool(odd_default_split) if odd_default_split is not None else None,
+            "odd_left_ratio": float(odd_left_ratio) if odd_left_ratio is not None else None,
+            "even_default_split": bool(even_default_split) if even_default_split is not None else None,
+            "even_left_ratio": float(even_left_ratio) if even_left_ratio is not None else None,
+        }
+    }
+
+    with open(save_path, "w", encoding="utf-8") as wf:
+        wf.write(json.dumps(meta, ensure_ascii=False) + "\n")
+        for p_num in sorted((preprocessed_pages or {}).keys(), key=lambda x: int(x)):
+            page_no = int(p_num)
+            if page_no < start_page or page_no > end_page:
+                continue
+            info = (preprocessed_pages or {}).get(p_num, {})
+            if not isinstance(info, dict):
+                continue
+            mode = info.get("mode", "none")
+            row = {
+                "record_type": "page",
+                "page": page_no,
+                "mode": "split" if mode == "split" else "none",
+                "left_ratio": float(info.get("left_ratio", 0.5)) if mode == "split" else None,
+            }
+            wf.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    return save_path
+
+
+def get_preprocess_profile_for_pdf(pdf_filename, source_tag=None):
+    for path in get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag):
+        profile = load_preprocess_profile_from_file(path)
+        if profile:
+            return profile
+    return None
 
 
 def build_preprocessed_pages_from_profile(doc, start_page, end_page, profile):
@@ -1044,8 +1134,8 @@ def pdf_page_to_image_bytes_cached(doc, page_number):
     return pix.tobytes("png")
 
 
-def get_unique_id(word, unit, grade):
-    raw_str = f"{word}_{unit}_{grade}"
+def get_unique_id(word, unit, grade, semester="", book_version="", source_tag=""):
+    raw_str = f"{word}_{unit}_{grade}_{semester}_{book_version}_{source_tag}"
     return hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:10]
 
 
@@ -1533,8 +1623,25 @@ with tab0:
         with col_book3:
             preprocess_semester = st.selectbox("上下册（预处理）", ["上册", "下册", "全一册"], key="preprocess_semester")
 
+        preprocess_source_label = st.radio(
+            "词表来源（预处理）",
+            list(SOURCE_TAG_OPTIONS.keys()),
+            horizontal=True,
+            key="preprocess_source_tag_label"
+        )
+        preprocess_source_tag = SOURCE_TAG_OPTIONS[preprocess_source_label]
         preprocess_pdf_name = preprocess_uploaded_pdf.name if preprocess_uploaded_pdf else "unknown.pdf"
         preprocess_book_key = build_book_key(preprocess_book_version, preprocess_grade, preprocess_semester, preprocess_pdf_name)
+        current_preprocess_signature = "|".join([
+            str(preprocess_pdf_name or ""),
+            str(preprocess_source_tag or ""),
+            str(pre_start_p),
+            str(pre_end_p),
+        ])
+        if st.session_state.preprocess_context_signature != current_preprocess_signature:
+            reset_preprocess_editor_state()
+            st.session_state.preprocess_context_signature = current_preprocess_signature
+        st.caption(f"当前预处理产物会写入来源标签：`{preprocess_source_tag}`")
         st.caption(f"预处理匹配键：`{preprocess_book_key}`")
 
         st.write(f"当前处理范围：第 **{pre_start_p}** 页 到 第 **{pre_end_p}** 页")
@@ -1615,7 +1722,8 @@ with tab0:
                             "mode": "none",
                             "original_bytes": pix.tobytes("png")
                         }
-                saved_preprocess_path = save_preprocess_profile_by_pdf(preprocess_uploaded_pdf.name, pre_start_p, pre_end_p, st.session_state.preprocessed_pages, odd_default_split, odd_left_ratio, even_default_split, even_left_ratio)
+                saved_preprocess_path = save_preprocess_profile_by_pdf(preprocess_uploaded_pdf.name, pre_start_p, pre_end_p, st.session_state.preprocessed_pages, odd_default_split, odd_left_ratio, even_default_split, even_left_ratio, preprocess_source_tag)
+                saved_page_count = sum(1 for p_num in st.session_state.preprocessed_pages.keys() if int(p_num) >= int(pre_start_p) and int(p_num) <= int(pre_end_p))
                 st.success(f"已保存预处理结果，共 {len(st.session_state.preprocessed_pages)} 页\n保存路径：{saved_preprocess_path}")
         
         st.divider()

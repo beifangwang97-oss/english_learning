@@ -50,6 +50,9 @@ public class LexiconEntry {
     @Column(nullable = false, length = 50)
     private String semester;
 
+    @Column(name = "source_tag", length = 40)
+    private String sourceTag;
+
     @Column(name = "word_audio", length = 255)
     private String wordAudio;
 
@@ -73,10 +76,16 @@ public class LexiconEntry {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
+        if (sourceTag == null || sourceTag.isBlank()) {
+            sourceTag = "current_book";
+        }
     }
 
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+        if (sourceTag == null || sourceTag.isBlank()) {
+            sourceTag = "current_book";
+        }
     }
 }

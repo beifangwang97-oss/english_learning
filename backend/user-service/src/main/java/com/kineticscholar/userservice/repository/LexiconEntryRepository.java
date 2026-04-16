@@ -4,7 +4,9 @@ import com.kineticscholar.userservice.model.LexiconEntry;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -18,6 +20,15 @@ public interface LexiconEntryRepository extends JpaRepository<LexiconEntry, Long
             String bookVersion,
             String grade,
             String semester
+    );
+
+    @EntityGraph(attributePaths = {"meanings"})
+    List<LexiconEntry> findByTypeAndBookVersionAndGradeAndSemesterAndSourceTagOrderByUnitAscIdAsc(
+            String type,
+            String bookVersion,
+            String grade,
+            String semester,
+            String sourceTag
     );
 
     @EntityGraph(attributePaths = {"meanings"})
@@ -45,6 +56,30 @@ public interface LexiconEntryRepository extends JpaRepository<LexiconEntry, Long
             String semester,
             String unit
     );
+
+    long countByTypeAndBookVersionAndGradeAndSemester(
+            String type,
+            String bookVersion,
+            String grade,
+            String semester
+    );
+
+    long countByTypeAndBookVersionAndGradeAndSemesterAndSourceTag(
+            String type,
+            String bookVersion,
+            String grade,
+            String semester,
+            String sourceTag
+    );
+
+    @Modifying
+    @Transactional
+    @Query("""
+            update LexiconEntry e
+               set e.sourceTag = :defaultTag
+             where e.sourceTag is null or trim(e.sourceTag) = ''
+            """)
+    int backfillMissingSourceTags(@Param("defaultTag") String defaultTag);
 
     @Query("""
             select e.groupNo, count(e.id)

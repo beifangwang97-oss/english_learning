@@ -645,3 +645,119 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
   - `mvn -q -DskipTests compile`
 - 前端构建通过
   - `cmd /c npm run build`
+
+---
+
+## 20. 2026-04-15 词库 `source_tag` 规范化与 ID/音频迁移
+### 20.1 旧版词库文件名与字段统一
+- 新增规范化工具：
+  - `tool/normalize_lexicon_source_tag.py`
+- 处理范围：
+  - `tool/word_data/未录音`
+  - `tool/word_data/已录音`
+- 处理规则：
+  - 旧版单词表/短语表文件名统一补入 `source_tag=current_book`
+  - 行内数据统一补入 `source_tag`
+  - 字段顺序统一到新格式：
+    - `semester`
+    - `source_tag`
+    - `id`
+- 明确保留不处理：
+  - `课文`
+  - 已经是 `primary_school_review` 命名的新文件
+
+### 20.2 词库 ID 与音频迁移脚本重构
+- 新增安全版迁移工具：
+  - `tool/migrate_lexicon_ids.py`
+- 新版唯一 ID 规则统一为：
+  - `word_clean + unit + grade + semester + book_version + source_tag`
+- 迁移覆盖内容：
+  - 未录音 `jsonl`：更新新版 `id`
+  - 已录音 `jsonl`：更新新版 `id`
+  - 已录音主音频路径：
+    - `word_audio`
+    - `phrase_audio`
+  - 已录音例句路径：
+    - `meanings[*].example_audio`
+  - `tool/audio/` 下对应音频文件名同步迁移
+
+### 20.3 迁移安全性增强
+- 迁移前增加 dry-run 校验：
+  - 重复 `id`
+  - 音频目标冲突
+  - 缺失音频源
+- 将“未录音/已录音成对文件的相同词条 ID 相同”识别为预期信息，不再视为错误
+- 修复了 `新人教版_九年级_上册` 中 `increase` 词条重复导致的 ID 冲突：
+  - 合并为单个词条
+  - 两个 `meanings`
+
+### 20.4 迁移补救
+- 因迁移中途出现部分旧音频已移动、`jsonl` 尚未完全写回的半迁移状态，新增临时补救工具：
+  - `tool/repair_missing_migrate_audio.py`
+- 使用 `mode2` 同源 TTS 方式补齐缺失目标音频后，完成最终迁移收口
+- 最终迁移状态：
+  - `warnings: 0`
+  - 词库与音频命名统一到新版规则
+
+---
+
+## 21. 2026-04-16 管理端来源筛选与 `mode2` 稳定性增强
+### 21.1 管理员端来源筛选改为动态显示
+- 调整页面：
+  - `front/src/components/admin/LexiconManagement.tsx`
+- 旧逻辑：
+  - 固定显示 `current_book / primary_school_review`
+- 新逻辑：
+  - 先确定 `教材版本 + 年级 + 册数`
+  - 再根据当前已加载词条中真实存在的 `source_tag` 动态生成筛选项
+- 新行为：
+  - 如果当前册只有本册词条，则只显示“全部来源 + 当前册”
+  - 如果当前册实际有复习数据，才显示“小学复习”
+  - 单词页与短语页分别独立判断，避免“单词有复习、短语无复习”时出现空筛选项
+
+### 21.2 `mode2` TTS 稳定性增强
+- 调整文件：
+  - `tool/mode2_jsonl_audio.py`
+- 处理目标：
+  - 缓解 `TTS 服务暂时不可用`
+  - 缓解批量短词触发的 503 / 连接超时
+- 当前改动：
+  - 默认并发由 `4` 调整为 `2`
+  - 增加更多“服务暂不可用”异常识别：
+    - `503`
+    - `Cannot connect`
+    - `Connection timeout`
+    - `Server disconnected`
+    - `WSServerHandshakeError`
+  - 提高退避等待时间
+  - 增加请求错峰，降低瞬时并发冲击
+
+### 21.3 `mode2` 并发交互改造
+- 左侧 TTS 并发设置由滑块改为：
+  - 输入框
+  - “确定并发数”按钮
+- 本次任务使用：
+  - 用户确认后的并发值
+- 页面增加提示：
+  - 当前已确认并发数
+  - 生成中锁定使用的并发值
+  - 当前模式不做续跑，中断后下次重新检查已有音频与路径
+
+### 21.4 `mode2` 已录音 JSONL 兜底修复
+- 在 `mode2` 页面新增“已录音 JSONL 兜底修复”入口
+- 支持上传已录音目录中的 `jsonl`
+- 逐行执行：
+  - 检查主音频路径是否存在且有效
+  - 检查例句音频路径是否存在且有效
+  - 如果路径缺失或失效，则按 `id + 命名规则` 扫描 `audio/` 或 `passage_audio/`
+  - 找到已有音频则自动补路径
+  - 路径和音频都不存在时，自动补生成
+- 修复后输出：
+  - 写回 `tool/word_data/已录音/同名文件`
+  - 返回修复条数、补路径数量、补生成数量、成功/失败统计
+
+### 21.5 验证
+- `tool/mode2_jsonl_audio.py`
+  - `py_compile` 通过
+- 前端
+  - `cmd /c npm run build` 通过

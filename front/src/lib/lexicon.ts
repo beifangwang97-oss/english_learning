@@ -18,6 +18,7 @@ export type LexiconItem = {
   book_version: string;
   grade: string;
   semester: string;
+  source_tag?: string;
   meanings: LexiconMeaning[];
   word_audio?: string;
   phrase_audio?: string;
@@ -70,6 +71,7 @@ export type LearningEntry = {
   book_version: string;
   grade: string;
   semester: string;
+  source_tag?: string;
   meanings: LexiconMeaning[];
   word_audio?: string;
   phrase_audio?: string;
@@ -133,6 +135,13 @@ export type PhoneticItem = {
   example_words: PhoneticExampleWord[];
 };
 
+export const formatSourceTagLabel = (tag?: string) => {
+  const normalized = (tag || 'current_book').trim();
+  if (normalized === 'current_book') return '当前册单词';
+  if (normalized === 'primary_school_review') return '小学复习';
+  return normalized || '未标记';
+};
+
 export const lexiconApi = {
   async getOptions(token: string, type: 'word' | 'phrase') {
     const response = await fetch(`${API_BASE_URL}/api/lexicon/options?type=${encodeURIComponent(type)}`, {
@@ -144,7 +153,7 @@ export const lexiconApi = {
     if (!response.ok) {
       throw new Error(payload?.error || '加载词库筛选项失败');
     }
-    return payload as { bookVersions: string[]; grades: string[]; semesters: string[] };
+    return payload as { bookVersions: string[]; grades: string[]; semesters: string[]; sourceTags: string[] };
   },
 
   async addTextbookVersion(token: string, name: string) {
@@ -266,7 +275,8 @@ export const lexiconApi = {
     type: 'word' | 'phrase',
     bookVersion: string,
     grade: string,
-    semester: string
+    semester: string,
+    sourceTag?: string
   ) {
     const query = new URLSearchParams({
       type,
@@ -274,6 +284,7 @@ export const lexiconApi = {
       grade,
       semester,
     });
+    if (sourceTag) query.set('sourceTag', sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/items?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -283,7 +294,7 @@ export const lexiconApi = {
     if (!response.ok) {
       throw new Error(payload?.error || '\u52a0\u8f7d\u8bcd\u6761\u6570\u91cf\u5931\u8d25');
     }
-    return payload as { file: string | null; units: string[]; items: LexiconItem[] };
+    return payload as { file: string | null; units: string[]; items: LexiconItem[]; sourceTag?: string };
   },
 
   async getItemsCount(
@@ -291,7 +302,8 @@ export const lexiconApi = {
     type: 'word' | 'phrase',
     bookVersion: string,
     grade: string,
-    semester: string
+    semester: string,
+    sourceTag?: string
   ) {
     const query = new URLSearchParams({
       type,
@@ -299,6 +311,7 @@ export const lexiconApi = {
       grade,
       semester,
     });
+    if (sourceTag) query.set('sourceTag', sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/items/count?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -307,12 +320,13 @@ export const lexiconApi = {
 
     // Backward compatibility: running backend may not include /items/count yet.
     if (response.status === 404) {
-      const fallback = await this.getItems(token, type, bookVersion, grade, semester);
+      const fallback = await this.getItems(token, type, bookVersion, grade, semester, sourceTag);
       return {
         type,
         bookVersion,
         grade,
         semester,
+        sourceTag,
         count: Array.isArray(fallback.items) ? fallback.items.length : 0,
       };
     }
@@ -333,6 +347,7 @@ export const lexiconApi = {
       bookVersion: string;
       grade: string;
       semester: string;
+      sourceTag?: string;
       count: number;
     };
   },
@@ -488,6 +503,7 @@ export const lexiconApi = {
       file: File;
       proofread?: boolean;
       overwrite?: boolean;
+      sourceTag?: string;
     }
   ) {
     const form = new FormData();
@@ -496,6 +512,7 @@ export const lexiconApi = {
     form.append('bookVersion', params.bookVersion);
     form.append('grade', params.grade);
     form.append('semester', params.semester);
+    if (params.sourceTag) form.append('sourceTag', params.sourceTag);
     form.append('proofread', String(params.proofread ?? true));
     form.append('overwrite', String(params.overwrite ?? true));
     const response = await fetch(`${API_BASE_URL}/api/lexicon/import`, {
