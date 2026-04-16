@@ -14,7 +14,7 @@ import {
   wordReviewApi,
 } from '../../lib/auth';
 import { getSessionToken } from '../../lib/session';
-import { lexiconApi, LexiconTaskTreeBook } from '../../lib/lexicon';
+import { formatSourceTagLabel, lexiconApi, LexiconTaskTreeBook, LearningSourceGroupSummary } from '../../lib/lexicon';
 
 type StudentUser = AdminUser & { onlineStatus?: number | boolean | null };
 
@@ -93,8 +93,8 @@ function normalizeSemesterText(v: string) {
 }
 
 function unitLabel(key: string) {
-  const [textbookVersion, grade, semester, unit] = key.split('||');
-  return `${textbookVersion} / ${grade} / ${semester} / ${unit}`;
+  const [textbookVersion, grade, semester, unit, sourceTag] = key.split('||');
+  return `${textbookVersion} / ${grade} / ${semester} / ${unit}${sourceTag ? ` / ${formatSourceTagLabel(sourceTag)}` : ''}`;
 }
 
 export const TeacherWordReview: React.FC = () => {
@@ -120,6 +120,8 @@ export const TeacherWordReview: React.FC = () => {
   const [selectedStudents, setSelectedStudents] = useState<number[]>([]);
   const [selectedUnits, setSelectedUnits] = useState<string[]>([]);
   const [expandedGrades, setExpandedGrades] = useState<Set<string>>(new Set());
+  const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
+  const [sourceSummaryMap, setSourceSummaryMap] = useState<Record<string, LearningSourceGroupSummary[]>>({});
   const [selectedAssignmentIds, setSelectedAssignmentIds] = useState<number[]>([]);
 
   const loadData = async () => {
@@ -193,7 +195,7 @@ export const TeacherWordReview: React.FC = () => {
       return;
     }
     const first = selectedUnits[0].split('||');
-    if (first.length === 4) {
+    if (first.length >= 4) {
       const [, grade, semester, unit] = first;
       const prefix = selectedUnits.length === 1 ? `${grade}${normalizeSemesterText(semester)}${unit}` : `${grade}${normalizeSemesterText(semester)}多单元`;
       setReviewTitle(`${prefix}单词复习`);
@@ -212,10 +214,36 @@ export const TeacherWordReview: React.FC = () => {
 
   const parseUnitKey = (key: string): WordReviewUnitScope | null => {
     const parts = key.split('||');
-    if (parts.length !== 4) return null;
-    const [textbookVersion, grade, semester, unit] = parts;
-    if (!textbookVersion || !grade || !semester || !unit) return null;
-    return { textbookVersion, grade, semester, unit };
+    if (parts.length !== 5) return null;
+    const [textbookVersion, grade, semester, unit, sourceTag] = parts;
+    if (!textbookVersion || !grade || !semester || !unit || !sourceTag) return null;
+    return { textbookVersion, grade, semester, unit, sourceTag };
+  };
+
+  const fetchUnitSources = async (textbookVersion: string, grade: string, semester: string, unit: string) => {
+    const key = `${textbookVersion}||${grade}||${semester}||${unit}`;
+    if (sourceSummaryMap[key]) return;
+    const res = await lexiconApi.getLearningSummary(token, {
+      type: 'word',
+      bookVersion: textbookVersion,
+      grade,
+      semester,
+      unit,
+    });
+    setSourceSummaryMap((prev) => ({ ...prev, [key]: res.sourceGroups || [] }));
+  };
+
+  const toggleUnitExpand = async (textbookVersion: string, grade: string, semester: string, unit: string) => {
+    const key = `${textbookVersion}||${grade}||${semester}||${unit}`;
+    if (!expandedUnits.has(key)) {
+      await fetchUnitSources(textbookVersion, grade, semester, unit);
+    }
+    setExpandedUnits((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   const publish = async () => {
@@ -238,6 +266,7 @@ export const TeacherWordReview: React.FC = () => {
           grade: scope.grade,
           semester: scope.semester,
           unit: scope.unit,
+          sourceTag: scope.sourceTag,
         });
         for (const group of summary.groups || []) {
           const rows = await lexiconApi.getLearningItemsByGroup(token, {
@@ -246,6 +275,7 @@ export const TeacherWordReview: React.FC = () => {
             grade: scope.grade,
             semester: scope.semester,
             unit: scope.unit,
+            sourceTag: scope.sourceTag,
             groupNo: Number(group.groupNo),
           });
           (rows.items || []).forEach((entry) => {
@@ -254,6 +284,7 @@ export const TeacherWordReview: React.FC = () => {
             const meaningWithExample = allMeanings.find((m) => (m?.example || '').trim().length > 0) || firstMeaning;
             itemMap.set(entry.id, {
               entryId: entry.id,
+              sourceTag: entry.source_tag || scope.sourceTag,
               word: entry.word,
               phonetic: entry.phonetic,
               meaning: firstMeaning?.meaning || '',
@@ -422,12 +453,30 @@ export const TeacherWordReview: React.FC = () => {
                             <div key={`${gKey}||${s.semester}`}>
                               <div className="mb-1 text-xs font-bold text-on-surface-variant px-1">册数：{s.semester}</div>
                               {(s.units || []).map((u) => {
-                                const key = `${book.bookVersion}||${g.grade}||${s.semester}||${u}`;
+                                const unitKey = `${book.bookVersion}||${g.grade}||${s.semester}||${u}`;
+                                const unitExpanded = expandedUnits.has(unitKey);
+                                const sourceGroups = sourceSummaryMap[unitKey] || [];
                                 return (
-                                  <label key={key} className="flex items-center justify-between rounded px-2 py-1 hover:bg-surface-container-highest cursor-pointer">
-                                    <span className="text-sm">{u}</span>
-                                    <input type="checkbox" checked={selectedUnits.includes(key)} onChange={() => toggleUnit(key)} />
-                                  </label>
+                                  <div key={unitKey} className="mb-1 border rounded-lg border-outline-variant/20 bg-white overflow-hidden">
+                                    <button onClick={() => toggleUnitExpand(book.bookVersion, g.grade, s.semester, u)} className="flex w-full items-center justify-between px-3 py-2 hover:bg-surface-container-highest">
+                                      <span className="text-sm font-bold">{u}</span>
+                                      <ChevronRight className={`h-4 w-4 transition-transform ${unitExpanded ? 'rotate-90' : ''}`} />
+                                    </button>
+                                    {unitExpanded && (
+                                      <div className="space-y-1 px-3 pb-3">
+                                        {sourceGroups.length === 0 && <div className="text-xs text-on-surface-variant">暂无来源数据</div>}
+                                        {sourceGroups.map((sourceGroup) => {
+                                          const key = `${book.bookVersion}||${g.grade}||${s.semester}||${u}||${sourceGroup.sourceTag}`;
+                                          return (
+                                            <label key={key} className="flex items-center justify-between rounded px-2 py-1 hover:bg-surface-container-highest cursor-pointer">
+                                              <span className="text-sm">{formatSourceTagLabel(sourceGroup.sourceTag)}（{sourceGroup.total} 词）</span>
+                                              <input type="checkbox" checked={selectedUnits.includes(key)} onChange={() => toggleUnit(key)} />
+                                            </label>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
                                 );
                               })}
                             </div>

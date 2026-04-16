@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTimer } from '../context/TimerContext';
 import { cn } from '../lib/utils';
 import { learningProgressApi } from '../lib/auth';
-import { lexiconApi, LearningEntry, LearningGroupSummary, PassageItem } from '../lib/lexicon';
+import { formatSourceTagLabel, lexiconApi, LearningEntry, LearningGroupSummary, LearningSourceGroupSummary, PassageItem } from '../lib/lexicon';
 import { getSessionToken } from '../lib/session';
 import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileQuestion, HelpCircle, LayoutDashboard, Library, LogOut, MessageCircle, Mic2, NotebookPen, Volume2, XCircle } from 'lucide-react';
 
@@ -72,6 +72,7 @@ const defaultEngine = (): EngineState => ({
 
 const normalizeText = (v: string) => v.trim().replace(/\s+/g, ' ').toLowerCase();
 const hasPunctuation = (v: string) => /[^a-zA-Z\s]/.test(v);
+const DEFAULT_SOURCE_ORDER = ['current_book', 'primary_school_review'];
 
 function safeParseSession(raw?: string): Partial<EngineState> | null {
   if (!raw) return null;
@@ -129,6 +130,17 @@ function parseUnitMeta(unitId: string): UnitMeta | null {
   return { bookVersion, grade, semester, unit };
 }
 
+function pickDefaultSourceTag(sourceGroups: LearningSourceGroupSummary[]) {
+  for (const sourceTag of DEFAULT_SOURCE_ORDER) {
+    if (sourceGroups.some((row) => row.sourceTag === sourceTag)) return sourceTag;
+  }
+  return sourceGroups[0]?.sourceTag || 'current_book';
+}
+
+function buildSourceGroupKey(sourceTag: string, groupNo: number) {
+  return `${sourceTag}||${groupNo}`;
+}
+
 function buildBlankIndexes(answer: string): number[] {
   const letterIndexes = Array.from(answer)
     .map((ch, idx) => ({ ch, idx }))
@@ -176,17 +188,21 @@ export const StudentUnit: React.FC = () => {
 
   const [vocabEngine, setVocabEngine] = useState<EngineState>(defaultEngine());
   const [phraseEngine, setPhraseEngine] = useState<EngineState>(defaultEngine());
+  const [vocabSourceGroups, setVocabSourceGroups] = useState<LearningSourceGroupSummary[]>([]);
+  const [phraseSourceGroups, setPhraseSourceGroups] = useState<LearningSourceGroupSummary[]>([]);
+  const [selectedVocabSourceTag, setSelectedVocabSourceTag] = useState('current_book');
+  const [selectedPhraseSourceTag, setSelectedPhraseSourceTag] = useState('current_book');
 
-  const [vocabProgress, setVocabProgress] = useState<Record<number, GroupProgressView>>({});
-  const [phraseProgress, setPhraseProgress] = useState<Record<number, GroupProgressView>>({});
+  const [vocabProgress, setVocabProgress] = useState<Record<string, GroupProgressView>>({});
+  const [phraseProgress, setPhraseProgress] = useState<Record<string, GroupProgressView>>({});
 
   const [vocabGroupSummary, setVocabGroupSummary] = useState<LearningGroupSummary[]>([]);
   const [phraseGroupSummary, setPhraseGroupSummary] = useState<LearningGroupSummary[]>([]);
 
-  const [vocabGroupItems, setVocabGroupItems] = useState<Record<number, LearnItem[]>>({});
-  const [phraseGroupItems, setPhraseGroupItems] = useState<Record<number, LearnItem[]>>({});
-  const [vocabLoadingGroups, setVocabLoadingGroups] = useState<Record<number, boolean>>({});
-  const [phraseLoadingGroups, setPhraseLoadingGroups] = useState<Record<number, boolean>>({});
+  const [vocabGroupItems, setVocabGroupItems] = useState<Record<string, LearnItem[]>>({});
+  const [phraseGroupItems, setPhraseGroupItems] = useState<Record<string, LearnItem[]>>({});
+  const [vocabLoadingGroups, setVocabLoadingGroups] = useState<Record<string, boolean>>({});
+  const [phraseLoadingGroups, setPhraseLoadingGroups] = useState<Record<string, boolean>>({});
   const [readingItems, setReadingItems] = useState<PassageItem[]>([]);
   const [readingIndex, setReadingIndex] = useState(0);
   const [readingProgress, setReadingProgress] = useState<Record<number, GroupProgressView>>({});
@@ -211,11 +227,20 @@ export const StudentUnit: React.FC = () => {
 
   const vocabGroups = useMemo(() => vocabGroupSummary.map((x) => x.groupNo), [vocabGroupSummary]);
   const phraseGroups = useMemo(() => phraseGroupSummary.map((x) => x.groupNo), [phraseGroupSummary]);
+  const vocabSourceOptions = useMemo(() => vocabSourceGroups.map((row) => row.sourceTag), [vocabSourceGroups]);
+  const phraseSourceOptions = useMemo(() => phraseSourceGroups.map((row) => row.sourceTag), [phraseSourceGroups]);
+
+  const getModuleSourceTag = (module: LearnModule) => (module === 'vocab' ? selectedVocabSourceTag : selectedPhraseSourceTag);
+  const getModuleUnitId = (module: LearnModule, sourceTag?: string) => {
+    const resolvedSourceTag = sourceTag || getModuleSourceTag(module);
+    return `${unitId}||${resolvedSourceTag}`;
+  };
 
   const getActiveGroup = (module: LearnModule): number => {
     const groups = module === 'vocab' ? vocabGroups : phraseGroups;
     const progress = module === 'vocab' ? vocabProgress : phraseProgress;
-    const firstPending = groups.find((g) => !progress[g]?.completedAt);
+    const sourceTag = getModuleSourceTag(module);
+    const firstPending = groups.find((g) => !progress[buildSourceGroupKey(sourceTag, g)]?.completedAt);
     return firstPending || groups[0] || 1;
   };
 
@@ -233,12 +258,14 @@ export const StudentUnit: React.FC = () => {
   );
   const currentPassage = readingPassages[readingIndex] || null;
 
-  const ensureGroupItemsLoaded = async (module: LearnModule, groupNo: number): Promise<LearnItem[]> => {
+  const ensureGroupItemsLoaded = async (module: LearnModule, groupNo: number, sourceTagOverride?: string): Promise<LearnItem[]> => {
     if (!token || !unitMeta) return [];
+    const sourceTag = sourceTagOverride || getModuleSourceTag(module);
+    const cacheKey = buildSourceGroupKey(sourceTag, groupNo);
     if (module === 'vocab') {
-      if (vocabGroupItems[groupNo]) return vocabGroupItems[groupNo];
-      if (vocabLoadingGroups[groupNo]) return [];
-      setVocabLoadingGroups((prev) => ({ ...prev, [groupNo]: true }));
+      if (vocabGroupItems[cacheKey]) return vocabGroupItems[cacheKey];
+      if (vocabLoadingGroups[cacheKey]) return [];
+      setVocabLoadingGroups((prev) => ({ ...prev, [cacheKey]: true }));
       try {
         const payload = await lexiconApi.getLearningItemsByGroup(token, {
           type: 'word',
@@ -246,20 +273,21 @@ export const StudentUnit: React.FC = () => {
           grade: unitMeta.grade,
           semester: unitMeta.semester,
           unit: unitMeta.unit,
+          sourceTag,
           groupNo,
         });
         const mapped = payload.items.map(mapEntryToLearnItem);
-        setVocabGroupItems((prev) => ({ ...prev, [groupNo]: mapped }));
+        setVocabGroupItems((prev) => ({ ...prev, [cacheKey]: mapped }));
         return mapped;
       } finally {
-        setVocabLoadingGroups((prev) => ({ ...prev, [groupNo]: false }));
+        setVocabLoadingGroups((prev) => ({ ...prev, [cacheKey]: false }));
       }
       return [];
     }
 
-    if (phraseGroupItems[groupNo]) return phraseGroupItems[groupNo];
-    if (phraseLoadingGroups[groupNo]) return [];
-    setPhraseLoadingGroups((prev) => ({ ...prev, [groupNo]: true }));
+    if (phraseGroupItems[cacheKey]) return phraseGroupItems[cacheKey];
+    if (phraseLoadingGroups[cacheKey]) return [];
+    setPhraseLoadingGroups((prev) => ({ ...prev, [cacheKey]: true }));
     try {
       const payload = await lexiconApi.getLearningItemsByGroup(token, {
         type: 'phrase',
@@ -267,19 +295,22 @@ export const StudentUnit: React.FC = () => {
         grade: unitMeta.grade,
         semester: unitMeta.semester,
         unit: unitMeta.unit,
+        sourceTag,
         groupNo,
       });
       const mapped = payload.items.map(mapEntryToLearnItem);
-      setPhraseGroupItems((prev) => ({ ...prev, [groupNo]: mapped }));
+      setPhraseGroupItems((prev) => ({ ...prev, [cacheKey]: mapped }));
       return mapped;
     } finally {
-      setPhraseLoadingGroups((prev) => ({ ...prev, [groupNo]: false }));
+      setPhraseLoadingGroups((prev) => ({ ...prev, [cacheKey]: false }));
     }
     return [];
   };
 
   const buildQueueForGroup = (module: LearnModule, groupNo: number): string[] => {
-    const items = module === 'vocab' ? (vocabGroupItems[groupNo] || []) : (phraseGroupItems[groupNo] || []);
+    const sourceTag = getModuleSourceTag(module);
+    const cacheKey = buildSourceGroupKey(sourceTag, groupNo);
+    const items = module === 'vocab' ? (vocabGroupItems[cacheKey] || []) : (phraseGroupItems[cacheKey] || []);
     return items.map((x) => x.id);
   };
 
@@ -296,7 +327,7 @@ export const StudentUnit: React.FC = () => {
       try {
         const uid = Number(user.id);
 
-        const [wordSummary, phraseSummary, passagesPayload, vSession, pSession, rSession, vGp, pGp, rGp] = await Promise.all([
+        const [wordSummary, phraseSummary, passagesPayload, rSession, rGp] = await Promise.all([
           lexiconApi.getLearningSummary(token, {
             type: 'word',
             bookVersion: unitMeta.bookVersion,
@@ -312,24 +343,31 @@ export const StudentUnit: React.FC = () => {
             unit: unitMeta.unit,
           }),
           lexiconApi.getPassages(token, unitMeta.bookVersion, unitMeta.grade, unitMeta.semester),
-          learningProgressApi.getSession(token, uid, unitId, 'vocab'),
-          learningProgressApi.getSession(token, uid, unitId, 'phrase'),
           learningProgressApi.getSession(token, uid, unitId, 'reading'),
-          learningProgressApi.getGroupProgress(token, uid, unitId, 'vocab'),
-          learningProgressApi.getGroupProgress(token, uid, unitId, 'phrase'),
           learningProgressApi.getGroupProgress(token, uid, unitId, 'reading'),
         ]);
 
-        setVocabGroupSummary(wordSummary.groups || []);
-        setPhraseGroupSummary(phraseSummary.groups || []);
+        const nextVocabSourceGroups = wordSummary.sourceGroups || [];
+        const nextPhraseSourceGroups = phraseSummary.sourceGroups || [];
+        setVocabSourceGroups(nextVocabSourceGroups);
+        setPhraseSourceGroups(nextPhraseSourceGroups);
+        const nextVocabSourceTag = nextVocabSourceGroups.some((row) => row.sourceTag === selectedVocabSourceTag)
+          ? selectedVocabSourceTag
+          : pickDefaultSourceTag(nextVocabSourceGroups);
+        const nextPhraseSourceTag = nextPhraseSourceGroups.some((row) => row.sourceTag === selectedPhraseSourceTag)
+          ? selectedPhraseSourceTag
+          : pickDefaultSourceTag(nextPhraseSourceGroups);
+        setSelectedVocabSourceTag(nextVocabSourceTag);
+        setSelectedPhraseSourceTag(nextPhraseSourceTag);
+        setVocabGroupSummary(nextVocabSourceGroups.find((row) => row.sourceTag === nextVocabSourceTag)?.groups || []);
+        setPhraseGroupSummary(nextPhraseSourceGroups.find((row) => row.sourceTag === nextPhraseSourceTag)?.groups || []);
+        setVocabProgress({});
+        setPhraseProgress({});
+        setVocabGroupItems({});
+        setPhraseGroupItems({});
+        setVocabEngine(defaultEngine());
+        setPhraseEngine(defaultEngine());
 
-        const vMap: Record<number, GroupProgressView> = {};
-        vGp.forEach((x) => { vMap[x.groupNo] = x; });
-        setVocabProgress(vMap);
-
-        const pMap: Record<number, GroupProgressView> = {};
-        pGp.forEach((x) => { pMap[x.groupNo] = x; });
-        setPhraseProgress(pMap);
         const rMap: Record<number, GroupProgressView> = {};
         rGp.forEach((x) => { rMap[x.groupNo] = x; });
         setReadingProgress(rMap);
@@ -338,8 +376,6 @@ export const StudentUnit: React.FC = () => {
         const unitPassages = allPassages.filter((x) => normalizeText(x.unit || '') === normalizeText(unitMeta.unit));
         setReadingItems(allPassages);
 
-        const vSaved = safeParseSession(vSession?.stateJson);
-        const pSaved = safeParseSession(pSession?.stateJson);
         let readingSaved: ReadingSessionState | null = null;
         try {
           if (rSession?.stateJson) readingSaved = JSON.parse(rSession.stateJson) as ReadingSessionState;
@@ -347,41 +383,6 @@ export const StudentUnit: React.FC = () => {
           readingSaved = null;
         }
 
-        const wordGroupNos = (wordSummary.groups || []).map((x) => Number(x.groupNo)).filter((x) => x > 0);
-        const phraseGroupNos = (phraseSummary.groups || []).map((x) => Number(x.groupNo)).filter((x) => x > 0);
-        const vSavedGroup = Number(vSaved?.groupNo || 0);
-        const pSavedGroup = Number(pSaved?.groupNo || 0);
-        const vGroup = wordGroupNos.includes(vSavedGroup) ? vSavedGroup : (wordGroupNos[0] || 1);
-        const pGroup = phraseGroupNos.includes(pSavedGroup) ? pSavedGroup : (phraseGroupNos[0] || 1);
-
-        const [vItems, pItems] = await Promise.all([
-          ensureGroupItemsLoaded('vocab', vGroup),
-          ensureGroupItemsLoaded('phrase', pGroup),
-        ]);
-
-        const vBaseQueue = vItems.map((x) => x.id);
-        const pBaseQueue = pItems.map((x) => x.id);
-        const vQueue = normalizeQueue(Array.isArray(vSaved?.queue) ? (vSaved?.queue as string[]) : [], vBaseQueue);
-        const pQueue = normalizeQueue(Array.isArray(pSaved?.queue) ? (pSaved?.queue as string[]) : [], pBaseQueue);
-        const vIndex = Math.min(Math.max(0, Number(vSaved?.index || 0)), Math.max(0, vQueue.length - 1));
-        const pIndex = Math.min(Math.max(0, Number(pSaved?.index || 0)), Math.max(0, pQueue.length - 1));
-
-        setVocabEngine((prev) => ({
-          ...prev,
-          groupNo: vGroup,
-          step: (Number(vSaved?.step || 1) as StepNo),
-          queue: vQueue,
-          index: vIndex,
-          stepDone: (vSaved?.stepDone as Record<number, boolean>) || {},
-        }));
-        setPhraseEngine((prev) => ({
-          ...prev,
-          groupNo: pGroup,
-          step: (Number(pSaved?.step || 1) as StepNo),
-          queue: pQueue,
-          index: pIndex,
-          stepDone: (pSaved?.stepDone as Record<number, boolean>) || {},
-        }));
         const savedPassageNo = Number(readingSaved?.passageNo || 1);
         const nextReadingIndex = Math.min(Math.max(0, savedPassageNo - 1), Math.max(0, unitPassages.length - 1));
         setReadingIndex(nextReadingIndex);
@@ -395,20 +396,103 @@ export const StudentUnit: React.FC = () => {
     load();
   }, [token, user?.id, unitId, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit]);
 
+  useEffect(() => {
+    const hydrateModule = async () => {
+      if (!token || !user?.id || !unitMeta || !selectedVocabSourceTag) return;
+      const sourceRow = vocabSourceGroups.find((row) => row.sourceTag === selectedVocabSourceTag);
+      const groups = sourceRow?.groups || [];
+      setVocabGroupSummary(groups);
+      setVocabProgress({});
+      setVocabGroupItems({});
+      if (groups.length === 0) {
+        setVocabEngine(defaultEngine());
+        return;
+      }
+      const savedSession = await learningProgressApi.getSession(token, Number(user.id), getModuleUnitId('vocab', selectedVocabSourceTag), 'vocab').catch(() => null);
+      const groupRows = await learningProgressApi.getGroupProgress(token, Number(user.id), getModuleUnitId('vocab', selectedVocabSourceTag), 'vocab').catch(() => []);
+      const nextProgress: Record<string, GroupProgressView> = {};
+      (groupRows || []).forEach((x: any) => { nextProgress[buildSourceGroupKey(selectedVocabSourceTag, x.groupNo)] = x; });
+      setVocabProgress(nextProgress);
+      const saved = safeParseSession(savedSession?.stateJson);
+      const groupNos = groups.map((x) => Number(x.groupNo)).filter((x) => x > 0);
+      const savedGroup = Number(saved?.groupNo || 0);
+      const nextGroup = groupNos.includes(savedGroup) ? savedGroup : (groupNos[0] || 1);
+      const items = await ensureGroupItemsLoaded('vocab', nextGroup, selectedVocabSourceTag);
+      const baseQueue = items.map((x) => x.id);
+      const queue = normalizeQueue(Array.isArray(saved?.queue) ? (saved.queue as string[]) : [], baseQueue);
+      const index = Math.min(Math.max(0, Number(saved?.index || 0)), Math.max(0, queue.length - 1));
+      setVocabEngine((prev) => ({
+        ...prev,
+        groupNo: nextGroup,
+        step: (Number(saved?.step || 1) as StepNo),
+        queue,
+        index,
+        stepDone: (saved?.stepDone as Record<number, boolean>) || {},
+      }));
+    };
+    hydrateModule().catch(() => {});
+  }, [token, user?.id, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit, selectedVocabSourceTag, JSON.stringify(vocabSourceGroups)]);
+
+  useEffect(() => {
+    const hydrateModule = async () => {
+      if (!token || !user?.id || !unitMeta || !selectedPhraseSourceTag) return;
+      const sourceRow = phraseSourceGroups.find((row) => row.sourceTag === selectedPhraseSourceTag);
+      const groups = sourceRow?.groups || [];
+      setPhraseGroupSummary(groups);
+      setPhraseProgress({});
+      setPhraseGroupItems({});
+      if (groups.length === 0) {
+        setPhraseEngine(defaultEngine());
+        return;
+      }
+      const savedSession = await learningProgressApi.getSession(token, Number(user.id), getModuleUnitId('phrase', selectedPhraseSourceTag), 'phrase').catch(() => null);
+      const groupRows = await learningProgressApi.getGroupProgress(token, Number(user.id), getModuleUnitId('phrase', selectedPhraseSourceTag), 'phrase').catch(() => []);
+      const nextProgress: Record<string, GroupProgressView> = {};
+      (groupRows || []).forEach((x: any) => { nextProgress[buildSourceGroupKey(selectedPhraseSourceTag, x.groupNo)] = x; });
+      setPhraseProgress(nextProgress);
+      const saved = safeParseSession(savedSession?.stateJson);
+      const groupNos = groups.map((x) => Number(x.groupNo)).filter((x) => x > 0);
+      const savedGroup = Number(saved?.groupNo || 0);
+      const nextGroup = groupNos.includes(savedGroup) ? savedGroup : (groupNos[0] || 1);
+      const items = await ensureGroupItemsLoaded('phrase', nextGroup, selectedPhraseSourceTag);
+      const baseQueue = items.map((x) => x.id);
+      const queue = normalizeQueue(Array.isArray(saved?.queue) ? (saved.queue as string[]) : [], baseQueue);
+      const index = Math.min(Math.max(0, Number(saved?.index || 0)), Math.max(0, queue.length - 1));
+      setPhraseEngine((prev) => ({
+        ...prev,
+        groupNo: nextGroup,
+        step: (Number(saved?.step || 1) as StepNo),
+        queue,
+        index,
+        stepDone: (saved?.stepDone as Record<number, boolean>) || {},
+      }));
+    };
+    hydrateModule().catch(() => {});
+  }, [token, user?.id, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit, selectedPhraseSourceTag, JSON.stringify(phraseSourceGroups)]);
+
+  useEffect(() => {
+    if (phraseSourceGroups.length === 0) return;
+    const preferred = pickDefaultSourceTag(phraseSourceGroups);
+    if (selectedPhraseSourceTag !== preferred) {
+      setSelectedPhraseSourceTag(preferred);
+    }
+  }, [selectedPhraseSourceTag, JSON.stringify(phraseSourceGroups)]);
+
   const ensureGroupStarted = async (module: LearnModule, groupNo: number) => {
     if (!token || !user?.id || !unitId) return;
     const progressMap = module === 'vocab' ? vocabProgress : phraseProgress;
-    if (progressMap[groupNo]?.startedAt) return;
+    const progressKey = buildSourceGroupKey(getModuleSourceTag(module), groupNo);
+    if (progressMap[progressKey]?.startedAt) return;
 
     const total = module === 'vocab'
       ? (vocabGroupSummary.find((x) => x.groupNo === groupNo)?.count || 0)
       : (phraseGroupSummary.find((x) => x.groupNo === groupNo)?.count || 0);
 
     const saved = await learningProgressApi.startGroup(token, {
-      userId: Number(user.id), unitId, module, groupNo, itemTotal: total,
+      userId: Number(user.id), unitId: getModuleUnitId(module), module, groupNo, itemTotal: total,
     });
-    if (module === 'vocab') setVocabProgress((prev) => ({ ...prev, [groupNo]: saved }));
-    else setPhraseProgress((prev) => ({ ...prev, [groupNo]: saved }));
+    if (module === 'vocab') setVocabProgress((prev) => ({ ...prev, [progressKey]: saved }));
+    else setPhraseProgress((prev) => ({ ...prev, [progressKey]: saved }));
   };
 
   useEffect(() => {
@@ -434,7 +518,7 @@ export const StudentUnit: React.FC = () => {
       if (vocabSessionSaveRef.current) window.clearTimeout(vocabSessionSaveRef.current);
       vocabSessionSaveRef.current = window.setTimeout(() => {
         learningProgressApi.upsertSession(token, {
-          userId: Number(user.id), unitId, module: 'vocab', stateJson: payload,
+          userId: Number(user.id), unitId: getModuleUnitId('vocab'), module: 'vocab', stateJson: payload,
         }).catch(() => {});
       }, 500);
       return;
@@ -443,7 +527,7 @@ export const StudentUnit: React.FC = () => {
     if (phraseSessionSaveRef.current) window.clearTimeout(phraseSessionSaveRef.current);
     phraseSessionSaveRef.current = window.setTimeout(() => {
       learningProgressApi.upsertSession(token, {
-        userId: Number(user.id), unitId, module: 'phrase', stateJson: payload,
+        userId: Number(user.id), unitId: getModuleUnitId('phrase'), module: 'phrase', stateJson: payload,
       }).catch(() => {});
     }, 500);
   };
@@ -572,10 +656,11 @@ export const StudentUnit: React.FC = () => {
         : (phraseGroupSummary.find((x) => x.groupNo === groupNo)?.count || 0);
 
       const saved = await learningProgressApi.completeGroup(token, {
-        userId: Number(user.id), unitId, module, groupNo, itemTotal: total, learnedCount: total,
+        userId: Number(user.id), unitId: getModuleUnitId(module), module, groupNo, itemTotal: total, learnedCount: total,
       });
-      if (module === 'vocab') setVocabProgress((prev) => ({ ...prev, [groupNo]: saved }));
-      else setPhraseProgress((prev) => ({ ...prev, [groupNo]: saved }));
+      const progressKey = buildSourceGroupKey(getModuleSourceTag(module), groupNo);
+      if (module === 'vocab') setVocabProgress((prev) => ({ ...prev, [progressKey]: saved }));
+      else setPhraseProgress((prev) => ({ ...prev, [progressKey]: saved }));
     }
   };
 
@@ -819,7 +904,7 @@ export const StudentUnit: React.FC = () => {
   const setModuleGroup = async (module: LearnModule, groupNo: number) => {
     const activeGroup = getActiveGroup(module);
     const progressMap = module === 'vocab' ? vocabProgress : phraseProgress;
-    const completed = Boolean(progressMap[groupNo]?.completedAt);
+    const completed = Boolean(progressMap[buildSourceGroupKey(getModuleSourceTag(module), groupNo)]?.completedAt);
     if (!completed && groupNo !== activeGroup) return;
 
     const items = await ensureGroupItemsLoaded(module, groupNo);
@@ -900,11 +985,34 @@ export const StudentUnit: React.FC = () => {
     const gp = module === 'vocab' ? vocabProgress : phraseProgress;
     const loadingMap = module === 'vocab' ? vocabLoadingGroups : phraseLoadingGroups;
     const activeGroup = getActiveGroup(module);
+    const sourceOptions = module === 'vocab' ? vocabSourceOptions : [];
+    const selectedSourceTag = getModuleSourceTag(module);
 
     return (
-      <div className="flex flex-wrap gap-2 mb-4">
+      <div className="mb-4 space-y-3">
+        {module === 'vocab' && sourceOptions.length > 1 && (
+          <div className="flex flex-wrap gap-2">
+            {sourceOptions.map((sourceTag) => (
+              <button
+                key={`${module}-${sourceTag}`}
+                onClick={() => {
+                  if (module === 'vocab') setSelectedVocabSourceTag(sourceTag);
+                  else setSelectedPhraseSourceTag(sourceTag);
+                }}
+                className={cn(
+                  'rounded-full border px-3 py-1 text-sm font-bold',
+                  selectedSourceTag === sourceTag ? 'border-primary bg-primary text-white' : 'border-outline-variant/40 bg-white'
+                )}
+              >
+                {formatSourceTagLabel(sourceTag)}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2">
         {groups.map((g) => {
-          const p = gp[g];
+          const stateKey = buildSourceGroupKey(selectedSourceTag, g);
+          const p = gp[stateKey];
           const done = Boolean(p?.completedAt);
           const pending = !done && g !== activeGroup;
           const status = done ? `已完成 ${p?.durationSeconds || 0}s` : (g === activeGroup ? '进行中' : '待开始');
@@ -918,17 +1026,21 @@ export const StudentUnit: React.FC = () => {
                 engine.groupNo === g ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant/40'
               )}
             >
-              组 {g} {loadingMap[g] ? '· 加载中' : `· ${status}`}
+              组 {g} {loadingMap[stateKey] ? '· 加载中' : `· ${status}`}
             </button>
           );
         })}
+        </div>
       </div>
     );
   };
   const renderLearnModule = (module: LearnModule) => {
     const engine = module === 'vocab' ? vocabEngine : phraseEngine;
     const item = module === 'vocab' ? currentVocab : currentPhrase;
-    const loadingGroup = module === 'vocab' ? vocabLoadingGroups[engine.groupNo] : phraseLoadingGroups[engine.groupNo];
+    const sourceTag = getModuleSourceTag(module);
+    const loadingGroup = module === 'vocab'
+      ? vocabLoadingGroups[buildSourceGroupKey(sourceTag, engine.groupNo)]
+      : phraseLoadingGroups[buildSourceGroupKey(sourceTag, engine.groupNo)];
 
     if (loadingGroup || loadingProgress) return <div className="text-sm text-on-surface-variant">正在加载词库...</div>;
     if (!item) return <div className="text-sm text-on-surface-variant">当前组暂无内容</div>;

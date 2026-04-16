@@ -100,11 +100,13 @@ export interface WordTestGroupScope {
   grade: string;
   semester: string;
   unit: string;
+  sourceTag?: string;
   groupNo: number;
 }
 
 export interface WordTestContentItem {
   entryId: string;
+  sourceTag?: string;
   word: string;
   phonetic?: string;
   meaning?: string;
@@ -161,10 +163,12 @@ export interface WordReviewUnitScope {
   grade: string;
   semester: string;
   unit: string;
+  sourceTag?: string;
 }
 
 export interface WordReviewContentItem {
   entryId: string;
+  sourceTag?: string;
   word: string;
   phonetic?: string;
   meaning?: string;

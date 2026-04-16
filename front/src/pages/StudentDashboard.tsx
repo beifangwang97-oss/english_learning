@@ -164,13 +164,21 @@ export const StudentDashboard: React.FC = () => {
         const progressEntries = await Promise.all(
           Array.from(unlockedUnits).map(async (unitId) => {
             const [bookVersion, grade, semester, unitName] = unitId.split('||');
-            const [wordSummary, phraseSummary, allPassages, vocabRows, phraseRows, readingRows] = await Promise.all([
+            const [wordSummary, phraseSummary, allPassages, readingRows] = await Promise.all([
               lexiconApi.getLearningSummary(token, { type: 'word', bookVersion, grade, semester, unit: unitName }).catch(() => null),
               lexiconApi.getLearningSummary(token, { type: 'phrase', bookVersion, grade, semester, unit: unitName }).catch(() => null),
               lexiconApi.getPassages(token, bookVersion, grade, semester).catch(() => ({ items: [] as any[] })),
-              learningProgressApi.getGroupProgress(token, Number(user.id), unitId, 'vocab').catch(() => []),
-              learningProgressApi.getGroupProgress(token, Number(user.id), unitId, 'phrase').catch(() => []),
               learningProgressApi.getGroupProgress(token, Number(user.id), unitId, 'reading').catch(() => []),
+            ]);
+            const [vocabRows, phraseRows] = await Promise.all([
+              Promise.all(
+                ((([] as any[]).concat((wordSummary as any)?.sourceGroups || [])) as Array<{ sourceTag: string }>)
+                  .map((row) => learningProgressApi.getGroupProgress(token, Number(user.id), `${unitId}||${row.sourceTag}`, 'vocab').catch(() => []))
+              ).catch(() => []),
+              Promise.all(
+                ((([] as any[]).concat((phraseSummary as any)?.sourceGroups || [])) as Array<{ sourceTag: string }>)
+                  .map((row) => learningProgressApi.getGroupProgress(token, Number(user.id), `${unitId}||${row.sourceTag}`, 'phrase').catch(() => []))
+              ).catch(() => []),
             ]);
 
             const calcLearned = (rows: Array<{ completedAt?: string; learnedCount?: number; itemTotal?: number }>) =>
@@ -190,8 +198,8 @@ export const StudentDashboard: React.FC = () => {
               ? allPassages.items.filter((x: any) => (x.unit || '').trim().toLowerCase() === unitName.trim().toLowerCase()).length
               : 0;
 
-            const wordLearned = Math.min(wordTotal, calcLearned(vocabRows as any[]));
-            const phraseLearned = Math.min(phraseTotal, calcLearned(phraseRows as any[]));
+            const wordLearned = Math.min(wordTotal, calcLearned((vocabRows as any[]).flat?.() || []));
+            const phraseLearned = Math.min(phraseTotal, calcLearned((phraseRows as any[]).flat?.() || []));
             const readingLearned = Math.min(readingTotal, calcLearned(readingRows as any[]));
 
             const total = wordTotal + phraseTotal + readingTotal;

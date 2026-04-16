@@ -8,4 +8,5 @@ public class WordReviewUnitScope {
     private String grade;
     private String semester;
     private String unit;
+    private String sourceTag;
 }

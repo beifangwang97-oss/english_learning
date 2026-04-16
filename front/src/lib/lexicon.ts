@@ -61,6 +61,12 @@ export type LearningGroupSummary = {
   count: number;
 };
 
+export type LearningSourceGroupSummary = {
+  sourceTag: string;
+  groups: LearningGroupSummary[];
+  total: number;
+};
+
 export type LearningEntry = {
   id: string;
   word: string;
@@ -559,7 +565,7 @@ export const lexiconApi = {
 
   async getLearningSummary(
     token: string,
-    params: { type: 'word' | 'phrase'; bookVersion: string; grade: string; semester: string; unit: string }
+    params: { type: 'word' | 'phrase'; bookVersion: string; grade: string; semester: string; unit: string; sourceTag?: string }
   ) {
     const query = new URLSearchParams({
       type: params.type,
@@ -568,6 +574,7 @@ export const lexiconApi = {
       semester: params.semester,
       unit: params.unit,
     });
+    if (params.sourceTag) query.set('sourceTag', params.sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/learning/summary?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -583,14 +590,16 @@ export const lexiconApi = {
       grade: string;
       semester: string;
       unit: string;
+      sourceTag?: string;
       groups: LearningGroupSummary[];
+      sourceGroups: LearningSourceGroupSummary[];
       total: number;
     };
   },
 
   async getLearningItemsByGroup(
     token: string,
-    params: { type: 'word' | 'phrase'; bookVersion: string; grade: string; semester: string; unit: string; groupNo: number }
+    params: { type: 'word' | 'phrase'; bookVersion: string; grade: string; semester: string; unit: string; groupNo: number; sourceTag?: string }
   ) {
     const query = new URLSearchParams({
       type: params.type,
@@ -600,6 +609,7 @@ export const lexiconApi = {
       unit: params.unit,
       groupNo: String(params.groupNo),
     });
+    if (params.sourceTag) query.set('sourceTag', params.sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/learning/items?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -616,6 +626,7 @@ export const lexiconApi = {
       semester: string;
       unit: string;
       groupNo: number;
+      sourceTag?: string;
       items: LearningEntry[];
       count: number;
     };

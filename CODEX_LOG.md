@@ -761,3 +761,110 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
   - `py_compile` 通过
 - 前端
   - `cmd /c npm run build` 通过
+
+---
+
+## 22. 2026-04-16 `source_tag` 联动改造（管理员端 / 教师端 / 学生端）
+### 22.1 管理员端分组按来源隔离
+- 调整页面：
+  - `front/src/components/admin/LexiconManagement.tsx`
+- 变更内容：
+  - 单词库/短语库执行“分组”前，必须先在页面顶部选择具体来源，不能在“全部来源”下直接分组
+  - 分组时仅重排当前 `source_tag` 下的词条，不再影响同单元下其他来源的组号
+  - 分组弹窗增加当前来源提示，明确“本次分组只影响当前来源”
+
+### 22.2 管理员端批量导入文件名解析修复
+- 调整页面：
+  - `front/src/components/admin/LexiconManagement.tsx`
+- 问题背景：
+  - 旧逻辑直接按 `_` 切分文件名，无法正确识别 `current_book` 与 `primary_school_review`
+- 修复结果：
+  - 批量导入现在可正确识别：
+    - `..._current_book_单词表_...jsonl`
+    - `..._current_book_短语表_...jsonl`
+    - `..._primary_school_review_单词表_...jsonl`
+    - `..._primary_school_review_短语表_...jsonl`
+  - 仍然保持：
+    - 单词页仅导入单词表
+    - 短语页仅导入短语表
+    - 课文表需在课文管理中导入
+
+### 22.3 词库学习接口增加来源维度
+- 调整后端：
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/controller/LexiconController.java`
+  - `backend/user-service/src/main/java/com/kineticscholar/userservice/repository/LexiconEntryRepository.java`
+- 调整前端类型/调用：
+  - `front/src/lib/lexicon.ts`
+- 变更内容：
+  - `GET /api/lexicon/learning/summary` 新增可选 `sourceTag`
+  - `GET /api/lexicon/learning/items` 新增可选 `sourceTag`
+  - 学习汇总响应新增 `sourceGroups`
+    - 结构为 `sourceTag -> groups -> total`
+  - 当不传 `sourceTag` 时，后端会按来源分别返回分组汇总，供教师端/学生端构建多层选择
+
+### 22.4 教师端发布单词测试增加来源层级
+- 调整页面：
+  - `front/src/components/teacher/TeacherWordTest.tsx`
+- 调整共享类型：
+  - `front/src/lib/auth.ts`
+  - `backend/test-service/src/main/java/com/kineticscholar/testservice/dto/WordTestGroupScope.java`
+  - `backend/test-service/src/main/java/com/kineticscholar/testservice/dto/WordTestContentItem.java`
+- 新交互层级：
+  - `单元 -> source_tag -> 组`
+- 发布时：
+  - scope 中写入 `sourceTag`
+  - 取词时按 `sourceTag + groupNo` 精确拉取
+  - content items 同步保留 `sourceTag`
+
+### 22.5 教师端发布单词复习增加来源层级
+- 调整页面：
+  - `front/src/components/teacher/TeacherWordReview.tsx`
+- 调整共享类型：
+  - `front/src/lib/auth.ts`
+  - `backend/test-service/src/main/java/com/kineticscholar/testservice/dto/WordReviewUnitScope.java`
+  - `backend/test-service/src/main/java/com/kineticscholar/testservice/dto/WordReviewContentItem.java`
+- 新交互层级：
+  - `单元 -> source_tag`
+- 发布时：
+  - scope 中写入 `sourceTag`
+  - 任务内容按所选来源汇总单词，不再混入其他来源
+
+### 22.6 学生端单词闯关增加来源切换
+- 调整页面：
+  - `front/src/pages/StudentUnit.tsx`
+  - `front/src/pages/StudentDashboard.tsx`
+- 新行为：
+  - 单词闯关支持在单元内按来源切换：
+    - `current_book`
+    - `primary_school_review`
+  - 默认优先 `current_book`
+  - 若该单元下不存在小学复习单词，则不显示“小学复习”标签
+  - 短语闯关不显示来源标签，仍按默认来源直接学习
+
+### 22.7 学生端来源切换与学习进度隔离修复
+- 问题：
+  - 初版实现中，单词闯关切换来源后可能出现“当前组暂无内容”、无法切回、不同账号/不同来源之间状态污染
+  - 同时出现过 `vSession is not defined` 的前端报错
+- 修复内容：
+  - 清理学生端旧变量残留，移除 `vSession / pSession` 误引用
+  - 将单词/短语闯关的：
+    - 组缓存
+    - 组加载状态
+    - 组进度映射
+    全部改为按 `sourceTag + groupNo` 双键隔离
+  - 学习会话与分组进度保存时，前端使用 `unitId||sourceTag` 作为词汇/短语模块的运行态键，避免不同来源同组号串进度
+  - 学生端首页单元进度统计同步按多个来源累计词汇/短语进度
+
+### 22.8 本轮验证
+- 前端：
+  - `cmd /c npm run build` 通过
+- 后端：
+  - `backend/user-service` `mvn -q -DskipTests compile` 通过
+  - `backend/test-service` `mvn -q -DskipTests compile` 通过
+- 手工验证结论：
+  - 管理员端同单元双来源分组互不影响
+  - 批量导入可正确识别 `current_book / primary_school_review`
+  - 教师端测试支持 `来源 -> 组`
+  - 教师端复习支持 `来源`
+  - 学生端单词闯关支持按来源切换，且无来源时不显示标签
+  - 学生端短语闯关不显示来源标签

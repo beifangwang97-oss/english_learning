@@ -50,6 +50,17 @@ public interface LexiconEntryRepository extends JpaRepository<LexiconEntry, Long
             Integer groupNo
     );
 
+    @EntityGraph(attributePaths = {"meanings"})
+    List<LexiconEntry> findByTypeAndBookVersionAndGradeAndSemesterAndUnitAndSourceTagAndGroupNoOrderByIdAsc(
+            String type,
+            String bookVersion,
+            String grade,
+            String semester,
+            String unit,
+            String sourceTag,
+            Integer groupNo
+    );
+
     long countByBookVersionAndGradeAndSemesterAndUnit(
             String bookVersion,
             String grade,
@@ -98,5 +109,26 @@ public interface LexiconEntryRepository extends JpaRepository<LexiconEntry, Long
             @Param("grade") String grade,
             @Param("semester") String semester,
             @Param("unit") String unit
+    );
+
+    @Query("""
+            select e.groupNo, count(e.id)
+            from LexiconEntry e
+            where e.type = :type
+              and e.bookVersion = :bookVersion
+              and e.grade = :grade
+              and e.semester = :semester
+              and e.unit = :unit
+              and e.sourceTag = :sourceTag
+            group by e.groupNo
+            order by e.groupNo asc
+            """)
+    List<Object[]> countByGroupAndSourceTag(
+            @Param("type") String type,
+            @Param("bookVersion") String bookVersion,
+            @Param("grade") String grade,
+            @Param("semester") String semester,
+            @Param("unit") String unit,
+            @Param("sourceTag") String sourceTag
     );
 }

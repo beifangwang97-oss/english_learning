@@ -1,0 +1,42 @@
+unit 1 sectionA page9 Let's talk
+unit 1 sectionA page10 Let's learn
+unit 1 sectionA page11 Let's spell
+unit 1 sectionB page12 Let's talk
+unit 1 sectionB page13 Let's learn
+unit 1 sectionB page14 Read and write
+unit 1 sectionC page17-18 Reading time
+unit 2 sectionA page21 Let's talk
+unit 2 sectionA page22 Let's learn
+unit 2 sectionA page23 Let's spell
+unit 2 sectionB page24 Let's talk 
+unit 2 sectionB page25 Let's learn
+unit 2 sectionB page26 Read and write           
+unit 2 sectionC page29-30 Reading time
+unit 3 sectionA page33 Let's talk
+unit 3 sectionA page34 Let's learn
+unit 3 sectionA page35 Let's spell
+unit 3 sectionB page36 Let's talk
+unit 3 sectionB page37 Let's learn
+unit 3 sectionB page38 Read and write
+unit 3 sectionC page41-42 Reading time
+unit 4 sectionA page45 Let's talk
+unit 4 sectionA page46 Let's learn
+unit 4 sectionA page47 Let's spell
+unit 4 sectionB page48 Let's talk
+unit 4 sectionB page49 Let's learn
+unit 4 sectionB page50 Read and write
+unit 4 sectionC page53-54 Reading time
+unit 5 sectionA page57 Let's talk
+unit 5 sectionA page58 Let's learn
+unit 5 sectionA page59 Let's spell
+unit 5 sectionB page60 Let's talk
+unit 5 sectionB page61 Let's learn
+unit 5 sectionB page62 Read and write
+unit 5 sectionC page65-66 Reading time
+unit 6 sectionA page69 Let's talk
+unit 6 sectionA page70 Let's learn
+unit 6 sectionA page71 Let's spell
+unit 6 sectionB page72 Let's talk
+unit 6 sectionB page73 Let's learn
+unit 6 sectionB page74 Read and write
+unit 6 sectionC page77-78 Reading time

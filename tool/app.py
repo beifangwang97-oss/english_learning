@@ -142,6 +142,15 @@ def build_recorded_output_base(uploaded_name, source_type):
     return f"{sanitize_filename(source_type)}_source"
 
 
+def infer_source_tag_from_filename(filename):
+    stem = os.path.splitext(os.path.basename(str(filename or "")))[0]
+    if "_current_book_" in stem or stem.endswith("_current_book"):
+        return "current_book"
+    if "_primary_school_review_" in stem or stem.endswith("_primary_school_review"):
+        return "primary_school_review"
+    return ""
+
+
 def list_existing_recorded_versions(base_name):
     if not base_name:
         return []
@@ -1044,8 +1053,8 @@ def pdf_page_to_image_bytes_cached(doc, page_number):
     return pix.tobytes("png")
 
 
-def get_unique_id(word, unit, grade):
-    raw_str = f"{word}_{unit}_{grade}"
+def get_unique_id(word, unit, grade, semester="", book_version="", source_tag=""):
+    raw_str = f"{word}_{unit}_{grade}_{semester}_{book_version}_{source_tag}"
     return hashlib.md5(raw_str.encode('utf-8')).hexdigest()[:10]
 
 
@@ -1915,7 +1924,14 @@ with tab1:
                                 }]
 
                             word_clean = "".join([c for c in item.get("word", "") if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
-                            item["id"] = get_unique_id(word_clean, last_unit_context, file_meta["grade"])
+                            item["id"] = get_unique_id(
+                                word_clean,
+                                last_unit_context,
+                                file_meta["grade"],
+                                file_meta.get("semester", ""),
+                                file_meta.get("book_version", ""),
+                                item.get("source_tag", "current_book"),
+                            )
 
                             unit_name = item.get("unit", "Unit ?")
                             if unit_name not in live_unit_stats[uf.name]:
@@ -2105,10 +2121,13 @@ with tab2:
 
         def load_items_from_uploaded(uploaded_file, source_type):
             parsed = []
+            inferred_source_tag = infer_source_tag_from_filename(uploaded_file.name)
             for line in uploaded_file.getvalue().decode("utf-8-sig", errors="replace").splitlines():
                 if not line.strip():
                     continue
                 item = _load_json_line(line)
+                if inferred_source_tag and not str(item.get("source_tag", "") or "").strip():
+                    item["source_tag"] = inferred_source_tag
                 item["_source_type"] = source_type
                 item["_source_file"] = uploaded_file.name
                 parsed.append(item)
@@ -2280,8 +2299,8 @@ with tab2:
                     if not target_id:
                         target_id = f"{uploaded_item.get('unit','Unit ?')} Section {uploaded_item.get('section','')} {uploaded_item.get('label','')}".strip()
 
-                    uid_seed = f"{target_id}|{uploaded_item.get('book_version','')}|{uploaded_item.get('grade','')}|{uploaded_item.get('semester','')}"
-                    uid = uploaded_item.get("id", hashlib.md5(uid_seed.encode("utf-8")).hexdigest()[:12])
+                    uid_seed = f"{target_id}|{uploaded_item.get('book_version','')}|{uploaded_item.get('grade','')}|{uploaded_item.get('semester','')}|{uploaded_item.get('source_tag','')}"
+                    uid = hashlib.md5(uid_seed.encode("utf-8")).hexdigest()[:12]
                     uploaded_item["id"] = uid
 
                     item = existing_items_map.get(uid, uploaded_item)
@@ -2325,7 +2344,17 @@ with tab2:
                         continue
 
                     word_clean = "".join([c for c in word if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
-                    uid = uploaded_item.get("id", get_unique_id(word_clean, uploaded_item.get("unit", "unk"), uploaded_item.get("grade", "unk")))
+                    uid = uploaded_item.get(
+                        "id",
+                        get_unique_id(
+                            word_clean,
+                            uploaded_item.get("unit", "unk"),
+                            uploaded_item.get("grade", "unk"),
+                            uploaded_item.get("semester", ""),
+                            uploaded_item.get("book_version", ""),
+                            uploaded_item.get("source_tag", ""),
+                        ),
+                    )
                     uploaded_item["id"] = uid
 
                     item = existing_items_map.get(uid, uploaded_item)

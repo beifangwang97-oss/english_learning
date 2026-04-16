@@ -33,16 +33,32 @@ const normalizeSemester = (semester: string) => {
   if (s.includes('全') && s.includes('册')) return '全册';
   return s;
 };
+const SOURCE_TAG_TOKENS: Array<{ tokens: string[]; value: string }> = [
+  { tokens: ['primary', 'school', 'review'], value: 'primary_school_review' },
+  { tokens: ['current', 'book'], value: 'current_book' },
+];
 const parseFileMeta = (fileName: string) => {
   const base = fileName.replace(/\.jsonl$/i, '');
   const parts = base.split('_');
   const bookVersion = (parts[0] || '').trim();
   const grade = (parts[1] || '').trim();
   const semester = normalizeSemester((parts[2] || '').trim());
-  const token3 = (parts[3] || '').trim();
-  const token4 = (parts[4] || '').trim();
-  const sourceTag = token4 ? (token3 || 'current_book') : 'current_book';
-  const listToken = token4 || token3;
+  const remainder = parts.slice(3).map((part) => part.trim()).filter(Boolean);
+
+  let sourceTag = 'current_book';
+  let contentTokens = remainder;
+  for (const candidate of SOURCE_TAG_TOKENS) {
+    const matches = candidate.tokens.every((token, index) => remainder[index] === token);
+    if (matches) {
+      sourceTag = candidate.value;
+      contentTokens = remainder.slice(candidate.tokens.length);
+      break;
+    }
+  }
+
+  const listToken = contentTokens.find((token) =>
+    token.includes('单词表') || token.includes('短语表') || token.includes('课文表')
+  ) || contentTokens[0] || '';
   let parsedType: ImportRow['parsedType'] = 'unknown';
   if (listToken.includes('单词表')) parsedType = 'word';
   else if (listToken.includes('短语表')) parsedType = 'phrase';
@@ -457,6 +473,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
   };
 
   const applyGrouping = async (clearOnly: boolean) => {
+    if (selectedSourceTag === 'all') return setError('请先选择具体来源后再分组，避免不同来源互相影响');
     if (groupUnits.size === 0) return setError('请至少选择一个单元');
     const size = Math.floor(Number(groupSize));
     if (!clearOnly && (!Number.isFinite(size) || size <= 0)) return setError('每组数量必须是正整数');
@@ -466,9 +483,11 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
       const counter = new Map<string, number>();
       const nextItems = items.map((item) => {
         if (!selected.has(item.unit)) return item;
+        if (resolveSourceTag(item.source_tag) !== selectedSourceTag) return item;
         if (clearOnly) return { ...item, group_no: undefined };
-        const idx = counter.get(item.unit) ?? 0;
-        counter.set(item.unit, idx + 1);
+        const counterKey = `${resolveSourceTag(item.source_tag)}||${item.unit}`;
+        const idx = counter.get(counterKey) ?? 0;
+        counter.set(counterKey, idx + 1);
         return { ...item, group_no: Math.floor(idx / size) + 1 };
       });
       await saveAll(nextItems, clearOnly ? '已取消分组并同步数据库' : '分组完成并同步数据库');
@@ -489,7 +508,13 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
         </select>
         <select value={selectedUnit} onChange={(e) => setSelectedUnit(e.target.value)} className="border rounded-lg px-3 py-2 bg-white">{units.map((u) => <option key={u} value={u}>{u}</option>)}</select>
         <div className="ml-auto flex items-center gap-2">
-          {!isEditing && <button onClick={() => setShowGroupModal(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Layers className="w-4 h-4" /> 分组</button>}
+          {!isEditing && <button onClick={() => {
+            if (selectedSourceTag === 'all') {
+              setError('请先在来源筛选中选择“当前册”或“小学复习”，再进行分组');
+              return;
+            }
+            setShowGroupModal(true);
+          }} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Layers className="w-4 h-4" /> 分组</button>}
           {!isEditing && <button onClick={() => setShowImportModal(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Upload className="w-4 h-4" /> 批量导入</button>}
           {!isEditing && <button onClick={deleteCurrentScope} disabled={deleting || loading} className="px-4 py-2 rounded-lg border border-red-300 text-red-700 font-bold hover:bg-red-50 disabled:opacity-40 flex items-center gap-2"><Trash2 className="w-4 h-4" /> {deleting ? '删除中...' : '删除本册'}</button>}
           {!isEditing && <button onClick={() => setIsEditing(true)} className="px-4 py-2 rounded-lg border font-bold hover:bg-surface-container-low flex items-center gap-2"><Pencil className="w-4 h-4" /> 编辑</button>}
@@ -535,7 +560,7 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
         </table>
       </div>
 
-      {showGroupModal && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-[min(900px,96vw)] rounded-xl bg-white border border-outline-variant/30 shadow-xl p-5 space-y-4 max-h-[86vh] overflow-y-auto"><div className="flex items-center justify-between"><h4 className="text-lg font-black">{type === 'word' ? '单词分组' : '短语分组'}</h4><button onClick={() => setShowGroupModal(false)} className="rounded-md p-1 hover:bg-surface-container-low"><X className="w-4 h-4" /></button></div><div className="text-sm text-on-surface-variant">当前：{selectedBookVersion} / {selectedGrade} / {selectedSemester}</div><div className="flex gap-2"><button onClick={() => setGroupUnits(new Set(units))} className="px-3 py-1.5 rounded border text-sm font-bold">全选</button><button onClick={() => setGroupUnits(new Set())} className="px-3 py-1.5 rounded border text-sm font-bold">清空</button><span className="text-sm text-on-surface-variant px-1 py-1.5">已选 {groupUnits.size} / {units.length}</span></div><div className="max-h-52 overflow-auto border rounded-lg p-3 grid grid-cols-2 md:grid-cols-3 gap-2">{units.map((u) => <label key={u} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={groupUnits.has(u)} onChange={(e) => setGroupUnits((prev) => { const next = new Set(prev); e.target.checked ? next.add(u) : next.delete(u); return next; })} /><span>{u}</span></label>)}</div><div className="space-y-2"><label className="text-sm font-bold">每组数量</label><input value={groupSize} onChange={(e) => setGroupSize(e.target.value)} type="number" min={1} className="w-48 border rounded-lg px-3 py-2" /></div><div className="flex justify-end gap-2"><button onClick={() => setShowGroupModal(false)} className="px-4 py-2 border rounded-lg font-bold">取消</button><button onClick={() => applyGrouping(true)} disabled={grouping || groupUnits.size === 0} className="px-4 py-2 border rounded-lg font-bold disabled:opacity-40">{grouping ? '处理中...' : '取消分组'}</button><button onClick={() => applyGrouping(false)} disabled={grouping || groupUnits.size === 0} className="px-4 py-2 bg-secondary text-on-secondary rounded-lg font-bold disabled:opacity-40">{grouping ? '处理中...' : '确认分组'}</button></div></div></div>}
+      {showGroupModal && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-[min(900px,96vw)] rounded-xl bg-white border border-outline-variant/30 shadow-xl p-5 space-y-4 max-h-[86vh] overflow-y-auto"><div className="flex items-center justify-between"><h4 className="text-lg font-black">{type === 'word' ? '单词分组' : '短语分组'}</h4><button onClick={() => setShowGroupModal(false)} className="rounded-md p-1 hover:bg-surface-container-low"><X className="w-4 h-4" /></button></div><div className="text-sm text-on-surface-variant">当前：{selectedBookVersion} / {selectedGrade} / {selectedSemester} / {formatSourceTagLabel(selectedSourceTag)}</div><div className="flex gap-2"><button onClick={() => setGroupUnits(new Set(units))} className="px-3 py-1.5 rounded border text-sm font-bold">全选</button><button onClick={() => setGroupUnits(new Set())} className="px-3 py-1.5 rounded border text-sm font-bold">清空</button><span className="text-sm text-on-surface-variant px-1 py-1.5">已选 {groupUnits.size} / {units.length}</span></div><div className="max-h-52 overflow-auto border rounded-lg p-3 grid grid-cols-2 md:grid-cols-3 gap-2">{units.map((u) => <label key={u} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={groupUnits.has(u)} onChange={(e) => setGroupUnits((prev) => { const next = new Set(prev); e.target.checked ? next.add(u) : next.delete(u); return next; })} /><span>{u}</span></label>)}</div><div className="space-y-2"><label className="text-sm font-bold">每组数量</label><input value={groupSize} onChange={(e) => setGroupSize(e.target.value)} type="number" min={1} className="w-48 border rounded-lg px-3 py-2" /></div><div className="rounded-lg bg-surface-container-low px-3 py-2 text-sm text-on-surface-variant">本次分组只会影响当前来源，不会改动其他来源的组号。</div><div className="flex justify-end gap-2"><button onClick={() => setShowGroupModal(false)} className="px-4 py-2 border rounded-lg font-bold">取消</button><button onClick={() => applyGrouping(true)} disabled={grouping || groupUnits.size === 0} className="px-4 py-2 border rounded-lg font-bold disabled:opacity-40">{grouping ? '处理中...' : '取消分组'}</button><button onClick={() => applyGrouping(false)} disabled={grouping || groupUnits.size === 0} className="px-4 py-2 bg-secondary text-on-secondary rounded-lg font-bold disabled:opacity-40">{grouping ? '处理中...' : '确认分组'}</button></div></div></div>}
       {showImportModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-[min(1200px,98vw)] rounded-xl bg-white border border-outline-variant/30 shadow-xl p-5 space-y-4 max-h-[90vh] overflow-y-auto">

@@ -5,6 +5,7 @@ import lombok.Data;
 @Data
 public class WordReviewContentItem {
     private String entryId;
+    private String sourceTag;
     private String word;
     private String phonetic;
     private String meaning;

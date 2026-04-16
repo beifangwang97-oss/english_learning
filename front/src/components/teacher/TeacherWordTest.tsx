@@ -14,7 +14,7 @@ import {
   wordTestApi,
 } from '../../lib/auth';
 import { getSessionToken } from '../../lib/session';
-import { lexiconApi, LexiconTaskTreeBook } from '../../lib/lexicon';
+import { formatSourceTagLabel, lexiconApi, LexiconTaskTreeBook, LearningSourceGroupSummary } from '../../lib/lexicon';
 
 type StudentUser = AdminUser & { onlineStatus?: number | boolean | null };
 
@@ -125,7 +125,7 @@ export const TeacherWordTest: React.FC = () => {
   const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
   const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
   const [expandedGrades, setExpandedGrades] = useState<Set<string>>(new Set());
-  const [groupSummaryMap, setGroupSummaryMap] = useState<Record<string, Array<{ groupNo: number; count: number }>>>({});
+  const [groupSummaryMap, setGroupSummaryMap] = useState<Record<string, LearningSourceGroupSummary[]>>({});
   const [selectedAssignmentIds, setSelectedAssignmentIds] = useState<number[]>([]);
 
   const loadData = async () => {
@@ -207,17 +207,17 @@ export const TeacherWordTest: React.FC = () => {
 
   const parseScopeKey = (key: string): WordTestGroupScope | null => {
     const parts = key.split('||');
-    if (parts.length !== 5) return null;
-    const [textbookVersion, grade, semester, unit, groupNoRaw] = parts;
+    if (parts.length !== 6) return null;
+    const [textbookVersion, grade, semester, unit, sourceTag, groupNoRaw] = parts;
     const groupNo = Number(groupNoRaw);
-    if (!textbookVersion || !grade || !semester || !unit || !Number.isFinite(groupNo)) return null;
-    return { textbookVersion, grade, semester, unit, groupNo };
+    if (!textbookVersion || !grade || !semester || !unit || !sourceTag || !Number.isFinite(groupNo)) return null;
+    return { textbookVersion, grade, semester, unit, sourceTag, groupNo };
   };
 
   const formatScopeLabel = (key: string) => {
     const scope = parseScopeKey(key);
     if (!scope) return key;
-    return `${scope.textbookVersion} / ${scope.grade} / ${scope.semester} / ${scope.unit} / 组${scope.groupNo}`;
+    return `${scope.textbookVersion} / ${scope.grade} / ${scope.semester} / ${scope.unit} / ${formatSourceTagLabel(scope.sourceTag)} / 组${scope.groupNo}`;
   };
 
   const fetchUnitGroups = async (unitNode: UnitNode) => {
@@ -230,7 +230,7 @@ export const TeacherWordTest: React.FC = () => {
       semester: unitNode.semester,
       unit: unitNode.unit,
     });
-    setGroupSummaryMap((prev) => ({ ...prev, [key]: res.groups || [] }));
+    setGroupSummaryMap((prev) => ({ ...prev, [key]: res.sourceGroups || [] }));
   };
 
   const toggleUnitExpand = async (unitNode: UnitNode) => {
@@ -278,12 +278,14 @@ export const TeacherWordTest: React.FC = () => {
           grade: scope.grade,
           semester: scope.semester,
           unit: scope.unit,
+          sourceTag: scope.sourceTag,
           groupNo: scope.groupNo,
         });
         (rows.items || []).forEach((entry) => {
           const firstMeaning = entry.meanings?.[0];
           itemMap.set(entry.id, {
             entryId: entry.id,
+            sourceTag: entry.source_tag || scope.sourceTag,
             word: entry.word,
             phonetic: entry.phonetic,
             meaning: firstMeaning?.meaning || '',
@@ -452,7 +454,7 @@ export const TeacherWordTest: React.FC = () => {
                                 const unitNode: UnitNode = { textbookVersion: book.bookVersion, grade: g.grade, semester: s.semester, unit: u };
                                 const unitKey = `${book.bookVersion}||${g.grade}||${s.semester}||${u}`;
                                 const unitExpanded = expandedUnits.has(unitKey);
-                                const groups = groupSummaryMap[unitKey] || [];
+                                const sourceGroups = groupSummaryMap[unitKey] || [];
                                 return (
                                   <div key={unitKey} className="mb-1 border rounded-lg border-outline-variant/20 bg-white overflow-hidden">
                                     <button onClick={() => toggleUnitExpand(unitNode)} className="w-full px-3 py-2 flex items-center justify-between hover:bg-surface-container-highest">
@@ -461,17 +463,28 @@ export const TeacherWordTest: React.FC = () => {
                                     </button>
                                     {unitExpanded && (
                                       <div className="px-3 pb-3 space-y-1">
-                                        {groups.length === 0 && <div className="text-xs text-on-surface-variant">暂无组数据</div>}
-                                        {groups.map((gr) => {
-                                          const scopeKey = `${book.bookVersion}||${g.grade}||${s.semester}||${u}||${gr.groupNo}`;
-                                          const checked = selectedScopes.includes(scopeKey);
-                                          return (
-                                            <label key={scopeKey} className="flex items-center justify-between rounded px-2 py-1 hover:bg-surface-container-highest cursor-pointer">
-                                              <span className="text-sm">组 {gr.groupNo}（{gr.count} 词）</span>
-                                              <input type="checkbox" checked={checked} onChange={() => toggleScope(scopeKey)} />
-                                            </label>
-                                          );
-                                        })}
+                                        {sourceGroups.length === 0 && <div className="text-xs text-on-surface-variant">暂无组数据</div>}
+                                        {sourceGroups.map((sourceGroup) => (
+                                          <div key={`${unitKey}||${sourceGroup.sourceTag}`} className="rounded-lg border border-outline-variant/20 bg-surface-container-lowest/60 p-2">
+                                            <div className="mb-1 flex items-center justify-between">
+                                              <span className="text-xs font-bold text-on-surface-variant">{formatSourceTagLabel(sourceGroup.sourceTag)}</span>
+                                              <span className="text-[10px] font-bold text-on-surface-variant">共 {sourceGroup.total} 词</span>
+                                            </div>
+                                            <div className="space-y-1">
+                                              {(sourceGroup.groups || []).map((gr) => {
+                                                const scopeKey = `${book.bookVersion}||${g.grade}||${s.semester}||${u}||${sourceGroup.sourceTag}||${gr.groupNo}`;
+                                                const checked = selectedScopes.includes(scopeKey);
+                                                return (
+                                                  <label key={scopeKey} className="flex items-center justify-between rounded px-2 py-1 hover:bg-surface-container-highest cursor-pointer">
+                                                    <span className="text-sm">组 {gr.groupNo}（{gr.count} 词）</span>
+                                                    <input type="checkbox" checked={checked} onChange={() => toggleScope(scopeKey)} />
+                                                  </label>
+                                                );
+                                              })}
+                                              {(!sourceGroup.groups || sourceGroup.groups.length === 0) && <div className="px-2 py-1 text-xs text-on-surface-variant">该来源下暂无分组数据</div>}
+                                            </div>
+                                          </div>
+                                        ))}
                                       </div>
                                     )}
                                   </div>

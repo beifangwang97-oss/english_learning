@@ -1091,7 +1091,8 @@ public class LexiconController {
             @RequestParam("bookVersion") String bookVersion,
             @RequestParam("grade") String grade,
             @RequestParam("semester") String semester,
-            @RequestParam("unit") String unit
+            @RequestParam("unit") String unit,
+            @RequestParam(value = "sourceTag", required = false) String sourceTag
     ) {
         try {
             String normalizedType = normalizeType(type);
@@ -1099,20 +1100,50 @@ public class LexiconController {
             String g = safeStr(grade);
             String s = normalizeSemesterTag(semester);
             String u = safeStr(unit);
+            String normalizedSourceTag = normalizeSourceTag(sourceTag, false);
             if (u.isBlank()) throw new RuntimeException("unit is required");
 
-            List<Object[]> groupRows = entryRepository.countByGroup(normalizedType, bv, g, s, u);
             List<Map<String, Object>> groups = new ArrayList<>();
+            List<Map<String, Object>> sourceGroups = new ArrayList<>();
             int total = 0;
-            for (Object[] row : groupRows) {
-                Integer groupNo = row[0] == null ? 0 : ((Number) row[0]).intValue();
-                Integer count = row[1] == null ? 0 : ((Number) row[1]).intValue();
-                if (groupNo <= 0 || count <= 0) continue;
-                total += count;
-                Map<String, Object> gRow = new LinkedHashMap<>();
-                gRow.put("groupNo", groupNo);
-                gRow.put("count", count);
-                groups.add(gRow);
+
+            if (!normalizedSourceTag.isBlank()) {
+                List<Object[]> groupRows = entryRepository.countByGroupAndSourceTag(normalizedType, bv, g, s, u, normalizedSourceTag);
+                groups = mapGroupSummaryRows(groupRows);
+                total = groups.stream().mapToInt(row -> ((Number) row.get("count")).intValue()).sum();
+                Map<String, Object> sourceRow = new LinkedHashMap<>();
+                sourceRow.put("sourceTag", normalizedSourceTag);
+                sourceRow.put("groups", groups);
+                sourceRow.put("total", total);
+                sourceGroups.add(sourceRow);
+            } else {
+                List<LexiconEntry> rows = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndUnitOrderByGroupNoAscIdAsc(
+                        normalizedType, bv, g, s, u
+                );
+                Map<String, Map<Integer, Integer>> groupedBySource = new LinkedHashMap<>();
+                for (LexiconEntry entry : rows) {
+                    String entrySourceTag = normalizeSourceTag(entry.getSourceTag(), true);
+                    Integer groupNo = entry.getGroupNo();
+                    if (groupNo == null || groupNo <= 0) continue;
+                    groupedBySource
+                            .computeIfAbsent(entrySourceTag, ignored -> new TreeMap<>())
+                            .merge(groupNo, 1, Integer::sum);
+                    total += 1;
+                }
+                for (var entry : groupedBySource.entrySet()) {
+                    List<Map<String, Object>> scopedGroups = new ArrayList<>();
+                    for (var groupEntry : entry.getValue().entrySet()) {
+                        Map<String, Object> gRow = new LinkedHashMap<>();
+                        gRow.put("groupNo", groupEntry.getKey());
+                        gRow.put("count", groupEntry.getValue());
+                        scopedGroups.add(gRow);
+                    }
+                    Map<String, Object> sourceRow = new LinkedHashMap<>();
+                    sourceRow.put("sourceTag", entry.getKey());
+                    sourceRow.put("groups", scopedGroups);
+                    sourceRow.put("total", scopedGroups.stream().mapToInt(row -> ((Number) row.get("count")).intValue()).sum());
+                    sourceGroups.add(sourceRow);
+                }
             }
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("type", normalizedType);
@@ -1120,7 +1151,9 @@ public class LexiconController {
             data.put("grade", g);
             data.put("semester", s);
             data.put("unit", u);
+            data.put("sourceTag", normalizedSourceTag);
             data.put("groups", groups);
+            data.put("sourceGroups", sourceGroups);
             data.put("total", total);
             return new ResponseEntity<>(data, HttpStatus.OK);
         } catch (Exception e) {
@@ -1135,7 +1168,8 @@ public class LexiconController {
             @RequestParam("grade") String grade,
             @RequestParam("semester") String semester,
             @RequestParam("unit") String unit,
-            @RequestParam("groupNo") Integer groupNo
+            @RequestParam("groupNo") Integer groupNo,
+            @RequestParam(value = "sourceTag", required = false) String sourceTag
     ) {
         try {
             String normalizedType = normalizeType(type);
@@ -1143,12 +1177,17 @@ public class LexiconController {
             String g = safeStr(grade);
             String s = normalizeSemesterTag(semester);
             String u = safeStr(unit);
+            String normalizedSourceTag = normalizeSourceTag(sourceTag, false);
             if (u.isBlank()) throw new RuntimeException("unit is required");
             if (groupNo == null || groupNo <= 0) throw new RuntimeException("groupNo must be positive");
 
-            List<LexiconEntry> rows = entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndUnitAndGroupNoOrderByIdAsc(
-                    normalizedType, bv, g, s, u, groupNo
-            );
+            List<LexiconEntry> rows = normalizedSourceTag.isBlank()
+                    ? entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndUnitAndGroupNoOrderByIdAsc(
+                            normalizedType, bv, g, s, u, groupNo
+                    )
+                    : entryRepository.findByTypeAndBookVersionAndGradeAndSemesterAndUnitAndSourceTagAndGroupNoOrderByIdAsc(
+                            normalizedType, bv, g, s, u, normalizedSourceTag, groupNo
+                    );
 
             List<Map<String, Object>> items = rows.stream().map(this::toItemResponse).toList();
             Map<String, Object> data = new LinkedHashMap<>();
@@ -1158,6 +1197,7 @@ public class LexiconController {
             data.put("semester", s);
             data.put("unit", u);
             data.put("groupNo", groupNo);
+            data.put("sourceTag", normalizedSourceTag);
             data.put("items", items);
             data.put("count", items.size());
             return new ResponseEntity<>(data, HttpStatus.OK);
@@ -1645,6 +1685,20 @@ public class LexiconController {
             return SOURCE_CURRENT_BOOK;
         }
         return useDefault ? SOURCE_CURRENT_BOOK : "";
+    }
+
+    private List<Map<String, Object>> mapGroupSummaryRows(List<Object[]> groupRows) {
+        List<Map<String, Object>> groups = new ArrayList<>();
+        for (Object[] row : groupRows) {
+            Integer groupNo = row[0] == null ? 0 : ((Number) row[0]).intValue();
+            Integer count = row[1] == null ? 0 : ((Number) row[1]).intValue();
+            if (groupNo <= 0 || count <= 0) continue;
+            Map<String, Object> gRow = new LinkedHashMap<>();
+            gRow.put("groupNo", groupNo);
+            gRow.put("count", count);
+            groups.add(gRow);
+        }
+        return groups;
     }
 
     private String normalizePhonetic(String value) {

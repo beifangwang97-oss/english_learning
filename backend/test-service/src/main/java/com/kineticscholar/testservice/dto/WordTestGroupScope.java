@@ -8,6 +8,6 @@ public class WordTestGroupScope {
     private String grade;
     private String semester;
     private String unit;
+    private String sourceTag;
     private Integer groupNo;
 }
-
