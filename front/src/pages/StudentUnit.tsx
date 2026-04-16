@@ -1,10 +1,9 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { MOCK_QUIZ } from '../data/mock';
 import { useAuth } from '../context/AuthContext';
 import { useTimer } from '../context/TimerContext';
 import { cn } from '../lib/utils';
-import { learningProgressApi } from '../lib/auth';
+import { examApi, ExamPaperDetail, learningProgressApi, StudentExamPracticeResult } from '../lib/auth';
 import { formatPassageDisplayLabel, formatSourceTagLabel, lexiconApi, LearningEntry, LearningGroupSummary, LearningSourceGroupSummary, PassageItem } from '../lib/lexicon';
 import { getSessionToken } from '../lib/session';
 import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileQuestion, HelpCircle, LayoutDashboard, Library, LogOut, MessageCircle, Mic2, NotebookPen, Volume2, XCircle } from 'lucide-react';
@@ -211,6 +210,12 @@ export const StudentUnit: React.FC = () => {
   const [sentencePopover, setSentencePopover] = useState<{ idx: number; left: number; top: number } | null>(null);
   const [playingSentenceNo, setPlayingSentenceNo] = useState<number | null>(null);
   const [playingFullPassage, setPlayingFullPassage] = useState(false);
+  const [quizPaper, setQuizPaper] = useState<ExamPaperDetail | null>(null);
+  const [quizLoading, setQuizLoading] = useState(false);
+  const [quizSubmitLoading, setQuizSubmitLoading] = useState(false);
+  const [quizAnswers, setQuizAnswers] = useState<Record<number, string>>({});
+  const [quizResult, setQuizResult] = useState<StudentExamPracticeResult | null>(null);
+  const [quizAnalysisOpen, setQuizAnalysisOpen] = useState<Record<number, boolean>>({});
 
   const recognizeClearTimerRef = useRef<number | null>(null);
   const vocabSessionSaveRef = useRef<number | null>(null);
@@ -257,6 +262,10 @@ export const StudentUnit: React.FC = () => {
     [readingItems, unitMeta?.unit]
   );
   const currentPassage = readingPassages[readingIndex] || null;
+  const quizMaterialMap = useMemo(
+    () => new Map((quizPaper?.materials || []).map((item) => [item.id, item])),
+    [quizPaper?.materials]
+  );
 
   const ensureGroupItemsLoaded = async (module: LearnModule, groupNo: number, sourceTagOverride?: string): Promise<LearnItem[]> => {
     if (!token || !unitMeta) return [];
@@ -395,6 +404,47 @@ export const StudentUnit: React.FC = () => {
     };
     load();
   }, [token, user?.id, unitId, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit]);
+
+  useEffect(() => {
+    const loadQuizPaper = async () => {
+      if (!token || !user?.id || !unitMeta) return;
+      setQuizLoading(true);
+      try {
+        const papers = await examApi.getPapers(token, {
+          bookVersion: unitMeta.bookVersion,
+          grade: unitMeta.grade,
+          semester: unitMeta.semester,
+          unitCode: unitMeta.unit,
+          paperType: '同步测试题',
+        });
+        const paper = papers[0];
+        if (!paper) {
+          setQuizPaper(null);
+          setQuizResult(null);
+          setQuizAnswers({});
+          return;
+        }
+        const detail = await examApi.getPaperDetail(token, paper.id);
+        setQuizPaper(detail);
+        const latest = await examApi.getLatestPractice(token, paper.id, Number(user.id));
+        setQuizResult(latest);
+        if (latest?.answers?.length) {
+          const nextAnswers: Record<number, string> = {};
+          latest.answers.forEach((row) => {
+            nextAnswers[row.questionId] = row.submittedAnswer || '';
+          });
+          setQuizAnswers(nextAnswers);
+        } else {
+          setQuizAnswers({});
+        }
+      } catch (e: any) {
+        setPageError(e?.message || '单元练习加载失败');
+      } finally {
+        setQuizLoading(false);
+      }
+    };
+    loadQuizPaper();
+  }, [token, user?.id, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit]);
 
   useEffect(() => {
     const hydrateModule = async () => {
@@ -1398,6 +1448,138 @@ export const StudentUnit: React.FC = () => {
     );
   };
 
+  const toggleQuizAnalysis = (questionId: number) => {
+    setQuizAnalysisOpen((prev) => ({ ...prev, [questionId]: !prev[questionId] }));
+  };
+
+  const updateQuizAnswer = (questionId: number, answer: string) => {
+    setQuizAnswers((prev) => ({ ...prev, [questionId]: answer }));
+  };
+
+  const submitQuiz = async () => {
+    if (!token || !user?.id || !quizPaper) return;
+    setQuizSubmitLoading(true);
+    try {
+      const result = await examApi.submitPractice(token, quizPaper.id, {
+        userId: Number(user.id),
+        answers: quizPaper.questions.map((question) => ({
+          questionId: question.id,
+          answerText: quizAnswers[question.id] || '',
+        })),
+      });
+      setQuizResult(result);
+    } catch (e: any) {
+      setPageError(e?.message || '提交单元练习失败');
+    } finally {
+      setQuizSubmitLoading(false);
+    }
+  };
+
+  const renderQuizModule = () => {
+    if (quizLoading) return <div className="text-sm text-on-surface-variant">正在加载单元练习...</div>;
+    if (!quizPaper) return <div className="text-sm text-on-surface-variant">当前单元暂未配置同步测试题。</div>;
+
+    let lastMaterialId: number | null = null;
+    return (
+      <div className="space-y-6">
+        <div className="rounded-2xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-cyan-50 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-bold tracking-[0.18em] text-emerald-700">UNIT PRACTICE</div>
+              <h3 className="mt-2 text-2xl font-black text-slate-900">{quizPaper.paperName}</h3>
+              <p className="mt-2 text-sm text-slate-600">{quizPaper.bookVersion} · {quizPaper.grade} · {quizPaper.semester} · {quizPaper.unitCode}</p>
+            </div>
+            {quizResult && (
+              <div className="rounded-2xl bg-white/90 px-4 py-3 text-right shadow-sm">
+                <div className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">最近成绩</div>
+                <div className="mt-1 text-3xl font-black text-emerald-700">{quizResult.score}</div>
+                <div className="text-sm text-slate-600">{quizResult.correctCount} / {quizResult.totalCount} 题答对</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {quizPaper.questions.map((question) => {
+          const material = question.materialId ? quizMaterialMap.get(question.materialId) : null;
+          const shouldShowMaterial = Boolean(material && material.id !== lastMaterialId);
+          if (material) lastMaterialId = material.id;
+          const resultRow = quizResult?.answers?.find((row) => row.questionId === question.id);
+          const answeredCorrect = Boolean(resultRow?.correct);
+          return (
+            <div key={question.id} className="space-y-4">
+              {shouldShowMaterial && material && (
+                <section className="rounded-2xl border border-amber-200/70 bg-amber-50/70 p-5">
+                  <div className="text-xs font-black tracking-[0.2em] text-amber-700">{material.materialLabel || 'MATERIAL'}</div>
+                  {material.title ? <h4 className="mt-2 text-lg font-black text-slate-900">{material.title}</h4> : null}
+                  <div className="mt-3 whitespace-pre-wrap text-[15px] leading-7 text-slate-700">{material.content}</div>
+                </section>
+              )}
+
+              <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-lg font-black text-slate-900">第 {question.questionNo} 题</div>
+                  {resultRow && (
+                    <span className={cn('rounded-full px-3 py-1 text-xs font-black', answeredCorrect ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
+                      {answeredCorrect ? '回答正确' : '回答错误'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="mt-3 whitespace-pre-wrap text-[16px] leading-7 text-slate-800">{question.stem}</div>
+
+                {!!question.options?.length ? (
+                  <div className="mt-4 space-y-3">
+                    {question.options.map((option) => (
+                      <label key={`${question.id}-${option.key}`} className={cn('flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3', quizAnswers[question.id] === option.key ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-slate-50/60')}>
+                        <input
+                          type="radio"
+                          name={`question-${question.id}`}
+                          checked={quizAnswers[question.id] === option.key}
+                          onChange={() => updateQuizAnswer(question.id, option.key)}
+                          className="mt-1"
+                        />
+                        <div className="text-sm leading-6 text-slate-700"><span className="font-black mr-2">{option.key}.</span>{option.text}</div>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <textarea
+                    value={quizAnswers[question.id] || ''}
+                    onChange={(e) => updateQuizAnswer(question.id, e.target.value)}
+                    className="mt-4 min-h-[96px] w-full rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3"
+                    placeholder="请输入你的答案"
+                  />
+                )}
+
+                {quizResult && (
+                  <div className="mt-4 space-y-3 rounded-xl bg-slate-50 p-4">
+                    <div className="text-sm text-slate-700">你的答案：<span className={cn('font-black', answeredCorrect ? 'text-emerald-700' : 'text-red-700')}>{resultRow?.submittedAnswer || '未作答'}</span></div>
+                    <div className="text-sm text-slate-700">正确答案：<span className="font-black text-emerald-700">{resultRow?.correctAnswer || question.answerText || '-'}</span></div>
+                    <button onClick={() => toggleQuizAnalysis(question.id)} className="text-sm font-bold text-sky-700 hover:text-sky-900">
+                      {quizAnalysisOpen[question.id] ? '收起解析' : '查看解析'}
+                    </button>
+                    {quizAnalysisOpen[question.id] && (
+                      <div className="space-y-3 text-sm leading-7 text-slate-700">
+                        {question.analysis ? <div className="whitespace-pre-wrap">{question.analysis}</div> : <div>暂无解析</div>}
+                        {material?.analysis ? <div className="rounded-lg bg-amber-50 px-3 py-2 whitespace-pre-wrap text-amber-900">材料解析：{material.analysis}</div> : null}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </article>
+            </div>
+          );
+        })}
+
+        <div className="sticky bottom-6 flex justify-end">
+          <button onClick={submitQuiz} disabled={quizSubmitLoading} className="rounded-full bg-emerald-600 px-6 py-3 text-sm font-black text-white shadow-lg disabled:opacity-50">
+            {quizSubmitLoading ? '提交中...' : quizResult ? '重新提交并核对' : '提交并核对答案'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const handleLogout = () => {
     logout();
     navigate('/login');
@@ -1450,12 +1632,7 @@ export const StudentUnit: React.FC = () => {
             {currentModule === 'vocab' && renderLearnModule('vocab')}
             {currentModule === 'phrase' && renderLearnModule('phrase')}
             {currentModule === 'reading' && renderReadingModule()}
-            {currentModule === 'quiz' && (
-              <div className="space-y-4">
-                {MOCK_QUIZ.map((q) => <div key={q.id} className="bg-surface-container-low p-4 rounded-lg"><p className="font-bold">{q.question}</p></div>)}
-                <p className="text-sm text-on-surface-variant">单元练习模块后续继续完善。</p>
-              </div>
-            )}
+            {currentModule === 'quiz' && renderQuizModule()}
           </div>
         </div>
         {showError && (

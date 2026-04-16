@@ -1,8 +1,25 @@
 package com.kineticscholar.testservice.service.impl;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kineticscholar.testservice.dto.ExamDeleteResult;
+import com.kineticscholar.testservice.dto.ExamImportResult;
+import com.kineticscholar.testservice.dto.ExamMaterialUpsertRequest;
+import com.kineticscholar.testservice.dto.ExamMaterialView;
+import com.kineticscholar.testservice.dto.ExamPaperDetailView;
+import com.kineticscholar.testservice.dto.ExamPaperSummaryView;
+import com.kineticscholar.testservice.dto.ExamPaperUpdateRequest;
+import com.kineticscholar.testservice.dto.ExamQuestionOptionPayload;
+import com.kineticscholar.testservice.dto.ExamQuestionOptionView;
+import com.kineticscholar.testservice.dto.ExamQuestionUpsertRequest;
+import com.kineticscholar.testservice.dto.ExamQuestionView;
 import com.kineticscholar.testservice.dto.PublishWordTestRequest;
 import com.kineticscholar.testservice.dto.PublishWordReviewRequest;
+import com.kineticscholar.testservice.dto.StudentExamPracticeAnswerRequest;
+import com.kineticscholar.testservice.dto.StudentExamPracticeQuestionResultView;
+import com.kineticscholar.testservice.dto.StudentExamPracticeResultView;
+import com.kineticscholar.testservice.dto.StudentExamPracticeSubmitRequest;
+import com.kineticscholar.testservice.dto.StudentExamWrongNotebookItemView;
 import com.kineticscholar.testservice.dto.StudentWordReviewAssignmentView;
 import com.kineticscholar.testservice.dto.StudentWordTestAssignmentView;
 import com.kineticscholar.testservice.dto.SubmitWordReviewSessionRequest;
@@ -14,6 +31,12 @@ import com.kineticscholar.testservice.dto.WordReviewSessionItem;
 import com.kineticscholar.testservice.dto.WordReviewUnitScope;
 import com.kineticscholar.testservice.dto.WordTestContentItem;
 import com.kineticscholar.testservice.dto.WordTestAssignmentView;
+import com.kineticscholar.testservice.model.ExamMaterial;
+import com.kineticscholar.testservice.model.ExamPaper;
+import com.kineticscholar.testservice.model.ExamPracticeRecord;
+import com.kineticscholar.testservice.model.ExamQuestion;
+import com.kineticscholar.testservice.model.ExamQuestionOption;
+import com.kineticscholar.testservice.model.ExamWrongNotebookItem;
 import com.kineticscholar.testservice.model.WordTest;
 import com.kineticscholar.testservice.model.WordReviewTask;
 import com.kineticscholar.testservice.model.WordReviewAssignment;
@@ -23,6 +46,12 @@ import com.kineticscholar.testservice.model.TestAssignment;
 import com.kineticscholar.testservice.model.TestAnswer;
 import com.kineticscholar.testservice.model.UnitAssignment;
 import com.kineticscholar.testservice.dto.UnitTaskItem;
+import com.kineticscholar.testservice.repository.ExamMaterialRepository;
+import com.kineticscholar.testservice.repository.ExamPaperRepository;
+import com.kineticscholar.testservice.repository.ExamPracticeRecordRepository;
+import com.kineticscholar.testservice.repository.ExamQuestionOptionRepository;
+import com.kineticscholar.testservice.repository.ExamQuestionRepository;
+import com.kineticscholar.testservice.repository.ExamWrongNotebookItemRepository;
 import com.kineticscholar.testservice.repository.WordTestRepository;
 import com.kineticscholar.testservice.repository.WordReviewTaskRepository;
 import com.kineticscholar.testservice.repository.WordReviewAssignmentRepository;
@@ -34,7 +63,15 @@ import com.kineticscholar.testservice.repository.UnitAssignmentRepository;
 import com.kineticscholar.testservice.service.TestService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -83,6 +120,24 @@ public class TestServiceImpl implements TestService {
 
     @Autowired
     private WordReviewDailySessionRepository wordReviewDailySessionRepository;
+
+    @Autowired
+    private ExamPaperRepository examPaperRepository;
+
+    @Autowired
+    private ExamMaterialRepository examMaterialRepository;
+
+    @Autowired
+    private ExamQuestionRepository examQuestionRepository;
+
+    @Autowired
+    private ExamQuestionOptionRepository examQuestionOptionRepository;
+
+    @Autowired
+    private ExamPracticeRecordRepository examPracticeRecordRepository;
+
+    @Autowired
+    private ExamWrongNotebookItemRepository examWrongNotebookItemRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -316,8 +371,8 @@ public class TestServiceImpl implements TestService {
         unitAssignmentRepository.deleteAllById(assignmentIds);
     }
 
-    private String safe(String value) {
-        return value == null ? "" : value.trim();
+    private String safe(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
     }
 
     @Override
@@ -784,6 +839,401 @@ public class TestServiceImpl implements TestService {
         taskIds.forEach(this::cleanupOrphanWordReviewTask);
     }
 
+    @Override
+    @Transactional
+    public ExamImportResult importExamPaperJsonl(
+            MultipartFile file,
+            String bookVersion,
+            String grade,
+            String semester,
+            String unitCode,
+            boolean overwrite,
+            Long createdBy
+    ) {
+        String bv = safe(bookVersion);
+        String g = safe(grade);
+        String s = safe(semester);
+        String unit = normalizeExamUnitCode(unitCode);
+        if (bv.isEmpty() || g.isEmpty() || s.isEmpty() || unit.isEmpty()) {
+            throw new RuntimeException("bookVersion、grade、semester、unitCode 均不能为空");
+        }
+
+        ParsedExamJsonl parsed = parseExamJsonl(file, bv, g, s, unit);
+        String sourceType = safe(rawString(parsed.meta(), "source_type"));
+        String paperType = normalizeExamPaperType(rawString(parsed.meta(), "paper_type"), sourceType);
+        if (paperType.isEmpty()) {
+            throw new RuntimeException("JSONL 缺少 paper_type");
+        }
+        if (sourceType.isEmpty()) {
+            throw new RuntimeException("JSONL 缺少 source_type");
+        }
+
+        List<ExamPaper> existingPapers = examPaperRepository.findByBookVersionAndGradeAndSemesterOrderByUnitCodeAsc(bv, g, s).stream()
+                .filter(paper -> unit.equals(safe(paper.getUnitCode())))
+                .filter(paper -> isSameExamPaperType(paperType, safe(paper.getPaperType())))
+                .toList();
+        boolean overwritten = !existingPapers.isEmpty();
+        if (overwritten && !overwrite) {
+            throw new RuntimeException("当前教材范围下已存在试卷，请开启 overwrite 后重试");
+        }
+        if (overwritten) {
+            for (ExamPaper existing : existingPapers) {
+                deleteExamPaperCascade(existing.getId());
+            }
+        }
+
+        ExamPaper paper = new ExamPaper();
+        paper.setPaperCode(buildExamPaperCode(sourceType, paperType, bv, g, s, unit));
+        paper.setPaperName(resolveExamPaperName(parsed.meta(), unit, paperType));
+        paper.setPaperType(paperType);
+        paper.setSourceType(sourceType);
+        paper.setBookVersion(bv);
+        paper.setGrade(g);
+        paper.setSemester(s);
+        paper.setUnitCode(unit);
+        paper.setSourceFile(safe(rawString(parsed.meta(), "source_file")));
+        paper.setQuestionCount(parsed.questions().size());
+        paper.setStatus("active");
+        paper.setCreatedBy(createdBy);
+        ExamPaper savedPaper = examPaperRepository.save(paper);
+
+        Map<String, Long> materialIdMap = new LinkedHashMap<>();
+        int materialSort = 1;
+        for (Map<String, Object> raw : parsed.materials()) {
+            ExamMaterial material = new ExamMaterial();
+            String materialUid = safe(raw.get("material_id"));
+            if (materialUid.isEmpty()) {
+                materialUid = buildStableId("material", savedPaper.getPaperCode(), materialSort);
+            }
+            material.setMaterialUid(materialUid);
+            material.setPaperId(savedPaper.getId());
+            material.setMaterialLabel(safe(raw.get("material_label")));
+            material.setQuestionType(safe(raw.get("question_type")));
+            material.setTitle(safe(raw.get("title")));
+            material.setContent(safe(raw.get("material_text")));
+            material.setAnalysis(safe(raw.get("material_explanation")));
+            material.setSortOrder(materialSort++);
+            ExamMaterial savedMaterial = examMaterialRepository.save(material);
+            materialIdMap.put(savedMaterial.getMaterialUid(), savedMaterial.getId());
+        }
+
+        for (Map<String, Object> raw : parsed.questions()) {
+            Integer questionNo = parseRequiredInt(raw.get("question_no"), "question_no");
+            ExamQuestion question = new ExamQuestion();
+            String questionUid = safe(raw.get("question_id"));
+            if (questionUid.isEmpty()) {
+                questionUid = buildStableId("question", savedPaper.getPaperCode(), questionNo);
+            }
+            question.setQuestionUid(questionUid);
+            question.setPaperId(savedPaper.getId());
+
+            String materialUid = safe(raw.get("material_id"));
+            if (!materialUid.isEmpty()) {
+                Long materialId = materialIdMap.get(materialUid);
+                if (materialId == null) {
+                    throw new RuntimeException("题目 " + questionNo + " 关联的材料不存在: " + materialUid);
+                }
+                question.setMaterialId(materialId);
+            }
+
+            question.setQuestionNo(questionNo);
+            question.setQuestionType(safe(raw.get("question_type")));
+            question.setStem(safe(raw.get("stem")));
+            question.setAnswerText(safe(raw.get("answer")));
+            question.setAnalysis(safe(raw.get("explanation")));
+            question.setScore(BigDecimal.ONE);
+            question.setDifficulty(safe(raw.get("difficulty")));
+            question.setStatus("active");
+            question.setSortOrder(questionNo);
+            ExamQuestion savedQuestion = examQuestionRepository.save(question);
+
+            List<Map<String, Object>> options = parseOptionRows(raw.get("options"));
+            for (int i = 0; i < options.size(); i++) {
+                Map<String, Object> optionRow = options.get(i);
+                ExamQuestionOption option = new ExamQuestionOption();
+                option.setQuestionId(savedQuestion.getId());
+                option.setOptionKey(safe(optionRow.get("key")));
+                option.setOptionText(safe(optionRow.get("text")));
+                option.setSortOrder(i + 1);
+                examQuestionOptionRepository.save(option);
+            }
+        }
+
+        ExamImportResult result = new ExamImportResult();
+        result.setPaperId(savedPaper.getId());
+        result.setPaperCode(savedPaper.getPaperCode());
+        result.setPaperName(savedPaper.getPaperName());
+        result.setPaperType(savedPaper.getPaperType());
+        result.setSourceType(savedPaper.getSourceType());
+        result.setBookVersion(savedPaper.getBookVersion());
+        result.setGrade(savedPaper.getGrade());
+        result.setSemester(savedPaper.getSemester());
+        result.setUnitCode(savedPaper.getUnitCode());
+        result.setMaterialCount(parsed.materials().size());
+        result.setQuestionCount(parsed.questions().size());
+        result.setOverwritten(overwritten);
+        return result;
+    }
+
+    @Override
+    public List<ExamPaperSummaryView> getExamPapers(String bookVersion, String grade, String semester, String unitCode, String paperType) {
+        String bv = safe(bookVersion);
+        String g = safe(grade);
+        String s = safe(semester);
+        String unit = safe(unitCode);
+        String type = normalizeExamPaperType(paperType, "");
+        return examPaperRepository.findByBookVersionAndGradeAndSemesterOrderByUnitCodeAsc(bv, g, s).stream()
+                .filter(paper -> unit.isEmpty() || unit.equals(safe(paper.getUnitCode())))
+                .filter(paper -> type.isEmpty() || isSameExamPaperType(type, safe(paper.getPaperType())))
+                .sorted(Comparator.comparing(ExamPaper::getUpdatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(this::toExamPaperSummary)
+                .toList();
+    }
+
+    @Override
+    public long countExamPapers(String bookVersion, String grade, String semester, String unitCode, String paperType) {
+        String unit = safe(unitCode);
+        String type = normalizeExamPaperType(paperType, "");
+        if (unit.isEmpty() && type.isEmpty()) {
+            return examPaperRepository.countByBookVersionAndGradeAndSemester(
+                    safe(bookVersion), safe(grade), safe(semester)
+            );
+        }
+        return getExamPapers(bookVersion, grade, semester, unitCode, paperType).size();
+    }
+
+    @Override
+    public Optional<ExamPaperDetailView> getExamPaperDetail(Long paperId) {
+        if (paperId == null) return Optional.empty();
+        return examPaperRepository.findById(paperId).map(this::buildExamPaperDetail);
+    }
+
+    @Override
+    @Transactional
+    public ExamPaperDetailView updateExamPaper(Long paperId, ExamPaperUpdateRequest request) {
+        ExamPaper paper = requireExamPaper(paperId);
+        if (request != null) {
+            String paperName = safe(request.getPaperName());
+            if (!paperName.isEmpty()) {
+                paper.setPaperName(paperName);
+            }
+            String status = safe(request.getStatus());
+            if (!status.isEmpty()) {
+                paper.setStatus(status);
+            }
+            if (request.getSourceFile() != null) {
+                paper.setSourceFile(safe(request.getSourceFile()));
+            }
+        }
+        ExamPaper saved = examPaperRepository.save(paper);
+        return buildExamPaperDetail(saved);
+    }
+
+    @Override
+    @Transactional
+    public ExamMaterialView createExamMaterial(Long paperId, ExamMaterialUpsertRequest request) {
+        ExamPaper paper = requireExamPaper(paperId);
+        ExamMaterial material = new ExamMaterial();
+        material.setPaperId(paper.getId());
+        applyMaterialRequest(material, request, paper);
+        return toExamMaterialView(examMaterialRepository.save(material));
+    }
+
+    @Override
+    @Transactional
+    public ExamMaterialView updateExamMaterial(Long paperId, Long materialId, ExamMaterialUpsertRequest request) {
+        requireExamPaper(paperId);
+        ExamMaterial material = requireExamMaterial(paperId, materialId);
+        applyMaterialRequest(material, request, null);
+        return toExamMaterialView(examMaterialRepository.save(material));
+    }
+
+    @Override
+    @Transactional
+    public void deleteExamMaterial(Long paperId, Long materialId) {
+        requireExamPaper(paperId);
+        ExamMaterial material = requireExamMaterial(paperId, materialId);
+        List<ExamQuestion> linkedQuestions = examQuestionRepository.findByMaterialIdOrderByQuestionNoAsc(material.getId());
+        if (!linkedQuestions.isEmpty()) {
+            throw new RuntimeException("该材料下仍有关联题目，请先删除或改绑题目");
+        }
+        examMaterialRepository.delete(material);
+    }
+
+    @Override
+    @Transactional
+    public ExamQuestionView createExamQuestion(Long paperId, ExamQuestionUpsertRequest request) {
+        ExamPaper paper = requireExamPaper(paperId);
+        ExamQuestion question = new ExamQuestion();
+        question.setPaperId(paper.getId());
+        applyQuestionRequest(question, request, paper);
+        ExamQuestion saved = examQuestionRepository.save(question);
+        replaceQuestionOptions(saved.getId(), request == null ? List.of() : request.getOptions());
+        refreshPaperQuestionCount(paper.getId());
+        return toExamQuestionView(saved, loadMaterialMap(paper.getId()));
+    }
+
+    @Override
+    @Transactional
+    public ExamQuestionView updateExamQuestion(Long paperId, Long questionId, ExamQuestionUpsertRequest request) {
+        ExamPaper paper = requireExamPaper(paperId);
+        ExamQuestion question = requireExamQuestion(paperId, questionId);
+        applyQuestionRequest(question, request, paper);
+        ExamQuestion saved = examQuestionRepository.save(question);
+        replaceQuestionOptions(saved.getId(), request == null ? List.of() : request.getOptions());
+        refreshPaperQuestionCount(paper.getId());
+        return toExamQuestionView(saved, loadMaterialMap(paper.getId()));
+    }
+
+    @Override
+    @Transactional
+    public void deleteExamQuestion(Long paperId, Long questionId) {
+        requireExamPaper(paperId);
+        ExamQuestion question = requireExamQuestion(paperId, questionId);
+        examQuestionOptionRepository.deleteByQuestionId(question.getId());
+        examQuestionRepository.delete(question);
+        refreshPaperQuestionCount(paperId);
+    }
+
+    @Override
+    @Transactional
+    public ExamDeleteResult deleteExamPaper(Long paperId) {
+        requireExamPaper(paperId);
+        DeleteStats stats = deleteExamPaperCascade(paperId);
+        return toDeleteResult("试卷已删除", stats);
+    }
+
+    @Override
+    @Transactional
+    public ExamDeleteResult deleteExamPapersByUnit(String bookVersion, String grade, String semester, String unitCode, String paperType) {
+        String bv = safe(bookVersion);
+        String g = safe(grade);
+        String s = safe(semester);
+        String unit = safe(unitCode);
+        String type = safe(paperType);
+        if (bv.isEmpty() || g.isEmpty() || s.isEmpty() || unit.isEmpty()) {
+            throw new RuntimeException("按单元删除时，bookVersion、grade、semester、unitCode 均不能为空");
+        }
+        List<ExamPaper> matched = examPaperRepository.findByBookVersionAndGradeAndSemesterOrderByUnitCodeAsc(bv, g, s).stream()
+                .filter(paper -> unit.equals(safe(paper.getUnitCode())))
+                .filter(paper -> type.isEmpty() || isSameExamPaperType(type, safe(paper.getPaperType())))
+                .toList();
+        DeleteStats total = new DeleteStats();
+        for (ExamPaper paper : matched) {
+            total.merge(deleteExamPaperCascade(paper.getId()));
+        }
+        return toDeleteResult("单元题库已删除", total);
+    }
+
+    @Override
+    @Transactional
+    public ExamDeleteResult deleteExamPapersBySemester(String bookVersion, String grade, String semester, String paperType) {
+        String bv = safe(bookVersion);
+        String g = safe(grade);
+        String s = safe(semester);
+        String type = normalizeExamPaperType(paperType, "");
+        if (bv.isEmpty() || g.isEmpty() || s.isEmpty()) {
+            throw new RuntimeException("按整册删除时，bookVersion、grade、semester 均不能为空");
+        }
+        List<ExamPaper> matched = examPaperRepository.findByBookVersionAndGradeAndSemesterOrderByUnitCodeAsc(bv, g, s).stream()
+                .filter(paper -> type.isEmpty() || isSameExamPaperType(type, safe(paper.getPaperType())))
+                .toList();
+        DeleteStats total = new DeleteStats();
+        for (ExamPaper paper : matched) {
+            total.merge(deleteExamPaperCascade(paper.getId()));
+        }
+        return toDeleteResult("整册题库已删除", total);
+    }
+
+    @Override
+    public Optional<StudentExamPracticeResultView> getLatestStudentExamPractice(Long paperId, Long userId) {
+        if (paperId == null || userId == null) {
+            return Optional.empty();
+        }
+        return examPracticeRecordRepository.findTopByUserIdAndPaperIdOrderBySubmittedAtDescIdDesc(userId, paperId)
+                .map(this::toStudentExamPracticeResultView);
+    }
+
+    @Override
+    @Transactional
+    public StudentExamPracticeResultView submitStudentExamPractice(Long paperId, StudentExamPracticeSubmitRequest request) {
+        if (paperId == null) {
+            throw new RuntimeException("paperId 涓嶈兘涓虹┖");
+        }
+        if (request == null || request.getUserId() == null) {
+            throw new RuntimeException("userId 涓嶈兘涓虹┖");
+        }
+
+        ExamPaper paper = requireExamPaper(paperId);
+        Map<Long, ExamMaterial> materialMap = loadMaterialMap(paperId);
+        List<ExamQuestion> questions = examQuestionRepository.findByPaperIdOrderByQuestionNoAsc(paperId);
+        if (questions.isEmpty()) {
+            throw new RuntimeException("褰撳墠璇曞嵎娌℃湁棰樼洰");
+        }
+
+        Map<Long, StudentExamPracticeAnswerRequest> submittedMap = new HashMap<>();
+        if (request.getAnswers() != null) {
+            for (StudentExamPracticeAnswerRequest row : request.getAnswers()) {
+                if (row == null || row.getQuestionId() == null) {
+                    continue;
+                }
+                submittedMap.put(row.getQuestionId(), row);
+            }
+        }
+
+        List<StudentExamPracticeQuestionResultView> answerResults = new ArrayList<>();
+        int correctCount = 0;
+        for (ExamQuestion question : questions) {
+            String submittedAnswer = normalizeStudentAnswer(submittedMap.get(question.getId()) == null ? "" : submittedMap.get(question.getId()).getAnswerText());
+            String correctAnswer = safe(question.getAnswerText());
+            boolean correct = isStudentAnswerCorrect(submittedAnswer, correctAnswer);
+            if (correct) {
+                correctCount += 1;
+            } else {
+                upsertWrongNotebookItem(request.getUserId(), paper, question, materialMap.get(question.getMaterialId()), submittedAnswer);
+            }
+
+            StudentExamPracticeQuestionResultView row = new StudentExamPracticeQuestionResultView();
+            row.setQuestionId(question.getId());
+            row.setQuestionNo(question.getQuestionNo());
+            row.setSubmittedAnswer(submittedAnswer);
+            row.setCorrectAnswer(correctAnswer);
+            row.setCorrect(correct);
+            answerResults.add(row);
+        }
+
+        int totalCount = questions.size();
+        int score = totalCount == 0 ? 0 : (int) Math.round((correctCount * 100.0d) / totalCount);
+
+        ExamPracticeRecord record = new ExamPracticeRecord();
+        record.setUserId(request.getUserId());
+        record.setPaperId(paper.getId());
+        record.setPaperCode(paper.getPaperCode());
+        record.setPaperName(paper.getPaperName());
+        record.setBookVersion(paper.getBookVersion());
+        record.setGrade(paper.getGrade());
+        record.setSemester(paper.getSemester());
+        record.setUnitCode(paper.getUnitCode());
+        record.setScore(score);
+        record.setCorrectCount(correctCount);
+        record.setTotalCount(totalCount);
+        record.setDurationSeconds(request.getDurationSeconds());
+        record.setSubmittedAt(LocalDateTime.now());
+        record.setAnswersJson(writeJson(answerResults));
+
+        return toStudentExamPracticeResultView(examPracticeRecordRepository.save(record));
+    }
+
+    @Override
+    public List<StudentExamWrongNotebookItemView> getStudentExamWrongNotebook(Long userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        return examWrongNotebookItemRepository.findByUserIdOrderByLastWrongAtDescIdDesc(userId).stream()
+                .map(this::toStudentExamWrongNotebookItemView)
+                .toList();
+    }
+
     private String resolveWordTestTitle(String title) {
         String t = safe(title);
         if (!t.isEmpty()) return t;
@@ -988,6 +1438,547 @@ public class TestServiceImpl implements TestService {
         }
     }
 
+    private ParsedExamJsonl parseExamJsonl(
+            MultipartFile file,
+            String bookVersion,
+            String grade,
+            String semester,
+            String unitCode
+    ) {
+        if (file == null || file.isEmpty()) {
+            throw new RuntimeException("请上传 JSONL 文件");
+        }
+
+        Map<String, Object> meta = null;
+        List<Map<String, Object>> materials = new ArrayList<>();
+        List<Map<String, Object>> questions = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) continue;
+                Map<String, Object> row = objectMapper.readValue(line, new TypeReference<Map<String, Object>>() {});
+                String recordType = safe(row.get("record_type"));
+                if ("meta".equalsIgnoreCase(recordType)) {
+                    meta = row;
+                    continue;
+                }
+                if ("material".equalsIgnoreCase(recordType)) {
+                    materials.add(row);
+                    continue;
+                }
+                if ("question".equalsIgnoreCase(recordType)) {
+                    questions.add(row);
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("读取 JSONL 失败");
+        }
+
+        if (meta == null) {
+            throw new RuntimeException("JSONL 缺少 meta 记录");
+        }
+        if (questions.isEmpty()) {
+            throw new RuntimeException("JSONL 未包含题目数据");
+        }
+
+        String metaBookVersion = safe(rawString(meta, "book_version"));
+        String metaGrade = safe(rawString(meta, "grade"));
+        String metaSemester = safe(rawString(meta, "semester"));
+        String metaUnit = normalizeExamUnitCode(rawString(meta, "unit"));
+        if (!bookVersion.equals(metaBookVersion)
+                || !grade.equals(metaGrade)
+                || !semester.equals(metaSemester)
+                || !unitCode.equals(metaUnit)) {
+            throw new RuntimeException("导入范围与 JSONL meta 中的教材范围不一致");
+        }
+
+        return new ParsedExamJsonl(meta, materials, questions);
+    }
+
+    private List<Map<String, Object>> parseOptionRows(Object value) {
+        if (!(value instanceof List<?> list)) return List.of();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> raw) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("key", safe(raw.get("key")));
+                row.put("text", safe(raw.get("text")));
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    private Integer parseRequiredInt(Object value, String fieldName) {
+        if (value instanceof Number n) return n.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(value).trim());
+        } catch (Exception e) {
+            throw new RuntimeException("字段 " + fieldName + " 不是有效数字");
+        }
+    }
+
+    private String rawString(Map<String, Object> row, String key) {
+        return row == null ? "" : String.valueOf(row.getOrDefault(key, "")).trim();
+    }
+
+    private String resolveExamPaperName(Map<String, Object> meta, String unitCode, String paperType) {
+        String title = safe(rawString(meta, "source_title"));
+        if (!title.isEmpty()) return title;
+        return unitCode + " " + paperType;
+    }
+
+    private String buildExamPaperCode(
+            String sourceType,
+            String paperType,
+            String bookVersion,
+            String grade,
+            String semester,
+            String unitCode
+    ) {
+        return "paper_" + buildStableId(sourceType, paperType, bookVersion, grade, semester, unitCode);
+    }
+
+    private String normalizeExamUnitCode(Object value) {
+        String raw = safe(value);
+        if (raw.isEmpty()) return "";
+        String compact = raw.replaceAll("\\s+", "");
+        if (compact.matches("(?i)^unit\\d+[a-zA-Z]?$")) {
+            String suffix = compact.substring(4);
+            return "Unit " + suffix.toUpperCase();
+        }
+        return raw;
+    }
+
+    private String normalizeExamPaperType(Object value, String sourceType) {
+        String raw = safe(value);
+        String normalizedSourceType = safe(sourceType);
+        if (raw.isEmpty() && "sync_exam".equalsIgnoreCase(normalizedSourceType)) {
+            return "同步测试题";
+        }
+        if ("sync_exam".equalsIgnoreCase(normalizedSourceType)) {
+            if ("同步测试题".equals(raw) || "同步题".equals(raw) || "单元拔尖检测".equals(raw) || "单元测试题".equals(raw)) {
+                return "同步测试题";
+            }
+        }
+        return raw;
+    }
+
+    private boolean isSameExamPaperType(String expected, String actual) {
+        if (expected.isEmpty()) return true;
+        String normalizedExpected = normalizeExamPaperType(expected, "");
+        String normalizedActual = normalizeExamPaperType(actual, "");
+        return normalizedExpected.equals(normalizedActual);
+    }
+
+    private String buildStableId(Object... parts) {
+        StringBuilder seed = new StringBuilder();
+        for (Object part : parts) {
+            if (seed.length() > 0) seed.append('|');
+            seed.append(safe(part));
+        }
+        try {
+            MessageDigest md5 = MessageDigest.getInstance("MD5");
+            byte[] bytes = md5.digest(seed.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : bytes) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.substring(0, 16);
+        } catch (Exception e) {
+            throw new RuntimeException("生成稳定 ID 失败");
+        }
+    }
+
+    private ExamPaper requireExamPaper(Long paperId) {
+        if (paperId == null) {
+            throw new RuntimeException("paperId 不能为空");
+        }
+        return examPaperRepository.findById(paperId)
+                .orElseThrow(() -> new RuntimeException("试卷不存在"));
+    }
+
+    private ExamMaterial requireExamMaterial(Long paperId, Long materialId) {
+        if (materialId == null) {
+            throw new RuntimeException("materialId 不能为空");
+        }
+        ExamMaterial material = examMaterialRepository.findById(materialId)
+                .orElseThrow(() -> new RuntimeException("材料不存在"));
+        if (!paperId.equals(material.getPaperId())) {
+            throw new RuntimeException("材料不属于当前试卷");
+        }
+        return material;
+    }
+
+    private ExamQuestion requireExamQuestion(Long paperId, Long questionId) {
+        if (questionId == null) {
+            throw new RuntimeException("questionId 不能为空");
+        }
+        ExamQuestion question = examQuestionRepository.findById(questionId)
+                .orElseThrow(() -> new RuntimeException("题目不存在"));
+        if (!paperId.equals(question.getPaperId())) {
+            throw new RuntimeException("题目不属于当前试卷");
+        }
+        return question;
+    }
+
+    private void applyMaterialRequest(ExamMaterial material, ExamMaterialUpsertRequest request, ExamPaper paper) {
+        if (request == null) {
+            throw new RuntimeException("材料请求不能为空");
+        }
+        String label = safe(request.getMaterialLabel());
+        String questionType = safe(request.getQuestionType());
+        String content = safe(request.getContent());
+        if (label.isEmpty() || questionType.isEmpty() || content.isEmpty()) {
+            throw new RuntimeException("材料标签、题型、内容不能为空");
+        }
+        String materialUid = safe(request.getMaterialUid());
+        if (materialUid.isEmpty()) {
+            String paperCode = paper != null ? paper.getPaperCode() : String.valueOf(material.getPaperId());
+            materialUid = buildStableId("material", paperCode, questionType, label);
+        }
+        material.setMaterialUid(materialUid);
+        material.setMaterialLabel(label);
+        material.setQuestionType(questionType);
+        material.setTitle(safe(request.getTitle()));
+        material.setContent(content);
+        material.setAnalysis(safe(request.getAnalysis()));
+        material.setSortOrder(request.getSortOrder() == null ? Optional.ofNullable(material.getSortOrder()).orElse(0) : request.getSortOrder());
+    }
+
+    private void applyQuestionRequest(ExamQuestion question, ExamQuestionUpsertRequest request, ExamPaper paper) {
+        if (request == null) {
+            throw new RuntimeException("题目请求不能为空");
+        }
+        Integer questionNo = request.getQuestionNo();
+        String questionType = safe(request.getQuestionType());
+        if (questionNo == null || questionNo <= 0 || questionType.isEmpty()) {
+            throw new RuntimeException("题号和题型不能为空");
+        }
+        Long materialId = request.getMaterialId();
+        if (materialId != null) {
+            requireExamMaterial(paper.getId(), materialId);
+        }
+        String questionUid = safe(request.getQuestionUid());
+        if (questionUid.isEmpty()) {
+            questionUid = buildStableId("question", paper.getPaperCode(), questionNo, questionType);
+        }
+        question.setQuestionUid(questionUid);
+        question.setQuestionNo(questionNo);
+        question.setQuestionType(questionType);
+        question.setStem(safe(request.getStem()));
+        question.setAnswerText(safe(request.getAnswerText()));
+        question.setAnalysis(safe(request.getAnalysis()));
+        question.setDifficulty(safe(request.getDifficulty()));
+        question.setStatus(safe(request.getStatus()).isEmpty() ? "active" : safe(request.getStatus()));
+        question.setSortOrder(request.getSortOrder() == null ? questionNo : request.getSortOrder());
+        question.setMaterialId(materialId);
+        if (question.getScore() == null) {
+            question.setScore(BigDecimal.ONE);
+        }
+    }
+
+    private void replaceQuestionOptions(Long questionId, List<ExamQuestionOptionPayload> options) {
+        examQuestionOptionRepository.deleteByQuestionId(questionId);
+        if (options == null || options.isEmpty()) return;
+        List<ExamQuestionOption> rows = new ArrayList<>();
+        for (int i = 0; i < options.size(); i++) {
+            ExamQuestionOptionPayload raw = options.get(i);
+            if (raw == null) continue;
+            String key = safe(raw.getKey());
+            String text = safe(raw.getText());
+            if (key.isEmpty() || text.isEmpty()) continue;
+            ExamQuestionOption option = new ExamQuestionOption();
+            option.setQuestionId(questionId);
+            option.setOptionKey(key);
+            option.setOptionText(text);
+            option.setSortOrder(raw.getSortOrder() == null ? (i + 1) : raw.getSortOrder());
+            rows.add(option);
+        }
+        if (!rows.isEmpty()) {
+            examQuestionOptionRepository.saveAll(rows);
+        }
+    }
+
+    private void refreshPaperQuestionCount(Long paperId) {
+        ExamPaper paper = requireExamPaper(paperId);
+        paper.setQuestionCount(examQuestionRepository.findByPaperIdOrderByQuestionNoAsc(paperId).size());
+        examPaperRepository.save(paper);
+    }
+
+    private Map<Long, ExamMaterial> loadMaterialMap(Long paperId) {
+        return examMaterialRepository.findByPaperIdOrderBySortOrderAscIdAsc(paperId).stream()
+                .collect(Collectors.toMap(ExamMaterial::getId, item -> item, (a, b) -> a, LinkedHashMap::new));
+    }
+
+    private DeleteStats deleteExamPaperCascade(Long paperId) {
+        DeleteStats stats = new DeleteStats();
+        if (paperId == null) return stats;
+        List<ExamQuestion> questions = examQuestionRepository.findByPaperIdOrderByQuestionNoAsc(paperId);
+        List<Long> questionIds = questions.stream().map(ExamQuestion::getId).toList();
+        stats.deletedOptionCount += questions.stream()
+                .mapToInt(question -> examQuestionOptionRepository.findByQuestionIdOrderBySortOrderAscIdAsc(question.getId()).size())
+                .sum();
+        if (!questionIds.isEmpty()) {
+            examQuestionOptionRepository.deleteByQuestionIdIn(questionIds);
+        }
+        List<ExamMaterial> materials = examMaterialRepository.findByPaperIdOrderBySortOrderAscIdAsc(paperId);
+        examQuestionRepository.deleteByPaperId(paperId);
+        examMaterialRepository.deleteByPaperId(paperId);
+        examPaperRepository.deleteById(paperId);
+        stats.deletedPaperCount = 1;
+        stats.deletedMaterialCount = materials.size();
+        stats.deletedQuestionCount = questions.size();
+        return stats;
+    }
+
+    private ExamDeleteResult toDeleteResult(String message, DeleteStats stats) {
+        ExamDeleteResult result = new ExamDeleteResult();
+        result.setMessage(message);
+        result.setDeletedPaperCount(stats.deletedPaperCount);
+        result.setDeletedMaterialCount(stats.deletedMaterialCount);
+        result.setDeletedQuestionCount(stats.deletedQuestionCount);
+        result.setDeletedOptionCount(stats.deletedOptionCount);
+        return result;
+    }
+
+    private ExamPaperSummaryView toExamPaperSummary(ExamPaper paper) {
+        ExamPaperSummaryView view = new ExamPaperSummaryView();
+        view.setId(paper.getId());
+        view.setPaperCode(paper.getPaperCode());
+        view.setPaperName(paper.getPaperName());
+        view.setPaperType(paper.getPaperType());
+        view.setSourceType(paper.getSourceType());
+        view.setBookVersion(paper.getBookVersion());
+        view.setGrade(paper.getGrade());
+        view.setSemester(paper.getSemester());
+        view.setUnitCode(paper.getUnitCode());
+        view.setSourceFile(paper.getSourceFile());
+        view.setQuestionCount(paper.getQuestionCount());
+        view.setStatus(paper.getStatus());
+        view.setCreatedAt(paper.getCreatedAt());
+        view.setUpdatedAt(paper.getUpdatedAt());
+        return view;
+    }
+
+    private ExamPaperDetailView buildExamPaperDetail(ExamPaper paper) {
+        List<ExamMaterial> materials = examMaterialRepository.findByPaperIdOrderBySortOrderAscIdAsc(paper.getId());
+        List<ExamQuestion> questions = examQuestionRepository.findByPaperIdOrderByQuestionNoAsc(paper.getId());
+
+        Map<Long, ExamMaterial> materialMap = materials.stream()
+                .collect(Collectors.toMap(ExamMaterial::getId, item -> item, (a, b) -> a, LinkedHashMap::new));
+
+        ExamPaperDetailView detail = new ExamPaperDetailView();
+        detail.setId(paper.getId());
+        detail.setPaperCode(paper.getPaperCode());
+        detail.setPaperName(paper.getPaperName());
+        detail.setPaperType(paper.getPaperType());
+        detail.setSourceType(paper.getSourceType());
+        detail.setBookVersion(paper.getBookVersion());
+        detail.setGrade(paper.getGrade());
+        detail.setSemester(paper.getSemester());
+        detail.setUnitCode(paper.getUnitCode());
+        detail.setSourceFile(paper.getSourceFile());
+        detail.setQuestionCount(paper.getQuestionCount());
+        detail.setStatus(paper.getStatus());
+        detail.setCreatedBy(paper.getCreatedBy());
+        detail.setCreatedAt(paper.getCreatedAt());
+        detail.setUpdatedAt(paper.getUpdatedAt());
+        detail.setMaterials(materials.stream().map(this::toExamMaterialView).toList());
+        detail.setQuestions(questions.stream().map(question -> toExamQuestionView(question, materialMap)).toList());
+        return detail;
+    }
+
+    private ExamMaterialView toExamMaterialView(ExamMaterial material) {
+        ExamMaterialView view = new ExamMaterialView();
+        view.setId(material.getId());
+        view.setMaterialUid(material.getMaterialUid());
+        view.setMaterialLabel(material.getMaterialLabel());
+        view.setQuestionType(material.getQuestionType());
+        view.setTitle(material.getTitle());
+        view.setContent(material.getContent());
+        view.setAnalysis(material.getAnalysis());
+        view.setSortOrder(material.getSortOrder());
+        return view;
+    }
+
+    private ExamQuestionView toExamQuestionView(ExamQuestion question, Map<Long, ExamMaterial> materialMap) {
+        ExamQuestionView view = new ExamQuestionView();
+        view.setId(question.getId());
+        view.setQuestionUid(question.getQuestionUid());
+        view.setQuestionNo(question.getQuestionNo());
+        view.setQuestionType(question.getQuestionType());
+        view.setStem(question.getStem());
+        view.setAnswerText(question.getAnswerText());
+        view.setAnalysis(question.getAnalysis());
+        view.setDifficulty(question.getDifficulty());
+        view.setStatus(question.getStatus());
+        view.setSortOrder(question.getSortOrder());
+        view.setMaterialId(question.getMaterialId());
+
+        ExamMaterial material = question.getMaterialId() == null ? null : materialMap.get(question.getMaterialId());
+        if (material != null) {
+            view.setMaterialUid(material.getMaterialUid());
+            view.setMaterialLabel(material.getMaterialLabel());
+        }
+
+        view.setOptions(examQuestionOptionRepository.findByQuestionIdOrderBySortOrderAscIdAsc(question.getId()).stream()
+                .map(this::toExamQuestionOptionView)
+                .toList());
+        return view;
+    }
+
+    private ExamQuestionOptionView toExamQuestionOptionView(ExamQuestionOption option) {
+        ExamQuestionOptionView view = new ExamQuestionOptionView();
+        view.setKey(option.getOptionKey());
+        view.setText(option.getOptionText());
+        view.setSortOrder(option.getSortOrder());
+        return view;
+    }
+
+    private StudentExamPracticeResultView toStudentExamPracticeResultView(ExamPracticeRecord record) {
+        StudentExamPracticeResultView view = new StudentExamPracticeResultView();
+        view.setPracticeId(record.getId());
+        view.setUserId(record.getUserId());
+        view.setPaperId(record.getPaperId());
+        view.setPaperName(record.getPaperName());
+        view.setBookVersion(record.getBookVersion());
+        view.setGrade(record.getGrade());
+        view.setSemester(record.getSemester());
+        view.setUnitCode(record.getUnitCode());
+        view.setScore(record.getScore());
+        view.setCorrectCount(record.getCorrectCount());
+        view.setTotalCount(record.getTotalCount());
+        view.setDurationSeconds(record.getDurationSeconds());
+        view.setSubmittedAt(record.getSubmittedAt());
+        view.setAnswers(parsePracticeResultAnswers(record.getAnswersJson()));
+        return view;
+    }
+
+    private List<StudentExamPracticeQuestionResultView> parsePracticeResultAnswers(String answersJson) {
+        if (answersJson == null || answersJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(answersJson, new TypeReference<List<StudentExamPracticeQuestionResultView>>() {});
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    private StudentExamWrongNotebookItemView toStudentExamWrongNotebookItemView(ExamWrongNotebookItem item) {
+        StudentExamWrongNotebookItemView view = new StudentExamWrongNotebookItemView();
+        view.setId(item.getId());
+        view.setPaperId(item.getPaperId());
+        view.setPaperName(item.getPaperName());
+        view.setBookVersion(item.getBookVersion());
+        view.setGrade(item.getGrade());
+        view.setSemester(item.getSemester());
+        view.setUnitCode(item.getUnitCode());
+        view.setQuestionId(item.getQuestionId());
+        view.setQuestionUid(item.getQuestionUid());
+        view.setQuestionNo(item.getQuestionNo());
+        view.setQuestionType(item.getQuestionType());
+        view.setMaterialLabel(item.getMaterialLabel());
+        view.setMaterialTitle(item.getMaterialTitle());
+        view.setMaterialContent(item.getMaterialContent());
+        view.setMaterialAnalysis(item.getMaterialAnalysis());
+        view.setStem(item.getStem());
+        view.setOptions(parseQuestionOptionsJson(item.getOptionsJson()));
+        view.setSubmittedAnswer(item.getSubmittedAnswer());
+        view.setCorrectAnswer(item.getCorrectAnswer());
+        view.setAnalysis(item.getAnalysis());
+        view.setWrongCount(item.getWrongCount());
+        view.setLastWrongAt(item.getLastWrongAt());
+        return view;
+    }
+
+    private List<ExamQuestionOptionView> parseQuestionOptionsJson(String optionsJson) {
+        if (optionsJson == null || optionsJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(optionsJson, new TypeReference<List<ExamQuestionOptionView>>() {});
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    private void upsertWrongNotebookItem(Long userId, ExamPaper paper, ExamQuestion question, ExamMaterial material, String submittedAnswer) {
+        ExamWrongNotebookItem item = examWrongNotebookItemRepository.findByUserIdAndQuestionUid(userId, question.getQuestionUid())
+                .orElseGet(ExamWrongNotebookItem::new);
+        item.setUserId(userId);
+        item.setPaperId(paper.getId());
+        item.setPaperName(paper.getPaperName());
+        item.setBookVersion(paper.getBookVersion());
+        item.setGrade(paper.getGrade());
+        item.setSemester(paper.getSemester());
+        item.setUnitCode(paper.getUnitCode());
+        item.setQuestionId(question.getId());
+        item.setQuestionUid(question.getQuestionUid());
+        item.setQuestionNo(question.getQuestionNo());
+        item.setQuestionType(question.getQuestionType());
+        item.setMaterialLabel(material == null ? "" : safe(material.getMaterialLabel()));
+        item.setMaterialTitle(material == null ? "" : safe(material.getTitle()));
+        item.setMaterialContent(material == null ? "" : safe(material.getContent()));
+        item.setMaterialAnalysis(material == null ? "" : safe(material.getAnalysis()));
+        item.setStem(question.getStem());
+        item.setOptionsJson(writeJson(examQuestionOptionRepository.findByQuestionIdOrderBySortOrderAscIdAsc(question.getId()).stream()
+                .map(this::toExamQuestionOptionView)
+                .toList()));
+        item.setSubmittedAnswer(submittedAnswer);
+        item.setCorrectAnswer(safe(question.getAnswerText()));
+        item.setAnalysis(safe(question.getAnalysis()));
+        item.setWrongCount(Optional.ofNullable(item.getWrongCount()).orElse(0) + 1);
+        item.setLastWrongAt(LocalDateTime.now());
+        examWrongNotebookItemRepository.save(item);
+    }
+
+    private boolean isStudentAnswerCorrect(String submittedAnswer, String correctAnswer) {
+        String normalizedSubmitted = normalizeStudentAnswer(submittedAnswer);
+        String normalizedCorrect = normalizeStudentAnswer(correctAnswer);
+        if (normalizedCorrect.isEmpty()) {
+            return normalizedSubmitted.isEmpty();
+        }
+        if (normalizedSubmitted.equalsIgnoreCase(normalizedCorrect)) {
+            return true;
+        }
+        List<String> accepted = splitAcceptedAnswers(normalizedCorrect);
+        return accepted.stream().anyMatch(answer -> answer.equalsIgnoreCase(normalizedSubmitted));
+    }
+
+    private List<String> splitAcceptedAnswers(String answerText) {
+        String normalized = normalizeStudentAnswer(answerText);
+        if (normalized.isEmpty()) {
+            return List.of();
+        }
+        return List.of(normalized.split("\\|"))
+                .stream()
+                .flatMap(part -> List.of(part.split("/")).stream())
+                .flatMap(part -> List.of(part.split(";")).stream())
+                .map(this::normalizeStudentAnswer)
+                .filter(part -> !part.isEmpty())
+                .distinct()
+                .toList();
+    }
+
+    private String normalizeStudentAnswer(String value) {
+        return safe(value)
+                .replace('（', '(')
+                .replace('）', ')')
+                .replace('，', ',')
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new RuntimeException("json 搴忓垪鍖栧け璐?");
+        }
+    }
+
     private void cleanupOrphanWordTest(String testId) {
         if (testId == null || testId.isBlank()) return;
         long count = testAssignmentRepository.countByTestId(testId);
@@ -1001,6 +1992,27 @@ public class TestServiceImpl implements TestService {
         long count = wordReviewAssignmentRepository.countByTaskId(taskId);
         if (count == 0) {
             wordReviewTaskRepository.deleteById(taskId);
+        }
+    }
+
+    private record ParsedExamJsonl(
+            Map<String, Object> meta,
+            List<Map<String, Object>> materials,
+            List<Map<String, Object>> questions
+    ) {}
+
+    private static class DeleteStats {
+        private int deletedPaperCount;
+        private int deletedMaterialCount;
+        private int deletedQuestionCount;
+        private int deletedOptionCount;
+
+        private void merge(DeleteStats other) {
+            if (other == null) return;
+            this.deletedPaperCount += other.deletedPaperCount;
+            this.deletedMaterialCount += other.deletedMaterialCount;
+            this.deletedQuestionCount += other.deletedQuestionCount;
+            this.deletedOptionCount += other.deletedOptionCount;
         }
     }
 }

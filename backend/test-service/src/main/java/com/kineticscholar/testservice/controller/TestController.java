@@ -1,23 +1,36 @@
 package com.kineticscholar.testservice.controller;
 
-import com.kineticscholar.testservice.model.WordTest;
-import com.kineticscholar.testservice.model.TestAssignment;
-import com.kineticscholar.testservice.model.TestAnswer;
-import com.kineticscholar.testservice.dto.BatchDeleteWordTestAssignmentsRequest;
-import com.kineticscholar.testservice.dto.BatchDeleteWordReviewAssignmentsRequest;
 import com.kineticscholar.testservice.dto.BatchAssignUnitTasksRequest;
 import com.kineticscholar.testservice.dto.BatchDeleteUnitAssignmentsRequest;
-import com.kineticscholar.testservice.dto.PublishWordTestRequest;
+import com.kineticscholar.testservice.dto.BatchDeleteWordReviewAssignmentsRequest;
+import com.kineticscholar.testservice.dto.BatchDeleteWordTestAssignmentsRequest;
+import com.kineticscholar.testservice.dto.ExamImportResult;
+import com.kineticscholar.testservice.dto.ExamMaterialUpsertRequest;
+import com.kineticscholar.testservice.dto.ExamPaperUpdateRequest;
+import com.kineticscholar.testservice.dto.ExamQuestionUpsertRequest;
 import com.kineticscholar.testservice.dto.PublishWordReviewRequest;
-import com.kineticscholar.testservice.dto.SubmitWordReviewSessionRequest;
+import com.kineticscholar.testservice.dto.PublishWordTestRequest;
+import com.kineticscholar.testservice.dto.StudentExamPracticeSubmitRequest;
+import com.kineticscholar.testservice.model.TestAnswer;
+import com.kineticscholar.testservice.model.TestAssignment;
+import com.kineticscholar.testservice.model.WordTest;
 import com.kineticscholar.testservice.service.TestService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
-import java.util.List;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -29,7 +42,6 @@ public class TestController {
     @Autowired
     private TestService testService;
 
-    // WordTest endpoints
     @PostMapping("/word-tests")
     public ResponseEntity<?> createWordTest(@RequestBody WordTest wordTest) {
         WordTest createdWordTest = testService.createWordTest(wordTest);
@@ -146,7 +158,7 @@ public class TestController {
     @PostMapping("/word-reviews/daily-sessions/{sessionId}/submit")
     public ResponseEntity<?> submitWordReviewDailySession(
             @PathVariable Long sessionId,
-            @RequestBody SubmitWordReviewSessionRequest request
+            @RequestBody com.kineticscholar.testservice.dto.SubmitWordReviewSessionRequest request
     ) {
         testService.submitWordReviewDailySession(sessionId, request);
         return new ResponseEntity<>(Map.of("message", "Word review session submitted"), HttpStatus.OK);
@@ -167,7 +179,6 @@ public class TestController {
         return new ResponseEntity<>(Map.of("message", "Word review assignments deleted"), HttpStatus.OK);
     }
 
-    // TestAssignment endpoints
     @PostMapping("/test-assignments")
     public ResponseEntity<?> createTestAssignment(@RequestBody TestAssignment testAssignment) {
         TestAssignment createdTestAssignment = testService.createTestAssignment(testAssignment);
@@ -215,7 +226,6 @@ public class TestController {
         return new ResponseEntity<>(HttpStatus.NO_CONTENT);
     }
 
-    // TestAnswer endpoints
     @PostMapping("/test-answers")
     public ResponseEntity<?> createTestAnswer(@RequestBody TestAnswer testAnswer) {
         TestAnswer createdTestAnswer = testService.createTestAnswer(testAnswer);
@@ -227,7 +237,6 @@ public class TestController {
         return new ResponseEntity<>(testService.getTestAnswersByAssignmentId(assignmentId), HttpStatus.OK);
     }
 
-    // Business logic endpoints
     @PostMapping("/word-tests/{testId}/assign")
     public ResponseEntity<?> assignTestToStudents(@PathVariable String testId, @RequestBody Map<String, List<Long>> request) {
         List<Long> studentIds = request.get("studentIds");
@@ -301,36 +310,245 @@ public class TestController {
         return new ResponseEntity<>(Map.of("message", "Unit assignments deleted"), HttpStatus.OK);
     }
 
+    @PostMapping("/exam-papers/import")
+    public ResponseEntity<?> importExamPaperJsonl(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester,
+            @RequestParam("unitCode") String unitCode,
+            @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite,
+            @RequestParam(value = "createdBy", required = false) Long createdBy
+    ) {
+        try {
+            ExamImportResult result = testService.importExamPaperJsonl(
+                    file,
+                    bookVersion,
+                    grade,
+                    semester,
+                    unitCode,
+                    overwrite,
+                    createdBy
+            );
+            return new ResponseEntity<>(result, HttpStatus.CREATED);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @GetMapping("/exam-papers")
+    public ResponseEntity<?> getExamPapers(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester,
+            @RequestParam(value = "unitCode", required = false) String unitCode,
+            @RequestParam(value = "paperType", required = false) String paperType
+    ) {
+        return new ResponseEntity<>(testService.getExamPapers(bookVersion, grade, semester, unitCode, paperType), HttpStatus.OK);
+    }
+
+    @GetMapping("/exam-papers/count")
+    public ResponseEntity<?> countExamPapers(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester,
+            @RequestParam(value = "unitCode", required = false) String unitCode,
+            @RequestParam(value = "paperType", required = false) String paperType
+    ) {
+        return new ResponseEntity<>(Map.of("count", testService.countExamPapers(bookVersion, grade, semester, unitCode, paperType)), HttpStatus.OK);
+    }
+
+    @GetMapping("/exam-papers/{paperId}")
+    public ResponseEntity<?> getExamPaperDetail(@PathVariable Long paperId) {
+        Optional<?> detail = testService.getExamPaperDetail(paperId);
+        if (detail.isPresent()) {
+            return new ResponseEntity<>(detail.get(), HttpStatus.OK);
+        }
+        return new ResponseEntity<>(Map.of("error", "Exam paper not found"), HttpStatus.NOT_FOUND);
+    }
+
+    @PutMapping("/exam-papers/{paperId}")
+    public ResponseEntity<?> updateExamPaper(@PathVariable Long paperId, @RequestBody ExamPaperUpdateRequest request) {
+        try {
+            return new ResponseEntity<>(testService.updateExamPaper(paperId, request), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping("/exam-papers/{paperId}/materials")
+    public ResponseEntity<?> createExamMaterial(@PathVariable Long paperId, @RequestBody ExamMaterialUpsertRequest request) {
+        try {
+            return new ResponseEntity<>(testService.createExamMaterial(paperId, request), HttpStatus.CREATED);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PutMapping("/exam-papers/{paperId}/materials/{materialId}")
+    public ResponseEntity<?> updateExamMaterial(
+            @PathVariable Long paperId,
+            @PathVariable Long materialId,
+            @RequestBody ExamMaterialUpsertRequest request
+    ) {
+        try {
+            return new ResponseEntity<>(testService.updateExamMaterial(paperId, materialId, request), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/exam-papers/{paperId}/materials/{materialId}")
+    public ResponseEntity<?> deleteExamMaterial(@PathVariable Long paperId, @PathVariable Long materialId) {
+        try {
+            testService.deleteExamMaterial(paperId, materialId);
+            return new ResponseEntity<>(Map.of("message", "Exam material deleted"), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping("/exam-papers/{paperId}/questions")
+    public ResponseEntity<?> createExamQuestion(@PathVariable Long paperId, @RequestBody ExamQuestionUpsertRequest request) {
+        try {
+            return new ResponseEntity<>(testService.createExamQuestion(paperId, request), HttpStatus.CREATED);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PutMapping("/exam-papers/{paperId}/questions/{questionId}")
+    public ResponseEntity<?> updateExamQuestion(
+            @PathVariable Long paperId,
+            @PathVariable Long questionId,
+            @RequestBody ExamQuestionUpsertRequest request
+    ) {
+        try {
+            return new ResponseEntity<>(testService.updateExamQuestion(paperId, questionId, request), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/exam-papers/{paperId}/questions/{questionId}")
+    public ResponseEntity<?> deleteExamQuestion(@PathVariable Long paperId, @PathVariable Long questionId) {
+        try {
+            testService.deleteExamQuestion(paperId, questionId);
+            return new ResponseEntity<>(Map.of("message", "Exam question deleted"), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/exam-papers/{paperId}")
+    public ResponseEntity<?> deleteExamPaper(@PathVariable Long paperId) {
+        try {
+            return new ResponseEntity<>(testService.deleteExamPaper(paperId), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/exam-papers/scope/unit")
+    public ResponseEntity<?> deleteExamPapersByUnit(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester,
+            @RequestParam("unitCode") String unitCode,
+            @RequestParam(value = "paperType", required = false) String paperType
+    ) {
+        try {
+            return new ResponseEntity<>(testService.deleteExamPapersByUnit(bookVersion, grade, semester, unitCode, paperType), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DeleteMapping("/exam-papers/scope/semester")
+    public ResponseEntity<?> deleteExamPapersBySemester(
+            @RequestParam("bookVersion") String bookVersion,
+            @RequestParam("grade") String grade,
+            @RequestParam("semester") String semester,
+            @RequestParam(value = "paperType", required = false) String paperType
+    ) {
+        try {
+            return new ResponseEntity<>(testService.deleteExamPapersBySemester(bookVersion, grade, semester, paperType), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping("/student-exam-practices/papers/{paperId}/submit")
+    public ResponseEntity<?> submitStudentExamPractice(@PathVariable Long paperId, @RequestBody StudentExamPracticeSubmitRequest request) {
+        try {
+            return new ResponseEntity<>(testService.submitStudentExamPractice(paperId, request), HttpStatus.OK);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @GetMapping("/student-exam-practices/papers/{paperId}/latest")
+    public ResponseEntity<?> getLatestStudentExamPractice(@PathVariable Long paperId, @RequestParam("userId") Long userId) {
+        Optional<?> result = testService.getLatestStudentExamPractice(paperId, userId);
+        if (result.isPresent()) {
+            return new ResponseEntity<>(result.get(), HttpStatus.OK);
+        }
+        return new ResponseEntity<>(Map.of("error", "Practice result not found"), HttpStatus.NOT_FOUND);
+    }
+
+    @GetMapping("/student-exam-practices/wrong-notebook")
+    public ResponseEntity<?> getStudentExamWrongNotebook(@RequestParam("userId") Long userId) {
+        return new ResponseEntity<>(testService.getStudentExamWrongNotebook(userId), HttpStatus.OK);
+    }
+
+    private List<TestAnswer> parseAnswers(Object rawAnswers) {
+        if (!(rawAnswers instanceof List<?> rawList)) {
+            return null;
+        }
+        List<TestAnswer> answers = new ArrayList<>();
+        for (Object item : rawList) {
+            if (!(item instanceof Map<?, ?> row)) {
+                continue;
+            }
+            String wordId = stringValue(row.get("wordId"));
+            String input = stringValue(row.get("input"));
+            Boolean correct = toBoolean(row.get("isCorrect"));
+            if (wordId == null || input == null || correct == null) {
+                continue;
+            }
+            TestAnswer answer = new TestAnswer();
+            answer.setWordId(wordId);
+            answer.setInput(input);
+            answer.setCorrect(correct);
+            answers.add(answer);
+        }
+        return answers;
+    }
+
+    private String stringValue(Object value) {
+        if (value == null) return null;
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
     private Integer toInteger(Object value) {
         if (value == null) return null;
-        if (value instanceof Integer i) return i;
-        if (value instanceof Number n) return n.intValue();
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
         try {
             return Integer.parseInt(String.valueOf(value));
-        } catch (Exception e) {
+        } catch (NumberFormatException e) {
             return null;
         }
     }
 
-    private List<TestAnswer> parseAnswers(Object value) {
-        if (!(value instanceof List<?> list)) return null;
-        List<TestAnswer> answers = new ArrayList<>();
-        for (Object row : list) {
-            if (!(row instanceof Map<?, ?> map)) continue;
-            TestAnswer answer = new TestAnswer();
-            Object wordId = map.get("wordId");
-            if (wordId == null) continue;
-            answer.setWordId(String.valueOf(wordId));
-            Object input = map.get("input");
-            answer.setInput(input == null ? "" : String.valueOf(input));
-            Object isCorrect = map.get("isCorrect");
-            if (isCorrect instanceof Boolean b) {
-                answer.setCorrect(b);
-            } else {
-                answer.setCorrect(Boolean.parseBoolean(String.valueOf(isCorrect)));
-            }
-            answers.add(answer);
-        }
-        return answers;
+    private Boolean toBoolean(Object value) {
+        if (value instanceof Boolean bool) return bool;
+        if (value == null) return null;
+        String text = String.valueOf(value).trim().toLowerCase();
+        if ("true".equals(text)) return true;
+        if ("false".equals(text)) return false;
+        return null;
     }
 }

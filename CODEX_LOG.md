@@ -978,3 +978,115 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
   - `跳过` = audio file already exists
   - `已处理过` = same passage uid already exists in current output jsonl
 - also confirmed `mode5` and `mode2` passage id / uid seeds are not fully aligned yet; not changed in this round
+
+---
+
+## 25. 2026-04-16 Sync Exam Bank And Student Unit Practice
+
+### 25.1 sync exam extraction pipeline
+- added `tool/mode7_exam_extract.py`
+- added `tool/run_mode7.bat`
+- target:
+  - extract sync exam papers into importable JSONL
+  - keep source scope down to textbook version / grade / semester / unit
+  - include answers and explanations when present
+- current extraction scope excludes listening questions
+- extracted target question families:
+  - single choice
+  - cloze
+  - reading
+  - grammar fill
+  - seven choice
+- output directory:
+  - `tool/exam_data/未导入`
+
+### 25.2 exam bank backend foundation
+- added exam-bank models:
+  - `ExamPaper`
+  - `ExamMaterial`
+  - `ExamQuestion`
+  - `ExamQuestionOption`
+- added related DTO / repository / controller / service support in `backend/test-service`
+- implemented admin-facing capabilities:
+  - import JSONL
+  - list papers
+  - count papers
+  - paper detail
+  - paper update
+  - material CRUD
+  - question CRUD
+  - delete paper
+  - delete by unit
+  - delete by semester
+
+### 25.3 overwrite and scope normalization
+- import overwrite no longer depends on exact raw paper-type spelling
+- normalized compatible paper types into one sync-test family, including:
+  - `同步测试题`
+  - `同步题`
+  - `单元拔尖检测`
+  - `单元测试题`
+- normalized unit codes such as:
+  - `Unit1`
+  - `Unit 1`
+  - `unit1`
+- changed extraction output default `paper_type` to `同步测试题`
+- cleaned old conflicting DB data under:
+  - `人教版 / 八年级 / 下册`
+
+### 25.4 id and material uid stability
+- adjusted generated exam ids to be stable and path-independent
+- `material_id` / `question_id` no longer depend on source file path
+- verified duplicate conflict investigation around:
+  - `uk_exam_material_uid`
+
+### 25.5 admin exam management page
+- added admin exam-bank entry in:
+  - `front/src/pages/AdminDashboard.tsx`
+- added visual exam-bank management page:
+  - `front/src/components/admin/ExamManagement.tsx`
+- added frontend API layer in:
+  - `front/src/lib/auth.ts`
+- current admin capabilities:
+  - batch import JSONL
+  - filter by textbook scope
+  - preview paper
+  - edit paper / material / question
+  - delete current paper
+  - delete current unit
+  - delete current semester
+- note:
+  - page is still in the existing material-editor / question-editor structure
+  - full “paper-like preview editor” was discussed but not fully landed in this round
+
+### 25.6 student unit practice backend
+- added student practice persistence models:
+  - `ExamPracticeRecord`
+  - `ExamWrongNotebookItem`
+- added APIs:
+  - submit unit practice result
+  - load latest result for a paper
+  - load student wrong-notebook items
+- wrong answers now persist:
+  - submitted answer
+  - correct answer
+  - analysis
+  - source paper / textbook scope
+  - wrong count
+
+### 25.7 student unit practice frontend
+- updated `front/src/pages/StudentUnit.tsx`
+- removed placeholder `MOCK_QUIZ` usage for unit practice
+- added real unit-practice flow:
+  - load sync paper by current unit scope
+  - load latest submission result
+  - answer questions in place
+  - submit answers
+  - show correctness, correct answer, and per-question analysis
+- current note:
+  - student dashboard wrong-notebook page is still not switched to the real notebook API in this round
+
+### 25.8 validation
+- `mvn -q -DskipTests compile` in `backend/test-service`
+- `cmd /c npm run build` in `front/`
+- verified frontend build passes after `StudentUnit.tsx` unit-practice integration
