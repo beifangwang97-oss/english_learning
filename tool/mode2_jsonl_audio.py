@@ -2056,7 +2056,7 @@ with tab2:
                     if uid in existing_items_map:
                         global_already_processed += 1
 
-                    for core_key in ["unit", "section", "label", "target_id", "title", "passage_text", "source_pages", "book_version", "grade", "semester", "type", "id", "_source_file"]:
+                    for core_key in ["unit", "unit_no", "is_starter", "section", "label", "labels", "display_label", "task_kind", "target_id", "title", "passage_text", "matched_labels", "source_pages", "source_line", "raw_scope_line", "book_version", "grade", "semester", "type", "id", "_source_file"]:
                         if core_key in uploaded_item:
                             item[core_key] = uploaded_item.get(core_key)
 

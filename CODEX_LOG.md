@@ -868,3 +868,84 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
   - 教师端复习支持 `来源`
   - 学生端单词闯关支持按来源切换，且无来源时不显示标签
   - 学生端短语闯关不显示来源标签
+
+---
+
+## 23. 2026-04-16 Passage Extraction / Audio / UI Sync
+
+### 23.1 mode5 passage schema alignment
+- normalized mode5 extraction output to shared passage JSONL format
+- output keys now use:
+  - `type: "passage"`
+  - `passage_text`
+- retained extraction metadata for later tracing:
+  - `unit_no`
+  - `is_starter`
+  - `labels`
+  - `display_label`
+  - `task_kind`
+  - `matched_labels`
+  - `source_line`
+  - `raw_scope_line`
+
+### 23.2 mode5 extraction coverage / prompt refinement
+- expanded scope parsing for multiple textbook patterns
+- primary-school targets supported more clearly:
+  - `Let's talk`
+  - `Start to read`
+  - `Read and write`
+  - `Reading time`
+- junior-high exercise ranges supported more clearly:
+  - `2a and 2d`
+  - `1b`
+  - `3a`
+- prompt design strengthened to focus on passage body only
+- explicit exclusion of questions / exercises below the passage
+- improved dialogue sentence splitting for `Speaker: ...` lines
+
+### 23.3 mode5 realtime UI behavior
+- changed progress updates from whole-job completion to per-target completion
+- added live extracted-record panel backed by `mode5_live_records`
+- added dedupe by record `id` to avoid repeated live entries
+- fixed Streamlit live preview crash:
+  - removed repeated read-only `text_area` widgets
+  - replaced preview rendering with `st.code(...)`
+- current behavior is container-level dynamic refresh, not full browser page reload
+
+### 23.4 downstream compatibility
+- verified admin passage import expects:
+  - `unit`
+  - `section`
+  - `label`
+  - `target_id`
+  - `title`
+  - `passage_text`
+  - `source_pages`
+  - `book_version`
+  - `grade`
+  - `semester`
+  - `sentences`
+- verified extra extraction metadata is ignored by import and does not block DB write
+- updated `tool/mode2_jsonl_audio.py` to preserve extended passage metadata when generating recorded JSONL
+
+### 23.5 frontend passage label clarity
+- added shared formatter for passage labels
+- display rule:
+  - prefer `display_label`
+  - fallback to humanized `label`
+- examples:
+  - `2a_and_2d -> 2a and 2d`
+  - `start_to_read -> Start to Read`
+- applied to:
+  - student passage list / current reading header
+  - admin passage table
+
+### 23.6 validation
+- `conda run -n english_book python -m py_compile tool/mode5_passage_extract.py`
+- `conda run -n english_book python -m py_compile tool/mode5_passage_extract.py tool/mode2_jsonl_audio.py`
+- `cmd /c npm run build` in `front/`
+- checked latest generated passage JSONL files:
+  - no broken JSON lines
+  - no empty `passage_text`
+  - no missing `sentences`
+  - `type` normalized to `passage`

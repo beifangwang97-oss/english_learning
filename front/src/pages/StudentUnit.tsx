@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTimer } from '../context/TimerContext';
 import { cn } from '../lib/utils';
 import { learningProgressApi } from '../lib/auth';
-import { formatSourceTagLabel, lexiconApi, LearningEntry, LearningGroupSummary, LearningSourceGroupSummary, PassageItem } from '../lib/lexicon';
+import { formatPassageDisplayLabel, formatSourceTagLabel, lexiconApi, LearningEntry, LearningGroupSummary, LearningSourceGroupSummary, PassageItem } from '../lib/lexicon';
 import { getSessionToken } from '../lib/session';
 import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileQuestion, HelpCircle, LayoutDashboard, Library, LogOut, MessageCircle, Mic2, NotebookPen, Volume2, XCircle } from 'lucide-react';
 
@@ -1253,7 +1253,7 @@ export const StudentUnit: React.FC = () => {
                   idx === readingIndex ? 'bg-primary text-white border-primary' : 'bg-white border-outline-variant/40'
                 )}
               >
-                {item.section}{item.label} {itemDone ? '· 已学完' : ''}
+                {`Section ${item.section} ${formatPassageDisplayLabel(item)}`} {itemDone ? '· 已学完' : ''}
               </button>
             );
           })}
@@ -1263,7 +1263,7 @@ export const StudentUnit: React.FC = () => {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-xs font-bold text-emerald-700">
-                {currentPassage.unit} · Section {currentPassage.section} · {currentPassage.label}
+                {currentPassage.unit} · Section {currentPassage.section} · {formatPassageDisplayLabel(currentPassage)}
               </p>
               {currentPassage.title && <h3 className="text-2xl font-black mt-1">{currentPassage.title}</h3>}
             </div>

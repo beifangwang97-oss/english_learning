@@ -687,6 +687,179 @@ def parse_page_range_input(page_range_text, min_page=1, max_page=1):
     return sorted(pages)
 
 
+def _normalize_space_text(text):
+    return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def _slugify_passage_label(text):
+    cleaned = _normalize_space_text(text).lower()
+    cleaned = cleaned.replace("let's", "lets")
+    cleaned = re.sub(r"[^a-z0-9]+", "_", cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "unknown"
+
+
+def _split_label_tokens(label_text):
+    normalized = _normalize_space_text(label_text)
+    if not normalized:
+        return []
+    compact = normalized.replace("，", ",").replace("、", ",")
+    compact = re.sub(r"\s+", " ", compact)
+    if re.fullmatch(r"(?:\d+[a-zA-Z])(?:\s*(?:,|and)\s*\d+[a-zA-Z])+", compact, flags=re.IGNORECASE):
+        tokens = re.split(r"\s*(?:,|and)\s*", compact, flags=re.IGNORECASE)
+        return [t.lower() for t in tokens if t.strip()]
+    return [normalized]
+
+
+def _infer_passage_task_kind(section_label, label_text, labels):
+    label_lower = _normalize_space_text(label_text).lower()
+    if "let's talk" in label_lower:
+        return "dialogue"
+    if "let's learn" in label_lower:
+        return "vocabulary_passage"
+    if "let's spell" in label_lower:
+        return "phonics_passage"
+    if "listen and do" in label_lower:
+        return "listening_action"
+    if "listen and chant" in label_lower:
+        return "chant"
+    if "start to read" in label_lower:
+        return "reading_short"
+    if "read and write" in label_lower:
+        return "reading_write"
+    if "reading time" in label_lower:
+        return "reading_extended"
+    if labels and all(re.fullmatch(r"\d+[a-z]", str(x or "").lower()) for x in labels):
+        return "exercise_passage"
+    if section_label == "A":
+        return "dialogue"
+    if section_label == "C":
+        return "reading_extended"
+    return "reading_passage"
+
+
+def _build_passage_focus_hint(task_kind, display_label, labels):
+    label_hint = display_label or ", ".join(labels or [])
+    hints = {
+        "dialogue": [
+            "Extract the main conversation only.",
+            "Keep speaker names and turn-taking exactly as shown.",
+            "Ignore role-play instructions, question prompts, and answer areas.",
+        ],
+        "vocabulary_passage": [
+            "Extract the short model text or sentence block for this learning item.",
+            "Ignore vocabulary lists unless they are part of the model text.",
+            "Do not include pronunciation tips or activity instructions.",
+        ],
+        "phonics_passage": [
+            "Extract the readable phonics example text only.",
+            "Ignore isolated letters, phonics symbols, and drill instructions when they are not part of the passage body.",
+        ],
+        "listening_action": [
+            "Extract the spoken lines or chant lines only.",
+            "Ignore action commands outside the actual target text body if they are just exercise directions.",
+        ],
+        "chant": [
+            "Extract the chant or rhyme lines only.",
+            "Preserve line breaks when they represent chant rhythm.",
+        ],
+        "reading_short": [
+            "Extract the short reading passage only.",
+            "Ignore task prompts, questions, and answer blanks.",
+        ],
+        "reading_write": [
+            "Extract the main reading text only.",
+            "Ignore writing prompts, tables, and post-reading questions.",
+        ],
+        "reading_extended": [
+            "Extract the full Reading Time passage body.",
+            "Preserve paragraph boundaries where possible.",
+        ],
+        "exercise_passage": [
+            f"Extract only the text that belongs to target exercise label(s): {label_hint}.",
+            "If multiple labels are requested, extract only those labels and ignore nearby exercises.",
+            "Ignore page headers, section banners, and unrelated numbered items.",
+        ],
+        "reading_passage": [
+            "Extract the main reading body only.",
+            "Ignore instructions, titles of activities, and question areas unless they are part of the passage.",
+        ],
+    }
+    selected = hints.get(task_kind, hints["reading_passage"])
+    return "\n".join(f"- {line}" for line in selected)
+
+
+def _build_passage_prompt(task_meta):
+    unit_label = task_meta.get("unit", "")
+    section_label = task_meta.get("section", "")
+    labels = task_meta.get("labels", []) or []
+    display_label = task_meta.get("display_label", "")
+    task_kind = task_meta.get("task_kind", "reading_passage")
+    is_starter = bool(task_meta.get("is_starter", False))
+    starter_hint = "Starter Unit" if is_starter else "Regular Unit"
+    label_hint = display_label or ", ".join(labels or []) or "not provided"
+    section_hint = {
+        "A": "Section A",
+        "B": "Section B",
+        "C": "Section C",
+    }.get(section_label, f"Section {section_label}")
+    focus_hint = _build_passage_focus_hint(task_kind, display_label, labels)
+    return f"""
+You are extracting textbook passage content from one textbook page image.
+
+Target scope:
+- unit: {unit_label}
+- unit_mode: {starter_hint}
+- section: {section_hint}
+- label: {label_hint}
+- task_kind: {task_kind}
+
+Return ONE JSON object only:
+{{
+  "title": "visible title for the target passage, else empty string",
+  "matched_label": "the matched label text on this page, else empty string",
+  "task_kind": "{task_kind}",
+  "has_target_content": true,
+  "page_role": "main",
+  "passage_text": "target passage text on this page"
+}}
+
+Hard rules:
+- Keep original language exactly. Do not translate.
+- Extract only the target passage body for the requested unit/section/label.
+- Ignore page number, headers, footers, section banners, answer blanks, and unrelated exercises.
+- If the page only contains continuation of the same target passage, set page_role to "continuation".
+- If the page does not contain the requested target passage, return:
+  {{
+    "title": "",
+    "matched_label": "",
+    "task_kind": "{task_kind}",
+    "has_target_content": false,
+    "page_role": "none",
+    "passage_text": ""
+  }}
+
+Task-specific focus:
+{focus_hint}
+"""
+
+
+def _dedupe_passage_chunks(text_chunks):
+    paragraphs = []
+    seen = set()
+    for chunk in text_chunks:
+        normalized_chunk = _normalize_课文_text(chunk)
+        if not normalized_chunk:
+            continue
+        for part in [p.strip() for p in normalized_chunk.split("\n\n") if p.strip()]:
+            key = re.sub(r"\s+", " ", part).strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            paragraphs.append(part)
+    return "\n\n".join(paragraphs)
+
+
 def _normalize_unit_text(unit, fallback_unit):
     unit_text = (unit or fallback_unit or "").strip()
     if not unit_text:
@@ -832,6 +1005,9 @@ def _split_课文_sentences(课文_text):
     lines = [ln.strip() for ln in normalized.split("\n") if ln.strip()]
     sentences = []
     for line in lines:
+        if re.match(r"^[A-Z][A-Za-z\s\.'-]{0,30}:\s*", line):
+            sentences.append(line)
+            continue
         parts = re.split(r"(?<=[\.!?。！？])\s+", line)
         for part in parts:
             s = (part or "").strip()
@@ -869,29 +1045,10 @@ Sentences:
     return translated
 
 
-def extract_课文_from_page(base64_image, api_key, base_url, model_name, unit_label, section_label, tag_label=""):
+def extract_课文_from_page(base64_image, api_key, base_url, model_name, task_meta):
     client = get_openai_client(api_key, base_url)
-    section_hint = "dialogue text in Section A" if section_label == "A" else "reading text in Section B"
-    target_hint = f"Target exercise label: {tag_label}" if tag_label else "Target exercise label: not provided"
-    prompt = f"""
-You are extracting textbook 课文 content from one page image.
-Target unit: {unit_label}
-Target section: {section_label}
-Target type: {section_hint}
-{target_hint}
-
-Return ONE JSON object only:
-{{
-  "title": "课文 title if visible, else empty string",
-  "课文_text": "main 课文 text on this page"
-}}
-
-Rules:
-- Keep original language, do not translate.
-- Focus on the target 课文 body, ignore page numbers, headers, footers, and exercise items.
-- Prefer text belonging to the specified label when it is visible.
-- If this page does not contain target 课文 text, return empty 课文_text.
-"""
+    task_kind = task_meta.get("task_kind", "reading_passage")
+    prompt = _build_passage_prompt(task_meta)
     request_kwargs = {
         "model": model_name,
         "messages": [
@@ -904,10 +1061,21 @@ Rules:
     }
     parsed, error = call_chat_json_with_retry(client, request_kwargs, expect_list=False)
     if error or not isinstance(parsed, dict):
-        return {"title": "", "课文_text": ""}
+        return {
+            "title": "",
+            "matched_label": "",
+            "task_kind": task_kind,
+            "has_target_content": False,
+            "page_role": "none",
+            "课文_text": "",
+        }
     return {
         "title": (parsed.get("title", "") or "").strip(),
-        "课文_text": _normalize_课文_text(parsed.get("课文_text", ""))
+        "matched_label": (parsed.get("matched_label", "") or "").strip(),
+        "task_kind": _normalize_space_text(parsed.get("task_kind", "") or task_kind) or task_kind,
+        "has_target_content": bool(parsed.get("has_target_content", False)),
+        "page_role": (parsed.get("page_role", "") or "main").strip().lower(),
+        "课文_text": _normalize_课文_text(parsed.get("passage_text", "") or parsed.get("课文_text", "")),
     }
 
 
@@ -923,33 +1091,57 @@ def _parse_课文_scope_text(scope_text, min_page, max_page):
     tasks = []
     errors = []
     lines = (scope_text or "").splitlines()
-    pattern = re.compile(
-        r"^\s*unit\s*(\d+)\s+section\s*([abAB])\s+page\s*([0-9\-,\s]+)\s+([0-9]+[a-zA-Z])\s*$",
+    pattern_after_page = re.compile(
+        r"^\s*(starter\s+)?unit\s*(\d+)\s+section\s*([abcABC])\s+page\s*([0-9\-,\s]+)\s+(.+?)\s*$",
+        flags=re.IGNORECASE
+    )
+    pattern_before_page = re.compile(
+        r"^\s*(starter\s+)?unit\s*(\d+)\s+section\s*([abcABC])\s*,?\s*(.+?)\s+page\s*([0-9\-,\s]+)\s*$",
         flags=re.IGNORECASE
     )
     for idx, line in enumerate(lines, start=1):
         raw = (line or "").strip()
         if not raw:
             continue
-        match = pattern.match(raw)
-        if not match:
-            errors.append(f"第 {idx} 行格式不符合：{raw}")
-            continue
-        unit_num = int(match.group(1))
-        section = match.group(2).upper()
-        page_expr = re.sub(r"\s+", "", match.group(3))
-        label = match.group(4).lower()
+        match = pattern_after_page.match(raw)
+        label_text = ""
+        page_expr = ""
+        if match:
+            is_starter = bool(match.group(1))
+            unit_num = int(match.group(2))
+            section = match.group(3).upper()
+            page_expr = re.sub(r"\s+", "", match.group(4))
+            label_text = _normalize_space_text(match.group(5))
+        else:
+            match = pattern_before_page.match(raw)
+            if not match:
+                errors.append(f"第 {idx} 行格式不符合：{raw}")
+                continue
+            is_starter = bool(match.group(1))
+            unit_num = int(match.group(2))
+            section = match.group(3).upper()
+            label_text = _normalize_space_text(match.group(4))
+            page_expr = re.sub(r"\s+", "", match.group(5))
         pages = parse_page_range_input(page_expr, min_page, max_page)
         if not pages:
             errors.append(f"第 {idx} 行页码无效或超范围：{raw}")
             continue
+        labels = _split_label_tokens(label_text)
+        display_label = _normalize_space_text(label_text)
+        task_kind = _infer_passage_task_kind(section, display_label, labels)
         tasks.append({
-            "unit": f"Unit {unit_num}",
+            "unit": f"Starter Unit {unit_num}" if is_starter else f"Unit {unit_num}",
+            "unit_no": unit_num,
+            "is_starter": is_starter,
             "section": section,
-            "label": label,
-            "课文_type": "dialogue" if section == "A" else "reading",
+            "label": _slugify_passage_label(display_label),
+            "labels": labels,
+            "display_label": display_label,
+            "task_kind": task_kind,
+            "课文_type": task_kind,
             "pages": pages,
             "source_line": idx,
+            "raw_scope_line": raw,
         })
     return tasks, errors
 
@@ -973,12 +1165,21 @@ def _parse_manual_targets(raw_text, unit_num, section_label, min_page, max_page)
         if not pages:
             errors.append(f"Unit {unit_num} Section {section_label} 页码无效：{chunk}")
             continue
+        labels = [label]
+        display_label = label
+        task_kind = _infer_passage_task_kind(section_label, display_label, labels)
         tasks.append({
             "unit": f"Unit {unit_num}",
+            "unit_no": unit_num,
+            "is_starter": False,
             "section": section_label,
             "label": label,
-            "课文_type": "dialogue" if section_label == "A" else "reading",
+            "labels": labels,
+            "display_label": display_label,
+            "task_kind": task_kind,
+            "课文_type": task_kind,
             "pages": pages,
+            "raw_scope_line": chunk,
         })
     return tasks, errors
 
@@ -1495,6 +1696,8 @@ if "mode5_results" not in st.session_state:
     st.session_state.mode5_results = []
 if "mode5_live_rows" not in st.session_state:
     st.session_state.mode5_live_rows = []
+if "mode5_live_records" not in st.session_state:
+    st.session_state.mode5_live_records = {}
 with st.sidebar:
     st.header("提取 API 配置")
     extract_base_url = st.text_input("提取 Base URL", value="https://openrouter.ai/api/v1", key="mode5_extract_base_url")
@@ -1614,6 +1817,7 @@ else:
         with c2:
             st.text_input(f"Unit {i} Section B", value="", key=f"mode5_unit_{i}_B_targets")
 summary_placeholder = st.empty()
+live_content_placeholder = st.empty()
 is_mode5_busy = bool(st.session_state.get("mode5_is_running", False) or st.session_state.get("mode5_pending_start", False))
 c_start, c_pause = st.columns([3, 2])
 with c_start:
@@ -1720,10 +1924,16 @@ if bool(st.session_state.get("mode5_pending_start", False)):
         st.session_state.mode5_is_running = True
         st.session_state.mode5_stop_requested = False
         st.session_state.mode5_results = []
+        st.session_state.mode5_live_records = {}
         stop_event = threading.Event()
         live_rows = []
+        output_summaries = []
         for job in job_plans:
             api_index = (job["job_idx"] % len(extract_api_keys)) + 1
+            output_summaries.append({
+                "display_name": job["display_name"],
+                "output": job["output_path"],
+            })
             live_rows.append({
                 "文件": job["display_name"],
                 "教材": job["pdf"]["name"],
@@ -1733,114 +1943,164 @@ if bool(st.session_state.get("mode5_pending_start", False)):
                 "已完成": 0,
                 "输出文件": job["output_path"],
             })
+            with open(job["output_path"], "w", encoding="utf-8") as _wf:
+                _wf.write("")
         st.session_state.mode5_live_rows = live_rows
+        st.session_state.mode5_results = output_summaries
         progress = st.progress(0)
         status = st.empty()
         done_targets = 0
         def render_summary():
             summary_placeholder.dataframe(pd.DataFrame(st.session_state.mode5_live_rows), width="stretch", hide_index=True)
         render_summary()
-        def worker(job):
+        def render_live_content():
+            live_data = st.session_state.get("mode5_live_records", {})
+            with live_content_placeholder.container():
+                if not live_data:
+                    st.caption("Live extracted content will appear here.")
+                    return
+                st.subheader("Live Extracted Content")
+                for src_name, records_map in live_data.items():
+                    records = list(records_map.values())
+                    with st.expander(f"{src_name} ({len(records)} items)", expanded=False):
+                        for rec in records:
+                            title_suffix = f" | {rec.get('title', '').strip()}" if rec.get("title") else ""
+                            st.markdown(f"**{rec.get('target_id', '')}{title_suffix}**")
+                            page_text = ",".join([str(x) for x in rec.get("source_pages", [])])
+                            if page_text:
+                                st.caption(f"source_pages: {page_text}")
+                            st.code(rec.get("passage_text", "") or "", language=None)
+        def append_live_record(job, rec):
+            rec_id = (rec.get("id", "") or "").strip()
+            if not rec_id:
+                return
+            src_name = job["display_name"]
+            bucket = st.session_state.mode5_live_records.setdefault(src_name, {})
+            if rec_id in bucket:
+                return
+            bucket[rec_id] = dict(rec)
+        render_live_content()
+        def worker_task(job, task):
             if stop_event.is_set():
-                return {"stopped": True, "display_name": job["display_name"], "output": job["output_path"], "records": []}
+                return {"stopped": True, "display_name": job["display_name"], "output": job["output_path"]}
             api_key = pick_api_key_for_job(extract_api_keys, job["job_idx"])
             output_path = job["output_path"]
-            with open(output_path, "w", encoding="utf-8") as _wf:
-                _wf.write("")
             doc_p = fitz.open(stream=job["pdf"]["bytes"], filetype="pdf")
-            records = []
-            done_local = 0
             try:
-                for task in job["tasks"]:
+                if stop_event.is_set():
+                    return {"stopped": True, "display_name": job["display_name"], "output": output_path}
+                unit_label = task["unit"]
+                sec_label = task["section"]
+                label = task.get("label", "")
+                labels = task.get("labels", []) or ([label] if label else [])
+                display_label = task.get("display_label", label)
+                task_kind = task.get("task_kind", task.get("课文_type", "reading_passage"))
+                pages = task["pages"]
+                target_id = f"{unit_label} Section {sec_label} {display_label}".strip()
+                title = ""
+                text_chunks = []
+                matched_labels = []
+                for pno in pages:
                     if stop_event.is_set():
-                        return {
-                            "stopped": True,
-                            "display_name": job["display_name"],
-                            "output": output_path,
-                            "records": records,
-                            "done_local": done_local,
-                        }
-                    unit_label = task["unit"]
-                    sec_label = task["section"]
-                    label = task.get("label", "")
-                    pages = task["pages"]
-                    target_id = f"{unit_label} Section {sec_label} {label}".strip()
-                    title = ""
-                    text_chunks = []
-                    for pno in pages:
-                        b64_img = pdf_page_to_base64_cached(doc_p, pno)
-                        page_data = extract_课文_from_page(
-                            b64_img,
-                            api_key,
-                            extract_base_url,
-                            extract_model_name,
-                            unit_label,
-                            sec_label,
-                            label,
-                        )
-                        if (not title) and page_data.get("title"):
-                            title = page_data.get("title", "")
-                        if page_data.get("课文_text"):
-                            text_chunks.append(page_data.get("课文_text", ""))
-                    merged_text = _normalize_课文_text("\n\n".join([c for c in text_chunks if c.strip()]))
-                    sentence_en = _split_课文_sentences(merged_text)
-                    sentence_zh = _translate_sentences_to_zh(sentence_en, api_key, extract_base_url, extract_model_name) if sentence_en else []
-                    sentence_items = []
-                    for s_idx, en_text in enumerate(sentence_en):
-                        zh_text = sentence_zh[s_idx] if s_idx < len(sentence_zh) else ""
-                        sentence_items.append({"en": en_text, "zh": zh_text, "audio": ""})
-                    rec_id_seed = f"{target_id}|{job['book_version']}|{job['grade']}|{job['semester']}"
-                    rec = {
-                        "id": hashlib.md5(rec_id_seed.encode("utf-8")).hexdigest()[:12],
-                        "type": "课文",
-                        "unit": unit_label,
-                        "section": sec_label,
-                        "label": label,
-                        "target_id": target_id,
-                        "title": title,
-                        "课文_text": merged_text,
-                        "sentences": sentence_items,
-                        "source_pages": pages,
-                        "book_version": job["book_version"],
-                        "grade": job["grade"],
-                        "semester": job["semester"],
-                    }
+                        return {"stopped": True, "display_name": job["display_name"], "output": output_path}
+                    b64_img = pdf_page_to_base64_cached(doc_p, pno)
+                    page_data = extract_课文_from_page(
+                        b64_img,
+                        api_key,
+                        extract_base_url,
+                        extract_model_name,
+                        task,
+                    )
+                    if (not title) and page_data.get("title"):
+                        title = page_data.get("title", "")
+                    if page_data.get("matched_label"):
+                        matched_labels.append(page_data.get("matched_label", ""))
+                    if page_data.get("has_target_content") and page_data.get("课文_text"):
+                        text_chunks.append(page_data.get("课文_text", ""))
+                merged_text = _dedupe_passage_chunks([c for c in text_chunks if c.strip()])
+                sentence_en = _split_课文_sentences(merged_text)
+                sentence_zh = _translate_sentences_to_zh(sentence_en, api_key, extract_base_url, extract_model_name) if sentence_en else []
+                sentence_items = []
+                for s_idx, en_text in enumerate(sentence_en):
+                    zh_text = sentence_zh[s_idx] if s_idx < len(sentence_zh) else ""
+                    sentence_items.append({"en": en_text, "zh": zh_text, "audio": ""})
+                rec_id_seed = f"{target_id}|{job['book_version']}|{job['grade']}|{job['semester']}|{','.join(map(str, pages))}"
+                rec = {
+                    "id": hashlib.md5(rec_id_seed.encode("utf-8")).hexdigest()[:12],
+                    "type": "passage",
+                    "unit": unit_label,
+                    "unit_no": task.get("unit_no"),
+                    "is_starter": bool(task.get("is_starter", False)),
+                    "section": sec_label,
+                    "label": label,
+                    "labels": labels,
+                    "display_label": display_label,
+                    "task_kind": task_kind,
+                    "target_id": target_id,
+                    "title": title,
+                    "passage_text": merged_text,
+                    "sentences": sentence_items,
+                    "matched_labels": list(dict.fromkeys([x for x in matched_labels if str(x).strip()])),
+                    "source_pages": pages,
+                    "source_line": task.get("source_line"),
+                    "raw_scope_line": task.get("raw_scope_line", ""),
+                    "book_version": job["book_version"],
+                    "grade": job["grade"],
+                    "semester": job["semester"],
+                }
+                if merged_text.strip():
                     with open(output_path, "a", encoding="utf-8") as wf:
                         wf.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                    records.append(rec)
-                    done_local += 1
+                else:
+                    rec = None
             finally:
                 doc_p.close()
             return {
                 "ok": True,
                 "display_name": job["display_name"],
                 "output": output_path,
-                "records": records,
-                "done_local": done_local,
+                "record": rec,
             }
-        max_workers = max(1, min(len(extract_api_keys), len(job_plans)))
-        status.info(f"开始并行处理：任务数={len(job_plans)}，API序号 数={len(extract_api_keys)}，并发={max_workers}")
+        task_plans = []
+        for row_idx, job in enumerate(job_plans):
+            for task_idx, task in enumerate(job["tasks"]):
+                task_plans.append({
+                    "row_idx": row_idx,
+                    "job": job,
+                    "task": task,
+                    "task_idx": task_idx,
+                })
+        max_workers = max(1, min(len(extract_api_keys), len(task_plans)))
+        status.info(f"Starting parallel extraction: tasks={len(task_plans)}, apis={len(extract_api_keys)}, workers={max_workers}")
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {executor.submit(worker, job): idx for idx, job in enumerate(job_plans)}
+            future_map = {
+                executor.submit(worker_task, task_plan["job"], task_plan["task"]): task_plan
+                for task_plan in task_plans
+            }
             for fut in as_completed(future_map):
                 if st.session_state.get("mode5_stop_requested", False):
                     stop_event.set()
-                row_idx = future_map[fut]
+                task_plan = future_map[fut]
+                row_idx = task_plan["row_idx"]
                 try:
                     ret = fut.result()
                 except Exception as e:
-                    ret = {"ok": False, "error": str(e), "done_local": 0, "records": []}
-                st.session_state.mode5_live_rows[row_idx]["已完成"] = int(ret.get("done_local", 0))
-                done_targets += int(ret.get("done_local", 0))
+                    ret = {"ok": False, "error": str(e)}
+                st.session_state.mode5_live_rows[row_idx]["已完成"] += 1
+                done_targets += 1
                 if ret.get("stopped"):
                     st.session_state.mode5_live_rows[row_idx]["状态"] = "stopped"
                 elif ret.get("ok"):
-                    st.session_state.mode5_live_rows[row_idx]["状态"] = "done"
-                    st.session_state.mode5_results.append(ret)
+                    append_live_record(task_plan["job"], ret.get("record") or {})
+                    if st.session_state.mode5_live_rows[row_idx]["已完成"] >= st.session_state.mode5_live_rows[row_idx]["目标数"]:
+                        st.session_state.mode5_live_rows[row_idx]["状态"] = "done"
+                    else:
+                        st.session_state.mode5_live_rows[row_idx]["状态"] = "running"
                 else:
                     st.session_state.mode5_live_rows[row_idx]["状态"] = "error"
                 progress.progress(done_targets / max(1, total_targets))
                 render_summary()
+                render_live_content()
         if st.session_state.get("mode5_stop_requested", False):
             status.info("提取已暂停，已保留已完成内容。")
         else:
@@ -1850,6 +2110,18 @@ if bool(st.session_state.get("mode5_pending_start", False)):
 if st.session_state.get("mode5_live_rows"):
     st.subheader("提取进度")
     st.dataframe(pd.DataFrame(st.session_state.get("mode5_live_rows", [])), width="stretch", hide_index=True)
+if st.session_state.get("mode5_live_records"):
+    st.subheader("Extracted Content")
+    for src_name, records_map in st.session_state.get("mode5_live_records", {}).items():
+        records = list(records_map.values())
+        with st.expander(f"{src_name} ({len(records)} items)", expanded=False):
+            for rec in records:
+                title_suffix = f" | {rec.get('title', '').strip()}" if rec.get("title") else ""
+                st.markdown(f"**{rec.get('target_id', '')}{title_suffix}**")
+                page_text = ",".join([str(x) for x in rec.get("source_pages", [])])
+                if page_text:
+                    st.caption(f"source_pages: {page_text}")
+                st.code(rec.get("passage_text", "") or "", language=None)
 if st.session_state.get("mode5_results"):
     st.subheader("输出文件")
     for item in st.session_state.get("mode5_results", []):

@@ -97,12 +97,20 @@ export type PassageItem = {
   id: string;
   type: 'passage';
   unit: string;
+  unit_no?: number;
+  is_starter?: boolean;
   section: string;
   label: string;
+  labels?: string[];
+  display_label?: string;
+  task_kind?: string;
   target_id: string;
   title: string;
   passage_text: string;
   source_pages: number[];
+  matched_labels?: string[];
+  source_line?: number;
+  raw_scope_line?: string;
   book_version: string;
   grade: string;
   semester: string;
@@ -146,6 +154,25 @@ export const formatSourceTagLabel = (tag?: string) => {
   if (normalized === 'current_book') return '当前册单词';
   if (normalized === 'primary_school_review') return '小学复习';
   return normalized || '未标记';
+};
+
+export const formatPassageDisplayLabel = (item: Pick<PassageItem, 'label' | 'display_label'> | { label?: string; display_label?: string }) => {
+  const preferred = (item?.display_label || '').trim();
+  if (preferred) return preferred;
+
+  const raw = (item?.label || '').trim();
+  if (!raw) return '';
+
+  const normalized = raw
+    .replace(/_and_/gi, ' and ')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return raw;
+  if (/[A-Z]/.test(normalized) || /\d/.test(normalized)) return normalized;
+
+  return normalized.replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
 };
 
 export const lexiconApi = {

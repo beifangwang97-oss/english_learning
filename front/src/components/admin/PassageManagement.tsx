@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Save, Trash2, Upload, X } from 'lucide-react';
-import { PassageItem, TextbookScopeBookRow, lexiconApi } from '../../lib/lexicon';
+import { PassageItem, TextbookScopeBookRow, formatPassageDisplayLabel, lexiconApi } from '../../lib/lexicon';
 import { getSessionToken } from '../../lib/session';
 
 type ImportStatus = 'invalid' | 'checking' | 'unchecked' | 'exists' | 'ready' | 'importing' | 'success' | 'failed';
@@ -519,7 +519,7 @@ export const PassageManagement: React.FC = () => {
                 >
                   <td className="p-3">{item.unit}</td>
                   <td className="p-3">{item.section}</td>
-                  <td className="p-3">{item.label}</td>
+                  <td className="p-3">{formatPassageDisplayLabel(item)}</td>
                   <td className="p-3 truncate">{item.title || '（无标题）'}</td>
                   <td className="p-3 text-right">{item.sentence_count || item.sentences.length}</td>
                 </tr>
