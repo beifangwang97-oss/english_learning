@@ -949,3 +949,32 @@ Kinetic Scholar（虎子英语）是一个 K12 英语学习平台，采用前后
   - no empty `passage_text`
   - no missing `sentences`
   - `type` normalized to `passage`
+
+---
+
+## 24. 2026-04-16 mode1 Unit Header Robustness
+
+### 24.1 mode1 unit switching robustness
+- updated `tool/mode1_pdf_extract_review.py`
+- previous behavior relied too heavily on blue `Unit N` headers when deciding whether to switch unit
+- new behavior keeps "blue header preferred" as the main rule, but adds tolerance for:
+  - black `Unit + number`
+  - slightly larger-than-body title-like font
+- added a lightweight PDF text-layer helper to collect possible unit header hints per page / split-half and pass them into the LLM prompt as auxiliary evidence
+- prompt now explicitly requires:
+  - switch unit only when a clearly visible unit header exists
+  - black title-like `Unit + number` can count as a valid header
+  - do not switch by guessed continuity
+
+### 24.2 empty-page safeguard
+- if a page contains no real vocabulary entries, mode1 should return `[]`
+- postprocess now also filters out rows that are actually `Unit` headers rather than real words / phrases
+
+### 24.3 validation
+- `python -m py_compile tool/mode1_pdf_extract_review.py`
+
+### 24.4 current note
+- during follow-up investigation, confirmed that `mode2` passage processing currently counts:
+  - `跳过` = audio file already exists
+  - `已处理过` = same passage uid already exists in current output jsonl
+- also confirmed `mode5` and `mode2` passage id / uid seeds are not fully aligned yet; not changed in this round

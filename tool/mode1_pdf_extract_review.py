@@ -703,6 +703,113 @@ def _is_complete_word_payload(payload, item_type="word"):
         return False
     return _has_complete_meanings(payload.get("meanings"), require_pos=True)
 
+
+VOCAB_UNIT_PATTERN = re.compile(r"\b(?:(Starter)\s+)?Unit\s*(\d+)\b", flags=re.IGNORECASE)
+
+
+def _median_number(values):
+    numbers = sorted(float(v) for v in values if v is not None)
+    if not numbers:
+        return 0.0
+    mid = len(numbers) // 2
+    if len(numbers) % 2:
+        return numbers[mid]
+    return (numbers[mid - 1] + numbers[mid]) / 2.0
+
+
+def _normalize_vocab_unit_text(unit, fallback_unit=""):
+    unit_text = (unit or fallback_unit or "").strip()
+    if not unit_text:
+        return "Unit ?"
+    match = VOCAB_UNIT_PATTERN.search(unit_text)
+    if not match:
+        return unit_text
+    prefix = "Starter " if match.group(1) else ""
+    return f"{prefix}Unit {int(match.group(2))}"
+
+
+def _looks_like_unit_header(word_text):
+    return bool(VOCAB_UNIT_PATTERN.fullmatch((word_text or "").strip()))
+
+
+def _classify_span_color(color_value):
+    if not isinstance(color_value, int):
+        return "unknown"
+    red = (color_value >> 16) & 255
+    green = (color_value >> 8) & 255
+    blue = color_value & 255
+    if max(red, green, blue) <= 70:
+        return "black"
+    if blue >= red + 25 and blue >= green + 25:
+        return "blue"
+    return "other"
+
+
+def collect_unit_header_hints(doc, page_number, part="full", pre_info=None, max_candidates=4):
+    try:
+        page = doc.load_page(page_number - 1)
+        page_rect = page.rect
+        crop_left = 0.0
+        crop_right = float(page_rect.width)
+        if (pre_info or {}).get("mode") == "split" and part in {"left", "right"}:
+            left_ratio = float((pre_info or {}).get("left_ratio", 0.5))
+            split_x = float(page_rect.width) * left_ratio
+            if part == "left":
+                crop_right = split_x
+            else:
+                crop_left = split_x
+
+        text_dict = page.get_text("dict")
+        body_font_sizes = []
+        candidate_rows = []
+
+        for block in text_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = re.sub(r"\s+", " ", (span.get("text", "") or "").strip())
+                    if not text:
+                        continue
+                    bbox = span.get("bbox") or ()
+                    if len(bbox) != 4:
+                        continue
+                    x0, _, x1, _ = bbox
+                    if x1 <= crop_left or x0 >= crop_right:
+                        continue
+                    size = float(span.get("size", 0) or 0)
+                    if re.search(r"[A-Za-z]", text):
+                        body_font_sizes.append(size)
+                    match = VOCAB_UNIT_PATTERN.search(text)
+                    if not match:
+                        continue
+                    candidate_rows.append({
+                        "unit": _normalize_vocab_unit_text(match.group(0), ""),
+                        "size": size,
+                        "color": _classify_span_color(span.get("color")),
+                        "bbox": bbox,
+                    })
+
+        body_median = _median_number(body_font_sizes)
+        filtered = []
+        seen = set()
+        for row in sorted(candidate_rows, key=lambda item: (item["bbox"][1], item["bbox"][0])):
+            is_larger = row["size"] >= max(body_median * 1.05, body_median + 0.3, 9.5)
+            if row["color"] not in {"blue", "black"} and not is_larger:
+                continue
+            dedup_key = (row["unit"].lower(), round(row["bbox"][1], 1))
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            filtered.append(
+                f"{row['unit']} | color={row['color']} | font_size={round(row['size'], 1)} | larger_than_body={'yes' if is_larger else 'no'}"
+            )
+            if len(filtered) >= max_candidates:
+                break
+        return filtered
+    except Exception:
+        return []
+
 def postprocess_extracted_items(items, fallback_unit):
     if not isinstance(items, list):
         return []
@@ -721,14 +828,14 @@ def postprocess_extracted_items(items, fallback_unit):
         # Drop non-English head tokens and empty rows early.
         if not word or not re.search(r"[A-Za-z]", word):
             continue
+        if _looks_like_unit_header(word):
+            continue
 
         item_type = (raw.get("type", "") or "").strip().lower()
         if item_type not in {"word", "phrase"}:
             item_type = "phrase" if " " in word else "word"
 
-        unit = (raw.get("unit", "") or fallback_unit or "").strip()
-        if not unit:
-            unit = "Unit ?"
+        unit = _normalize_vocab_unit_text(raw.get("unit", ""), fallback_unit)
 
         phonetic = (raw.get("phonetic", "") or "").strip()
         meanings = _normalize_meanings(raw)
@@ -1378,19 +1485,22 @@ def generate_html_table(data_list):
     return html_content
 
 
-def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last_unit, grade_level, source_tag="current_book", stop_event=None):
+def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last_unit, grade_level, source_tag="current_book", stop_event=None, unit_hint_lines=None):
     client = get_openai_client(api_key, base_url)
     use_zh_prompt = is_chinese_prompt_model(model_name)
     is_primary_review = str(source_tag or "").strip() == "primary_school_review"
+    hint_lines = [line for line in (unit_hint_lines or []) if str(line or "").strip()]
+    hint_text_zh = "；".join(hint_lines) if hint_lines else "无明确候选。"
+    hint_text_en = "; ".join(hint_lines) if hint_lines else "No clear unit-header hints."
     zh_unit_rule = (
         "8. 当前 source_tag=primary_school_review，这类复习词可能只覆盖部分单元，因此出现单元跳号是正常情况。不要因为跳号而复核连续性，也不要尝试按 +1 规律修正 unit。"
         if is_primary_review else
-        "8. last_unit 仅作弱参考：如果本页第一个单元看起来跳号，请优先复核蓝色单元标题；若仍不确定，保留视觉识别结果，不要强行改成 +1。"
+        "8. last_unit 仅作弱参考：如果本页第一个单元看起来跳号，请优先复核可见单元标题；若仍不确定，保留视觉识别结果，不要强行改成 +1。"
     )
     en_unit_rule = (
         "- Current source_tag is primary_school_review. Review words may skip units, so non-consecutive unit numbers are normal. Do not treat unit jumps as suspicious, and do not try to correct them by continuity."
         if is_primary_review else
-        "- Use last_unit as a weak reference only: if first unit seems to jump, re-check blue headers first; if still uncertain, keep visual evidence result instead of forcing +1."
+        "- Use last_unit as a weak reference only: if first unit seems to jump, re-check the visible unit header first; if still uncertain, keep the visual evidence result instead of forcing +1."
     )
 
     if use_zh_prompt:
@@ -1405,10 +1515,14 @@ def extract_vocab_with_context(base64_image, api_key, base_url, model_name, last
 
 视觉与切换规则（非常重要）：
 1. 页面已经是单列，词条按从上到下连续排列。
-2. 普通单词/短语通常是黑色字体；单元标识符（Unit N / Starter Unit N）通常是蓝色字体。
-3. 只有当你识别到蓝色单元标识符时，才允许切换当前 unit。
-4. 若本段没有新的蓝色单元标识符，则该段词条必须继承上一个 unit。
+2. 普通单词/短语通常是黑色字体；单元标识符（Unit N / Starter Unit N）常见为蓝色，但也可能是黑色，且字号只比正文稍大一点点。
+3. 允许切换当前 unit 的前提是：页面上确实出现了清晰的单元标识符。蓝色优先；如果是黑色，也必须明显像标题而不是普通词条，例如包含完整的 `Unit + 数字`，并且字号略大或排版更像标题。
+4. 若本段没有新的清晰单元标识符，则该段词条必须继承上一个 unit。
 5. 不要因为猜测连续编号而主动切换 unit。
+6. 如果页面里没有真实英文单词/短语词条，直接返回空数组 `[]`。
+
+PDF 文本层辅助线索（仅作辅助，不可覆盖图像事实）：
+{hint_text_zh}
 
 输出结构（按 type 分支）：
 - type=word：
@@ -1504,6 +1618,9 @@ Visual + unit-switch rules (critical):
 
 Rules:
 - Keep only real English words/phrases from the page.
+- Unit headers may be blue, or black with slightly larger title-like font.
+- Only switch unit when a clearly visible unit header is present.
+- If the page contains no real vocabulary entries, return [].
 - For type=word, phonetic is required in /.../ format.
 - For type=phrase, do not output phonetic or POS.
 - meaning must be Chinese.
@@ -1512,6 +1629,7 @@ Rules:
 - For type=word, each meanings item must map to exactly one POS. Do not merge POS like "adj. & pron." in one item.
 - If a word has multiple POS, split them into separate meanings items, and each POS must have its own aligned meaning/example/example_zh.
 - meanings must be a non-empty array.
+- Helpful PDF text-layer hints (assist only; do not override the image): {hint_text_en}
 {en_unit_rule}
 - Do not output audio fields.
 """
@@ -1992,6 +2110,8 @@ with tab1:
                             "message": f"[{display_name}] {part_name}",
                         })
 
+                        unit_hint_lines = collect_unit_header_hints(doc, p_num, part=part, pre_info=pre_info)
+
                         page_results = extract_vocab_with_context(
                             b64_img,
                             job_api_key,
@@ -2001,6 +2121,7 @@ with tab1:
                             grade_level,
                             job_payload.get("source_tag", "current_book"),
                             stop_event=stop_event,
+                            unit_hint_lines=unit_hint_lines,
                         )
 
                         if stop_event and stop_event.is_set():
