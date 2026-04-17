@@ -236,7 +236,6 @@ export const WordTestView: React.FC = () => {
                   )}
                 </div>
 
-                <div className="mb-2 text-center text-xs text-on-surface-variant">{item.pos || '-'} · {item.phonetic || '-'}</div>
                 <div className="mb-4">
                   <p className="text-lg font-bold text-on-surface text-center">{item.meaning || '-'}</p>
                 </div>

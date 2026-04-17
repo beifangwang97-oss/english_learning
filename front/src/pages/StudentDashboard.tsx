@@ -4,7 +4,7 @@ import { useTimer } from '../context/TimerContext';
 import { useAuth } from '../context/AuthContext';
 import { adminStoreApi, authApi, learningProgressApi, unitAssignmentApi } from '../lib/auth';
 import { getSessionToken } from '../lib/session';
-import { lexiconApi, TextbookUnitItem } from '../lib/lexicon';
+import { getTextbookVersionCandidates, lexiconApi, normalizeTextbookPermissionToAvailable, TextbookUnitItem } from '../lib/lexicon';
 import { BookOpen, Play, Lock, CheckCircle2, Hourglass, Flame, Award, LayoutDashboard, Library, NotebookPen, ArrowRight, MessageCircle, FileQuestion, LogOut, Mic2, ClipboardList } from 'lucide-react';
 import { PhoneticsView } from '../components/student/PhoneticsView';
 import { WordTestView } from '../components/student/WordTestView';
@@ -90,11 +90,11 @@ export const StudentDashboard: React.FC = () => {
       setUnitsLoading(true);
       setUnitsError(null);
       try {
-        const [latestUser, stores, assignments, taskTreePayload] = await Promise.all([
+        const [latestUser, stores, assignments, textbookScopes] = await Promise.all([
           authApi.getCurrentUser(token),
           adminStoreApi.getAllStores(token),
           unitAssignmentApi.getByStudent(token, Number(user.id)),
-          lexiconApi.getTaskTree(token),
+          lexiconApi.getTextbookScopes(token),
         ]);
 
         const studentTextbook = ((latestUser as any).textbookVersion || '').trim();
@@ -107,30 +107,30 @@ export const StudentDashboard: React.FC = () => {
         }
 
         const store = stores.find((s) => s.storeCode === storeCode);
-        const rawTree = taskTreePayload.tree || [];
-        const mergedTextbooks = Array.from(new Set(rawTree.map((b) => b.bookVersion).filter(Boolean)));
+        const scopeTree = textbookScopes.tree || [];
+        const mergedTextbooks = Array.from(new Set(scopeTree.map((b) => b.bookVersion).filter(Boolean)));
         const allowedTextbooksRaw = (store?.textbookPermissions || [])
-          .map((p) => normalizeLegacyTextbookPermission(p, mergedTextbooks))
+          .map((p) => normalizeTextbookPermissionToAvailable(p, mergedTextbooks))
           .filter(Boolean);
-        const allowedGrades = (store?.gradePermissions || []).filter(Boolean);
-        const hasStorePermission = Boolean(store && allowedTextbooksRaw.length > 0 && allowedGrades.length > 0);
+        const hasStorePermission = Boolean(store && allowedTextbooksRaw.length > 0);
+        const studentTextbookCandidates = getTextbookVersionCandidates(studentTextbook);
 
         const unlockedSet = new Set(
           (assignments || []).map((a) => `${a.textbookVersion}||${a.grade}||${a.semester}||${a.unitName}`)
         );
 
+        // 从教材范围中找到学生可访问的范围
         const unitScopes: UnitScope[] = [];
-        rawTree.forEach((book) => {
-          if (book.bookVersion !== studentTextbook) return;
+        scopeTree.forEach((book) => {
+          if (!studentTextbookCandidates.includes(book.bookVersion)) return;
           if (hasStorePermission && !allowedTextbooksRaw.includes(book.bookVersion)) return;
           (book.grades || []).forEach((gradeNode) => {
             if (gradeNode.grade !== studentGrade) return;
-            if (hasStorePermission && !allowedGrades.includes(gradeNode.grade)) return;
-            (gradeNode.semesters || []).forEach((semesterNode) => {
+            (gradeNode.semesters || []).forEach((semester) => {
               unitScopes.push({
                 bookVersion: book.bookVersion,
                 grade: gradeNode.grade,
-                semester: semesterNode.semester,
+                semester,
               });
             });
           });
@@ -140,24 +140,28 @@ export const StudentDashboard: React.FC = () => {
           new Map(unitScopes.map((scope) => [`${scope.bookVersion}||${scope.grade}||${scope.semester}`, scope])).values()
         );
 
+        // 对每个范围，查询单词来获取单元列表
         const scopeUnitsList = await Promise.all(
           uniqueScopes.map(async (scope) => {
-            const unitPayload = await lexiconApi.getUnits(token, scope.bookVersion, scope.grade, scope.semester);
-            return {
-              scope,
-              items: (unitPayload.items || []).slice().sort((a, b) => {
-                const byOrder = (a.sort_order || 0) - (b.sort_order || 0);
-                if (byOrder !== 0) return byOrder;
-                return a.unit.localeCompare(b.unit, 'zh-CN');
-              }),
-            };
+            try {
+              const wordItems = await lexiconApi.getItems(token, 'word', scope.bookVersion, scope.grade, scope.semester);
+              const units = Array.from(new Set(wordItems.items.map((item) => item.unit).filter(Boolean)));
+              return {
+                scope,
+                units,
+              };
+            } catch {
+              return {
+                scope,
+                units: [],
+              };
+            }
           })
         );
 
         const unlockedUnits = new Set(
           scopeUnitsList
-            .flatMap((scopeRow) => scopeRow.items)
-            .map((item) => `${item.book_version}||${item.grade}||${item.semester}||${item.unit}`)
+            .flatMap((scopeRow) => scopeRow.units.map((unit) => `${scopeRow.scope.bookVersion}||${scopeRow.scope.grade}||${scopeRow.scope.semester}||${unit}`))
             .filter((key) => unlockedSet.has(key))
         );
 
@@ -210,15 +214,15 @@ export const StudentDashboard: React.FC = () => {
         );
 
         const progressMap = new Map(progressEntries);
-        const cards: StudentUnitCard[] = scopeUnitsList.flatMap(({ scope, items }) =>
-          items.map((unit: TextbookUnitItem) => {
-            const key = `${unit.book_version}||${unit.grade}||${unit.semester}||${unit.unit}`;
+        const cards: StudentUnitCard[] = scopeUnitsList.flatMap(({ scope, units }) =>
+          units.map((unit: string) => {
+            const key = `${scope.bookVersion}||${scope.grade}||${scope.semester}||${unit}`;
             return {
               id: key,
-              unitCode: unit.unit,
-              scopeLabel: `${unit.book_version} · ${unit.grade} · ${unit.semester}`,
-              title: (unit.unit_title || '').trim() || unit.unit,
-              desc: (unit.unit_desc_short || '').trim() || '暂无单元简介',
+              unitCode: unit,
+              scopeLabel: `${scope.bookVersion} · ${scope.grade} · ${scope.semester}`,
+              title: unit,
+              desc: '单元学习任务',
               progress: progressMap.get(key) ?? 0,
               locked: !unlockedSet.has(key),
               isSpecial: false,
@@ -226,7 +230,23 @@ export const StudentDashboard: React.FC = () => {
           })
         );
 
-        setAllUnits(cards);
+        const assignmentOnlyCards: StudentUnitCard[] = Array.from(unlockedSet)
+          .filter((key) => !cards.some((card) => card.id === key))
+          .map((key) => {
+            const [bookVersion, grade, semester, unitName] = key.split('||');
+            return {
+              id: key,
+              unitCode: unitName,
+              scopeLabel: `${bookVersion} · ${grade} · ${semester}`,
+              title: unitName,
+              desc: 'å·²å‘å¸ƒçš„å•å…ƒå­¦ä¹ ä»»åŠ¡',
+              progress: progressMap.get(key) ?? 0,
+              locked: false,
+              isSpecial: false,
+            };
+          });
+
+        setAllUnits([...cards, ...assignmentOnlyCards]);
       } catch (e: any) {
         setAllUnits([]);
         setUnitsError(e?.message || '加载单元失败，请稍后重试。');

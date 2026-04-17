@@ -149,6 +149,33 @@ export type PhoneticItem = {
   example_words: PhoneticExampleWord[];
 };
 
+export type ManagedAudioElement = HTMLAudioElement & {
+  cleanupObjectUrl?: () => void;
+};
+
+const TEXTBOOK_ALIAS_GROUPS = [
+  ['PEP', '人教版', '新版人教版'],
+  ['FLTRP', '外研版'],
+  ['SHJ', '上海版'],
+];
+
+export const getTextbookVersionCandidates = (value?: string) => {
+  const normalized = (value || '').trim();
+  if (!normalized) return [];
+  const aliasGroup = TEXTBOOK_ALIAS_GROUPS.find((group) => group.includes(normalized));
+  if (!aliasGroup) return [normalized];
+  return Array.from(new Set([normalized, ...aliasGroup]));
+};
+
+export const normalizeTextbookPermissionToAvailable = (permission: string, availableBooks: string[]) => {
+  const normalized = (permission || '').trim();
+  if (!normalized) return '';
+  if (availableBooks.includes(normalized)) return normalized;
+  const candidates = getTextbookVersionCandidates(normalized);
+  const hit = availableBooks.find((book) => candidates.includes((book || '').trim()));
+  return hit || normalized;
+};
+
 export const formatSourceTagLabel = (tag?: string) => {
   const normalized = (tag || 'current_book').trim();
   if (normalized === 'current_book') return '当前册单词';
@@ -566,7 +593,7 @@ export const lexiconApi = {
     return `${API_BASE_URL}/api/lexicon/audio?path=${encodeURIComponent(path)}`;
   },
 
-  async playAudioWithAuth(token: string, path?: string) {
+  async playAudioWithAuth(token: string, path?: string): Promise<ManagedAudioElement | undefined> {
     if (!token || !path) return;
     const response = await fetch(`${API_BASE_URL}/api/lexicon/audio?path=${encodeURIComponent(path)}`, {
       headers: {
@@ -574,16 +601,38 @@ export const lexiconApi = {
       },
     });
     if (!response.ok) {
+      const contentType = response.headers.get('content-type') || '';
+      let detail = '';
+      try {
+        if (contentType.includes('application/json')) {
+          const payload = await response.json();
+          detail = payload?.error || '';
+        } else {
+          detail = await response.text();
+        }
+      } catch {
+        detail = '';
+      }
+      throw new Error(detail || `Audio load failed (HTTP ${response.status})`);
+    }
+    if (!response.ok) {
       throw new Error('音频加载失败');
     }
     const blob = await response.blob();
     const objectUrl = URL.createObjectURL(blob);
-    const audio = new Audio(objectUrl);
-    const cleanup = () => URL.revokeObjectURL(objectUrl);
+    const audio = new Audio(objectUrl) as ManagedAudioElement;
+    let released = false;
+    const cleanup = () => {
+      if (released) return;
+      released = true;
+      URL.revokeObjectURL(objectUrl);
+    };
+    audio.cleanupObjectUrl = cleanup;
     audio.addEventListener('ended', cleanup, { once: true });
     audio.addEventListener('error', cleanup, { once: true });
     try {
       await audio.play();
+      return audio;
     } catch (e) {
       cleanup();
       throw e;

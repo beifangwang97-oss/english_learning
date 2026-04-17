@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTimer } from '../context/TimerContext';
 import { cn } from '../lib/utils';
 import { examApi, ExamPaperDetail, learningProgressApi, StudentExamPracticeResult } from '../lib/auth';
-import { formatPassageDisplayLabel, formatSourceTagLabel, lexiconApi, LearningEntry, LearningGroupSummary, LearningSourceGroupSummary, PassageItem } from '../lib/lexicon';
+import { formatPassageDisplayLabel, formatSourceTagLabel, getTextbookVersionCandidates, lexiconApi, LearningEntry, LearningGroupSummary, LearningSourceGroupSummary, ManagedAudioElement, PassageItem } from '../lib/lexicon';
 import { getSessionToken } from '../lib/session';
 import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileQuestion, HelpCircle, LayoutDashboard, Library, LogOut, MessageCircle, Mic2, NotebookPen, Volume2, XCircle } from 'lucide-react';
 
@@ -72,6 +72,15 @@ const defaultEngine = (): EngineState => ({
 const normalizeText = (v: string) => v.trim().replace(/\s+/g, ' ').toLowerCase();
 const hasPunctuation = (v: string) => /[^a-zA-Z\s]/.test(v);
 const DEFAULT_SOURCE_ORDER = ['current_book', 'primary_school_review'];
+
+function shuffle<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
 
 function safeParseSession(raw?: string): Partial<EngineState> | null {
   if (!raw) return null;
@@ -184,6 +193,7 @@ export const StudentUnit: React.FC = () => {
   const [phraseStepDonePrompt, setPhraseStepDonePrompt] = useState<StepNo | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [loadingProgress, setLoadingProgress] = useState(true);
+  const [resolvedBookVersion, setResolvedBookVersion] = useState('');
 
   const [vocabEngine, setVocabEngine] = useState<EngineState>(defaultEngine());
   const [phraseEngine, setPhraseEngine] = useState<EngineState>(defaultEngine());
@@ -191,6 +201,8 @@ export const StudentUnit: React.FC = () => {
   const [phraseSourceGroups, setPhraseSourceGroups] = useState<LearningSourceGroupSummary[]>([]);
   const [selectedVocabSourceTag, setSelectedVocabSourceTag] = useState('current_book');
   const [selectedPhraseSourceTag, setSelectedPhraseSourceTag] = useState('current_book');
+  const [vocabChoices, setVocabChoices] = useState<string[]>([]);
+  const [phraseChoices, setPhraseChoices] = useState<string[]>([]);
 
   const [vocabProgress, setVocabProgress] = useState<Record<string, GroupProgressView>>({});
   const [phraseProgress, setPhraseProgress] = useState<Record<string, GroupProgressView>>({});
@@ -221,7 +233,7 @@ export const StudentUnit: React.FC = () => {
   const vocabSessionSaveRef = useRef<number | null>(null);
   const phraseSessionSaveRef = useRef<number | null>(null);
   const readingSessionSaveRef = useRef<number | null>(null);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const currentAudioRef = useRef<ManagedAudioElement | null>(null);
   const stopReadingAudioRef = useRef<(() => void) | null>(null);
   const readingTextWrapRef = useRef<HTMLDivElement | null>(null);
   const fillInputRefs = useRef<Array<HTMLInputElement | null>>([]);
@@ -271,6 +283,7 @@ export const StudentUnit: React.FC = () => {
     if (!token || !unitMeta) return [];
     const sourceTag = sourceTagOverride || getModuleSourceTag(module);
     const cacheKey = buildSourceGroupKey(sourceTag, groupNo);
+    const bookVersion = resolvedBookVersion || unitMeta.bookVersion;
     if (module === 'vocab') {
       if (vocabGroupItems[cacheKey]) return vocabGroupItems[cacheKey];
       if (vocabLoadingGroups[cacheKey]) return [];
@@ -278,7 +291,7 @@ export const StudentUnit: React.FC = () => {
       try {
         const payload = await lexiconApi.getLearningItemsByGroup(token, {
           type: 'word',
-          bookVersion: unitMeta.bookVersion,
+          bookVersion,
           grade: unitMeta.grade,
           semester: unitMeta.semester,
           unit: unitMeta.unit,
@@ -300,7 +313,7 @@ export const StudentUnit: React.FC = () => {
     try {
       const payload = await lexiconApi.getLearningItemsByGroup(token, {
         type: 'phrase',
-        bookVersion: unitMeta.bookVersion,
+        bookVersion,
         grade: unitMeta.grade,
         semester: unitMeta.semester,
         unit: unitMeta.unit,
@@ -335,29 +348,53 @@ export const StudentUnit: React.FC = () => {
       setPageError(null);
       try {
         const uid = Number(user.id);
-
-        const [wordSummary, phraseSummary, passagesPayload, rSession, rGp] = await Promise.all([
-          lexiconApi.getLearningSummary(token, {
-            type: 'word',
-            bookVersion: unitMeta.bookVersion,
-            grade: unitMeta.grade,
-            semester: unitMeta.semester,
-            unit: unitMeta.unit,
-          }),
-          lexiconApi.getLearningSummary(token, {
-            type: 'phrase',
-            bookVersion: unitMeta.bookVersion,
-            grade: unitMeta.grade,
-            semester: unitMeta.semester,
-            unit: unitMeta.unit,
-          }),
-          lexiconApi.getPassages(token, unitMeta.bookVersion, unitMeta.grade, unitMeta.semester),
+        const [rSession, rGp] = await Promise.all([
           learningProgressApi.getSession(token, uid, unitId, 'reading'),
           learningProgressApi.getGroupProgress(token, uid, unitId, 'reading'),
         ]);
 
-        const nextVocabSourceGroups = wordSummary.sourceGroups || [];
-        const nextPhraseSourceGroups = phraseSummary.sourceGroups || [];
+        const candidateBookVersions = getTextbookVersionCandidates(unitMeta.bookVersion);
+        let selectedBookVersion = unitMeta.bookVersion;
+        let wordSummary: Awaited<ReturnType<typeof lexiconApi.getLearningSummary>> | null = null;
+        let phraseSummary: Awaited<ReturnType<typeof lexiconApi.getLearningSummary>> | null = null;
+        let passagesPayload: Awaited<ReturnType<typeof lexiconApi.getPassages>> | null = null;
+
+        for (const candidateBookVersion of candidateBookVersions) {
+          const [candidateWordSummary, candidatePhraseSummary, candidatePassagesPayload] = await Promise.all([
+            lexiconApi.getLearningSummary(token, {
+              type: 'word',
+              bookVersion: candidateBookVersion,
+              grade: unitMeta.grade,
+              semester: unitMeta.semester,
+              unit: unitMeta.unit,
+            }).catch(() => null),
+            lexiconApi.getLearningSummary(token, {
+              type: 'phrase',
+              bookVersion: candidateBookVersion,
+              grade: unitMeta.grade,
+              semester: unitMeta.semester,
+              unit: unitMeta.unit,
+            }).catch(() => null),
+            lexiconApi.getPassages(token, candidateBookVersion, unitMeta.grade, unitMeta.semester).catch(() => ({ items: [] as PassageItem[] })),
+          ]);
+
+          wordSummary = candidateWordSummary;
+          phraseSummary = candidatePhraseSummary;
+          passagesPayload = candidatePassagesPayload;
+
+          const hasLearningContent = Number(candidateWordSummary?.total || 0) > 0 || Number(candidatePhraseSummary?.total || 0) > 0;
+          const hasPassages = Array.isArray(candidatePassagesPayload?.items)
+            && candidatePassagesPayload.items.some((x) => normalizeText(x.unit || '') === normalizeText(unitMeta.unit));
+          if (hasLearningContent || hasPassages) {
+            selectedBookVersion = candidateBookVersion;
+            break;
+          }
+        }
+
+        setResolvedBookVersion(selectedBookVersion);
+
+        const nextVocabSourceGroups = wordSummary?.sourceGroups || [];
+        const nextPhraseSourceGroups = phraseSummary?.sourceGroups || [];
         setVocabSourceGroups(nextVocabSourceGroups);
         setPhraseSourceGroups(nextPhraseSourceGroups);
         const nextVocabSourceTag = nextVocabSourceGroups.some((row) => row.sourceTag === selectedVocabSourceTag)
@@ -381,7 +418,7 @@ export const StudentUnit: React.FC = () => {
         rGp.forEach((x) => { rMap[x.groupNo] = x; });
         setReadingProgress(rMap);
 
-        const allPassages = passagesPayload.items || [];
+        const allPassages = passagesPayload?.items || [];
         const unitPassages = allPassages.filter((x) => normalizeText(x.unit || '') === normalizeText(unitMeta.unit));
         setReadingItems(allPassages);
 
@@ -411,7 +448,7 @@ export const StudentUnit: React.FC = () => {
       setQuizLoading(true);
       try {
         const papers = await examApi.getPapers(token, {
-          bookVersion: unitMeta.bookVersion,
+          bookVersion: resolvedBookVersion || unitMeta.bookVersion,
           grade: unitMeta.grade,
           semester: unitMeta.semester,
           unitCode: unitMeta.unit,
@@ -444,7 +481,7 @@ export const StudentUnit: React.FC = () => {
       }
     };
     loadQuizPaper();
-  }, [token, user?.id, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit]);
+  }, [token, user?.id, resolvedBookVersion, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit]);
 
   useEffect(() => {
     const hydrateModule = async () => {
@@ -625,10 +662,41 @@ export const StudentUnit: React.FC = () => {
     if (showFullTranslation) setSentencePopover(null);
   }, [showFullTranslation]);
 
+  const buildOptions = (module: LearnModule, item: LearnItem) => {
+    const engine = module === 'vocab' ? vocabEngine : phraseEngine;
+    const sourceTag = getModuleSourceTag(module);
+    const cacheKey = buildSourceGroupKey(sourceTag, engine.groupNo);
+    const pool = module === 'vocab' ? (vocabGroupItems[cacheKey] || []) : (phraseGroupItems[cacheKey] || []);
+    const distractors = shuffle(
+      Array.from(new Set(
+        pool
+          .filter((x) => x.id !== item.id)
+          .map((x) => x.cn)
+          .filter(Boolean)
+      ))
+    ).slice(0, 3);
+    return shuffle([item.cn, ...distractors]);
+  };
+
+  useEffect(() => {
+    if (!currentVocab || currentModule !== 'vocab' || vocabEngine.step !== 2) {
+      setVocabChoices([]);
+      return;
+    }
+    setVocabChoices(buildOptions('vocab', currentVocab));
+  }, [currentModule, currentVocab?.id, vocabEngine.step, vocabEngine.index, vocabEngine.groupNo, selectedVocabSourceTag, vocabGroupItems]);
+
+  useEffect(() => {
+    if (!currentPhrase || currentModule !== 'phrase' || phraseEngine.step !== 2) {
+      setPhraseChoices([]);
+      return;
+    }
+    setPhraseChoices(buildOptions('phrase', currentPhrase));
+  }, [currentModule, currentPhrase?.id, phraseEngine.step, phraseEngine.index, phraseEngine.groupNo, selectedPhraseSourceTag, phraseGroupItems]);
+
   const getOptions = (module: LearnModule, item: LearnItem) => {
-    const pool = module === 'vocab' ? (vocabGroupItems[vocabEngine.groupNo] || []) : (phraseGroupItems[phraseEngine.groupNo] || []);
-    const distractors = pool.filter((x) => x.id !== item.id).map((x) => x.cn).filter(Boolean).sort(() => Math.random() - 0.5).slice(0, 3);
-    return [item.cn, ...distractors].sort(() => Math.random() - 0.5);
+    const choices = module === 'vocab' ? vocabChoices : phraseChoices;
+    return choices.length ? choices : buildOptions(module, item);
   };
 
   const goNext = async (module: LearnModule, wrong: boolean) => {
@@ -727,22 +795,34 @@ export const StudentUnit: React.FC = () => {
     }));
   };
 
-  const checkSpelling = (input: string, expected: string) => {
+  const checkSpelling = (input: string, expected: string, strictCase = false) => {
     if (hasPunctuation(input)) return false;
-    return normalizeText(input) === normalizeText(expected);
+    const normalizeStrict = (v: string) => v.trim().replace(/\s+/g, ' ');
+    return strictCase ? normalizeStrict(input) === normalizeStrict(expected) : normalizeText(input) === normalizeText(expected);
+  };
+
+  const stopCurrentAudio = () => {
+    if (!currentAudioRef.current) return;
+    currentAudioRef.current.pause();
+    currentAudioRef.current.currentTime = 0;
+    currentAudioRef.current.cleanupObjectUrl?.();
+    currentAudioRef.current = null;
   };
 
   const playAudio = async (path?: string) => {
-    if (!path || !token) return;
+    if (!token) return;
+    if (!path) {
+      setPageError('Current item has no playable audio.');
+      return;
+    }
     try {
-      if (currentAudioRef.current) {
-        currentAudioRef.current.pause();
-        currentAudioRef.current.currentTime = 0;
-      }
-      await lexiconApi.playAudioWithAuth(token, path);
-      currentAudioRef.current = null;
-    } catch {
-      // ignore audio error
+      setPageError(null);
+      stopCurrentAudio();
+      currentAudioRef.current = await lexiconApi.playAudioWithAuth(token, path);
+    } catch (e: any) {
+      const message = e?.message || 'Audio playback failed';
+      console.error('Audio playback failed:', { path, error: e });
+      setPageError(message);
     }
   };
 
@@ -783,11 +863,7 @@ export const StudentUnit: React.FC = () => {
       stopReadingAudioRef.current();
       stopReadingAudioRef.current = null;
     }
-    if (currentAudioRef.current) {
-      currentAudioRef.current.pause();
-      currentAudioRef.current.currentTime = 0;
-      currentAudioRef.current = null;
-    }
+    stopCurrentAudio();
     setPlayingSentenceNo(null);
     setPlayingFullPassage(false);
   };
@@ -925,7 +1001,7 @@ export const StudentUnit: React.FC = () => {
     if (!item) return;
     const blanks = buildBlankIndexes(item.en);
     const rebuilt = rebuildFilledText(item.en, blanks, engine.fillSlots);
-    const ok = checkSpelling(rebuilt, item.en);
+    const ok = checkSpelling(rebuilt, item.en, true);
     if (!ok) {
       setErrorLabel(`${item.en} / ${item.cn}`);
       setShowError(true);
@@ -940,7 +1016,7 @@ export const StudentUnit: React.FC = () => {
     const engine = module === 'vocab' ? vocabEngine : phraseEngine;
     const item = module === 'vocab' ? currentVocab : currentPhrase;
     if (!item) return;
-    const ok = checkSpelling(engine.spellInput, item.en);
+    const ok = checkSpelling(engine.spellInput, item.en, true);
     if (!ok) {
       setErrorLabel(`${item.en} / ${item.cn}`);
       setShowError(true);
@@ -1213,11 +1289,6 @@ export const StudentUnit: React.FC = () => {
             <h3 className="text-2xl font-black mb-2">补全：{item.cn}</h3>
             <p className="text-sm text-on-surface-variant mb-3">对挖空字母补全，可用左右箭头切换空位，按 Enter 提交</p>
             <div className="flex flex-wrap items-center gap-2 mb-3">
-              {item.phonetic ? (
-                <span className="text-sm text-on-surface-variant">{item.phonetic}</span>
-              ) : (
-                <span className="text-sm text-on-surface-variant">-</span>
-              )}
               <button
                 onClick={() => playAudio(item.wordAudio)}
                 className="w-8 h-8 rounded-full bg-secondary-container/70 flex items-center justify-center"
@@ -1259,7 +1330,19 @@ export const StudentUnit: React.FC = () => {
         {engine.step === 4 && (
           <div className="bg-surface-container-low p-6 rounded-xl">
             <h3 className="text-2xl font-black mb-2">汉译英：{item.cn}</h3>
-            <p className="text-sm text-on-surface-variant mb-3">请输入英文（忽略大小写与多余空格），按 Enter 提交</p>
+            <p className="text-sm text-on-surface-variant mb-3">请输入英文（严格区分大小写，忽略首尾与多余空格），按 Enter 提交</p>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              {module === 'vocab' && (
+                <span className="text-sm text-on-surface-variant">{item.phonetic || '-'}</span>
+              )}
+              <button
+                onClick={() => playAudio(item.wordAudio)}
+                className="w-8 h-8 rounded-full bg-secondary-container/70 flex items-center justify-center"
+                title={module === 'phrase' ? '播放短语发音' : '播放单词发音'}
+              >
+                <Volume2 className="w-4 h-4" />
+              </button>
+            </div>
             <input
               value={engine.spellInput}
               onChange={(e) => (module === 'vocab' ? setVocabEngine((p) => ({ ...p, spellInput: e.target.value })) : setPhraseEngine((p) => ({ ...p, spellInput: e.target.value })))}
