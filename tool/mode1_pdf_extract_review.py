@@ -88,33 +88,64 @@ if "mode1_pending_start" not in st.session_state:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
-DATA_DIR = os.path.join(BASE_DIR, "word_data")
-UNRECORDED_DIR = os.path.join(DATA_DIR, "未录音")
-RECORDED_DIR = os.path.join(DATA_DIR, "已录音")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+LEGACY_DATA_DIR = os.path.join(BASE_DIR, "word_data")
+LEGACY_UNRECORDED_DIR = os.path.join(LEGACY_DATA_DIR, "未录音")
+LEGACY_RECORDED_DIR = os.path.join(LEGACY_DATA_DIR, "已录音")
+RECORDED_DIR = LEGACY_RECORDED_DIR
 RUNS_DIR = os.path.join(BASE_DIR, "runs")
 PREPROCESS_DOC_DIR = os.path.join(BASE_DIR, "教材预处理文档")
 STRUCTURE_DIR = os.path.join(BASE_DIR, "structure_data")
 TARGET_TEXTBOOK_DIR = os.path.join(BASE_DIR, "待处理教材")
-PASSAGE_OUTPUT_DIR = UNRECORDED_DIR
-PASSAGE_AUDIO_DIR = os.path.join(BASE_DIR, "passage_audio")
+LEGACY_PASSAGE_AUDIO_DIR = os.path.join(BASE_DIR, "passage_audio")
+LEGACY_PASSAGE_AUDIO_DIR_CN = os.path.join(BASE_DIR, "课文_audio")
 MAX_CONCURRENT_TTS = 4
 LLM_TIMEOUT_SECONDS = 30
 LLM_MAX_RETRIES = 1
 LLM_CLIENT_CACHE = {}
 STAGE1_ITEM_RETRY_LIMIT = 2
 SOURCE_TAG_OPTIONS = {
+    "不设置": "",
     "当前册单词": "current_book",
     "复习单词（小学）": "primary_school_review",
 }
 
+SOURCE_TAG_FILE_SUFFIX = {
+    "current_book": "current",
+    "primary_school_review": "primary",
+}
+
 def ensure_runtime_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(UNRECORDED_DIR, exist_ok=True)
-    os.makedirs(RECORDED_DIR, exist_ok=True)
     os.makedirs(AUDIO_DIR, exist_ok=True)
-    os.makedirs(PASSAGE_AUDIO_DIR, exist_ok=True)
     os.makedirs(RUNS_DIR, exist_ok=True)
     os.makedirs(PREPROCESS_DOC_DIR, exist_ok=True)
+
+
+def discover_local_textbook_pdfs():
+    items = []
+    if not os.path.isdir(TARGET_TEXTBOOK_DIR):
+        return items
+    for abs_path in sorted(
+        os.path.join(root, name)
+        for root, _, files in os.walk(TARGET_TEXTBOOK_DIR)
+        for name in files
+        if name.lower().endswith(".pdf")
+    ):
+        rel_path = os.path.relpath(abs_path, TARGET_TEXTBOOK_DIR).replace("\\", "/")
+        book_version, grade, semester = _parse_book_meta_from_filename(abs_path)
+        items.append({
+            "abs_path": abs_path,
+            "rel_path": rel_path,
+            "raw_name": os.path.basename(abs_path),
+            "display_name": rel_path,
+            "meta": {
+                "book_version": book_version,
+                "grade": grade,
+                "semester": semester,
+            },
+        })
+    return items
 
 
 def make_task_id():
@@ -127,6 +158,88 @@ def sanitize_filename(text):
     return safe or "unknown"
 
 
+def normalize_catalog_name(text, fallback="未分类"):
+    value = sanitize_filename(text)
+    return value if value != "unknown" else fallback
+
+
+def normalize_content_type_name(content_type):
+    raw = str(content_type or "").strip().lower()
+    mapping = {
+        "word": "单词",
+        "words": "单词",
+        "单词": "单词",
+        "单词表": "单词",
+        "phrase": "短语",
+        "phrases": "短语",
+        "短语": "短语",
+        "短语表": "短语",
+        "passage": "课文",
+        "passages": "课文",
+        "课文": "课文",
+    }
+    return mapping.get(raw, str(content_type or "").strip() or "未分类")
+
+
+def build_grade_semester_label(grade, semester):
+    return f"{normalize_catalog_name(grade, '未知年级')}_{normalize_catalog_name(semester, '未知册别')}"
+
+
+def get_data_output_dir(book_version, content_type):
+    return os.path.join(
+        DATA_DIR,
+        normalize_catalog_name(book_version, "未知版本"),
+        normalize_content_type_name(content_type),
+    )
+
+
+def get_source_tag_file_suffix(source_tag):
+    return SOURCE_TAG_FILE_SUFFIX.get(str(source_tag or "").strip(), "")
+
+
+def get_data_output_path(book_version, grade, semester, content_type, source_tag=""):
+    filename = build_grade_semester_label(grade, semester)
+    short_tag = get_source_tag_file_suffix(source_tag)
+    if short_tag:
+        filename = f"{filename}_{short_tag}"
+    return os.path.join(
+        get_data_output_dir(book_version, content_type),
+        f"{filename}.jsonl",
+    )
+
+
+def get_audio_output_dir(book_version, grade, semester, content_type):
+    return os.path.join(
+        AUDIO_DIR,
+        normalize_catalog_name(book_version, "未知版本"),
+        normalize_content_type_name(content_type),
+        build_grade_semester_label(grade, semester),
+    )
+
+
+def ensure_parent_dir(path):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+def cleanup_empty_phrase_file(phrases_path, source_tag):
+    if str(source_tag or "").strip() != "primary_school_review":
+        return phrases_path
+    cleaned = str(phrases_path or "").strip()
+    if not cleaned:
+        return ""
+    if os.path.exists(cleaned) and os.path.getsize(cleaned) == 0:
+        os.remove(cleaned)
+        return ""
+    return cleaned
+
+
+def rel_path_from_base(abs_path):
+    rel_path = os.path.relpath(abs_path, BASE_DIR).replace("\\", "/")
+    return f"./{rel_path}"
+
+
 def to_abs_audio_path(audio_rel_path):
     if not audio_rel_path:
         return ""
@@ -136,13 +249,20 @@ def to_abs_audio_path(audio_rel_path):
     if cleaned.startswith("audio/"):
         return os.path.join(AUDIO_DIR, cleaned.replace("audio/", ""))
     if cleaned.startswith("./passage_audio/"):
-        return os.path.join(PASSAGE_AUDIO_DIR, cleaned.replace("./passage_audio/", ""))
+        return os.path.join(LEGACY_PASSAGE_AUDIO_DIR, cleaned.replace("./passage_audio/", ""))
     if cleaned.startswith("passage_audio/"):
-        return os.path.join(PASSAGE_AUDIO_DIR, cleaned.replace("passage_audio/", ""))
+        return os.path.join(LEGACY_PASSAGE_AUDIO_DIR, cleaned.replace("passage_audio/", ""))
+    if cleaned.startswith("./课文_audio/"):
+        return os.path.join(LEGACY_PASSAGE_AUDIO_DIR_CN, cleaned.replace("./课文_audio/", ""))
+    if cleaned.startswith("课文_audio/"):
+        return os.path.join(LEGACY_PASSAGE_AUDIO_DIR_CN, cleaned.replace("课文_audio/", ""))
     if cleaned.startswith("./"):
         return os.path.join(BASE_DIR, cleaned[2:])
     if os.path.isabs(cleaned):
         return cleaned
+    candidate = os.path.join(BASE_DIR, cleaned)
+    if os.path.exists(candidate):
+        return candidate
     return os.path.join(AUDIO_DIR, cleaned)
 
 
@@ -171,11 +291,16 @@ def build_book_key(book_version, grade, semester, pdf_filename):
     return f"{sanitize_filename(book_version)}|{sanitize_filename(grade)}|{sanitize_filename(semester)}|{sanitize_filename(pdf_filename)}"
 
 
-def build_result_filename(book_version, grade, semester, source_tag, kind_text, task_id):
-    return (
-        f"{sanitize_filename(book_version)}_{sanitize_filename(grade)}_{sanitize_filename(semester)}_"
-        f"{sanitize_filename(source_tag)}_{kind_text}_{task_id}.jsonl"
-    )
+def build_result_filename(book_version, grade, semester, source_tag, kind_text, task_id=None):
+    parts = [
+        sanitize_filename(book_version),
+        sanitize_filename(grade),
+        sanitize_filename(semester),
+    ]
+    if str(source_tag or "").strip():
+        parts.append(sanitize_filename(source_tag))
+    parts.append(kind_text)
+    return "_".join(parts) + ".jsonl"
 
 
 def get_pdf_stem(filename):
@@ -302,33 +427,39 @@ def get_preprocess_profile_for_pdf(pdf_filename):
 
 
 def preprocess_filename_for_pdf(pdf_filename, source_tag=None):
-    stem = get_pdf_stem(pdf_filename)
-    if not source_tag:
-        runtime_source_label = st.session_state.get("mode1_source_tag_label", "")
-        source_tag = SOURCE_TAG_OPTIONS.get(runtime_source_label, "")
-    if source_tag:
-        return f"{stem}.{sanitize_filename(source_tag)}.preprocess.jsonl"
-    return f"{stem}.预处理.jsonl"
+    book_version, grade, semester = _parse_book_meta_from_filename(pdf_filename)
+    filename = build_grade_semester_label(grade, semester)
+    if str(source_tag or "").strip():
+        filename += f"_{sanitize_filename(source_tag)}"
+    return f"{filename}.jsonl"
 
 
 def get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag=None):
-    if not source_tag:
+    book_version, grade, semester = _parse_book_meta_from_filename(pdf_filename)
+    if not (book_version and grade and semester):
         return []
-    return [os.path.join(PREPROCESS_DOC_DIR, preprocess_filename_for_pdf(pdf_filename, source_tag))]
+    return [
+        os.path.join(
+            PREPROCESS_DOC_DIR,
+            normalize_catalog_name(book_version, "未知版本"),
+            preprocess_filename_for_pdf(pdf_filename, source_tag),
+        )
+    ]
 
 
 def get_preprocess_profile_path_for_pdf(pdf_filename, source_tag=None):
-    return get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag)[0]
+    paths = get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag)
+    return paths[0] if paths else ""
 
 
 def save_preprocess_profile_by_pdf(pdf_filename, start_page, end_page, preprocessed_pages, odd_default_split=None, odd_left_ratio=None, even_default_split=None, even_left_ratio=None, source_tag=None):
     ensure_runtime_dirs()
     save_path = get_preprocess_profile_path_for_pdf(pdf_filename, source_tag)
+    ensure_parent_dir(save_path)
 
     meta = {
         "record_type": "meta",
         "pdf_filename": os.path.basename(str(pdf_filename or "")),
-        "source_tag": str(source_tag or "").strip(),
         "start_page": int(start_page),
         "end_page": int(end_page),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1109,10 +1240,14 @@ Rules:
 
 
 def _parse_book_meta_from_filename(filename):
-    stem = os.path.splitext(filename or "")[0].strip()
+    raw = str(filename or "").strip()
+    stem = os.path.splitext(os.path.basename(raw))[0].strip()
     parts = [p.strip() for p in stem.split("_") if p.strip()]
+    parent_name = os.path.basename(os.path.dirname(raw)).strip() if os.path.dirname(raw) else ""
     if len(parts) >= 3:
         return parts[0], parts[1], parts[2]
+    if parent_name and len(parts) >= 2:
+        return parent_name, parts[0], parts[1]
     return "", "", ""
 
 
@@ -1790,7 +1925,7 @@ tab1 = st.tabs(["模式一：PDF 提取与校对"])[0]
 
 with tab1:
     st.subheader("模式一：PDF 提取（自动匹配预处理 + 边提取边写入）")
-    st.caption("上传一个或多个教材 PDF，系统会自动匹配 `教材预处理文档` 下同名 `.预处理.jsonl`，并实时提取写入 `word_data/未录音`。")
+    st.caption("上传一个或多个教材 PDF，系统会严格按文件名解析教材版本、年级、册数，并匹配 `教材预处理文档/版本/年级_册数[_source_tag].jsonl`，再实时写入 `data/版本/单词|短语/年级_册数[_current|_primary].jsonl`。")
 
     selected_source_label = st.radio(
         "提取来源",
@@ -1799,51 +1934,55 @@ with tab1:
         key="mode1_source_tag_label"
     )
     selected_source_tag = SOURCE_TAG_OPTIONS[selected_source_label]
-    st.caption(f"当前提取结果将写入 source_tag = `{selected_source_tag}`，并写入输出文件名。")
+    if selected_source_tag:
+        st.caption(
+            f"当前批次会统一写入 source_tag = `{selected_source_tag}`，"
+            f"结果文件名会追加短后缀 `_{get_source_tag_file_suffix(selected_source_tag)}`。"
+        )
+    else:
+        st.caption("当前批次不写入 source_tag，输出文件名和 JSONL 记录都不添加该字段。")
 
-    uploaded_pdfs_mode1 = st.file_uploader(
-        "上传教材 PDF（可多文件）",
-        type=["pdf"],
-        accept_multiple_files=True,
-        key="mode1_pdf_uploader_multi"
+    local_pdf_items = discover_local_textbook_pdfs()
+    local_pdf_map = {item["display_name"]: item for item in local_pdf_items}
+    selected_pdf_labels = st.multiselect(
+        "从本地目录选择教材 PDF（待处理教材/教材版本/年级_册数.pdf）",
+        options=list(local_pdf_map.keys()),
+        default=[],
+        key="mode1_local_pdf_selector",
     )
 
     mode1_uploaded_items = []
-    if uploaded_pdfs_mode1:
-        name_counter = {}
-        for idx, uf in enumerate(uploaded_pdfs_mode1):
-            raw_name = str(uf.name or "")
-            name_counter[raw_name] = name_counter.get(raw_name, 0) + 1
-            display_name = raw_name if name_counter[raw_name] == 1 else f"{raw_name}（第{name_counter[raw_name]}个同名文件）"
-            file_uid = hashlib.md5(f"{idx}|{raw_name}|{getattr(uf, 'size', 0)}".encode("utf-8")).hexdigest()[:12]
+    if selected_pdf_labels:
+        for idx, label in enumerate(selected_pdf_labels):
+            item = local_pdf_map[label]
+            file_uid = hashlib.md5(f"{idx}|{item['abs_path']}".encode("utf-8")).hexdigest()[:12]
             mode1_uploaded_items.append({
                 "uid": file_uid,
                 "idx": idx,
-                "uploaded": uf,
-                "raw_name": raw_name,
-                "display_name": display_name,
+                "abs_path": item["abs_path"],
+                "raw_name": item["raw_name"],
+                "display_name": item["display_name"],
             })
     else:
-        st.info("请先上传一个或多个教材 PDF。")
+        st.info("请先从本地目录选择一个或多个教材 PDF。")
 
     matched_jobs = []
     unmatched_names = []
     invalid_meta_names = []
     if mode1_uploaded_items:
         for item in mode1_uploaded_items:
-            uf = item["uploaded"]
-            profile = get_preprocess_profile_for_pdf(uf.name, selected_source_tag)
+            src_bv, src_grade, src_sem = _parse_book_meta_from_filename(item["abs_path"])
+            if not (src_bv and src_grade and src_sem):
+                invalid_meta_names.append(item["display_name"])
+                continue
+            profile = get_preprocess_profile_for_pdf(item["abs_path"], selected_source_tag)
             if profile:
-                src_bv, src_grade, src_sem = _parse_book_meta_from_filename(item["raw_name"])
-                if not (src_bv and src_grade and src_sem):
-                    invalid_meta_names.append(item["display_name"])
-                    continue
                 matched_jobs.append({
                     "uid": item["uid"],
                     "idx": item["idx"],
                     "display_name": item["display_name"],
                     "raw_name": item["raw_name"],
-                    "uploaded": uf,
+                    "abs_path": item["abs_path"],
                     "profile": profile,
                     "meta": {
                         "book_version": src_bv.strip(),
@@ -1858,9 +1997,9 @@ with tab1:
             st.success(f"匹配成功：{len(matched_jobs)} 本教材")
             for job in matched_jobs:
                 profile = job["profile"]
-                st.write(f"- {job['display_name']} -> {preprocess_filename_for_pdf(job['raw_name'])}（页码 {profile.get('start_page', '?')}-{profile.get('end_page', '?')}）")
+                st.write(f"- {job['display_name']} -> {os.path.join(normalize_catalog_name(job['meta']['book_version'], '未知版本'), preprocess_filename_for_pdf(job['abs_path'], selected_source_tag))}（页码 {profile.get('start_page', '?')}-{profile.get('end_page', '?')}）")
         if unmatched_names:
-            st.warning("以下教材未匹配到预处理结果（请先在模式零生成同名预处理文件）：")
+            st.warning("以下教材未匹配到预处理结果（请先在模式零生成严格同名的预处理文件）：")
             for name in unmatched_names:
                 st.write(f"- {name}")
         if invalid_meta_names:
@@ -1912,7 +2051,7 @@ with tab1:
             st.error("请先填写提取 API Key")
             st.session_state.mode1_pending_start = False
         elif not mode1_uploaded_items:
-            st.error("请先上传教材 PDF")
+            st.error("请先从本地目录选择教材 PDF")
             st.session_state.mode1_pending_start = False
         elif not matched_jobs:
             st.error("没有可执行任务：所有上传教材都未匹配到预处理文件。")
@@ -1938,9 +2077,9 @@ with tab1:
             total_steps = 0
             prepared_jobs = []
             for job in matched_jobs:
-                uf = job["uploaded"]
                 profile = job["profile"]
-                pdf_bytes = uf.getvalue()
+                with open(job["abs_path"], "rb") as rf:
+                    pdf_bytes = rf.read()
                 doc = PDFCache.get_doc(pdf_bytes)
                 total_pages = len(doc)
                 s_page = max(1, min(int(profile.get("start_page", 1)), total_pages))
@@ -1998,28 +2137,28 @@ with tab1:
                 filename_prefix = ""
                 task_id = f"{make_task_id()}_{job_idx + 1}"
                 file_meta = job["file_meta"]
-                source_tag = job.get("source_tag", "current_book")
+                source_tag = job.get("source_tag", "")
                 words_filename = f"{filename_prefix}单词表_{task_id}.jsonl"
                 phrases_filename = f"{filename_prefix}短语表_{task_id}.jsonl"
-                words_filename = build_result_filename(
+                words_filename = f"{build_grade_semester_label(file_meta['grade'], file_meta['semester'])}.jsonl"
+                phrases_filename = f"{build_grade_semester_label(file_meta['grade'], file_meta['semester'])}.jsonl"
+                words_file_path = get_data_output_path(
                     file_meta["book_version"],
                     file_meta["grade"],
                     file_meta["semester"],
+                    "单词",
                     source_tag,
-                    "单词表",
-                    task_id,
                 )
-                phrases_filename = build_result_filename(
+                phrases_file_path = get_data_output_path(
                     file_meta["book_version"],
                     file_meta["grade"],
                     file_meta["semester"],
+                    "短语",
                     source_tag,
-                    "短语表",
-                    task_id,
                 )
-                words_file_path = os.path.join(UNRECORDED_DIR, words_filename)
-                phrases_file_path = os.path.join(UNRECORDED_DIR, phrases_filename)
 
+                ensure_parent_dir(words_file_path)
+                ensure_parent_dir(phrases_file_path)
                 with open(words_file_path, "w", encoding="utf-8") as _wf_init:
                     _wf_init.write("")
                 with open(phrases_file_path, "w", encoding="utf-8") as _pf_init:
@@ -2119,7 +2258,7 @@ with tab1:
                             extract_model_name,
                             last_unit_context,
                             grade_level,
-                            job_payload.get("source_tag", "current_book"),
+                            job_payload.get("source_tag", ""),
                             stop_event=stop_event,
                             unit_hint_lines=unit_hint_lines,
                         )
@@ -2146,7 +2285,10 @@ with tab1:
                                 item["book_version"] = file_meta.get("book_version", "")
                                 item["grade"] = file_meta.get("grade", "")
                                 item["semester"] = file_meta.get("semester", "")
-                                item["source_tag"] = job_payload.get("source_tag", "current_book")
+                                if job_payload.get("source_tag", ""):
+                                    item["source_tag"] = job_payload.get("source_tag", "")
+                                else:
+                                    item.pop("source_tag", None)
 
                                 if "type" not in item:
                                     word_text = item.get("word", "")
@@ -2208,11 +2350,15 @@ with tab1:
                         })
 
                     doc.close()
+                    final_phrases_file_path = cleanup_empty_phrase_file(
+                        phrases_file_path,
+                        job_payload.get("source_tag", ""),
+                    )
                     event_queue.put({
                         "type": "job_done",
                         "uid": uid,
                         "words": words_file_path,
-                        "phrases": phrases_file_path,
+                        "phrases": final_phrases_file_path,
                         "display_name": display_name,
                     })
                     return {"uid": uid, "ok": True}
@@ -2325,7 +2471,11 @@ with tab1:
                 outputs = []
                 for job in prepared_jobs:
                     words_path = job.get("words_file_path", "")
-                    phrases_path = job.get("phrases_file_path", "")
+                    phrases_path = cleanup_empty_phrase_file(
+                        job.get("phrases_file_path", ""),
+                        job.get("source_tag", ""),
+                    )
+                    job["phrases_file_path"] = phrases_path
                     has_words = bool(words_path and os.path.exists(words_path) and os.path.getsize(words_path) > 0)
                     has_phrases = bool(phrases_path and os.path.exists(phrases_path) and os.path.getsize(phrases_path) > 0)
                     if has_words or has_phrases:
@@ -2334,12 +2484,12 @@ with tab1:
                             "words": words_path if has_words else "",
                             "phrases": phrases_path if has_phrases else "",
                         })
-                mode1_status.info("提取已停止，已保留并展示当前已提取内容。")
+                mode1_status.info("提取已中止，已保留本轮已写入的结果文件。")
             else:
-                mode1_status.success("提取任务完成。")
+                mode1_status.success("提取完成。")
             st.session_state.mode1_is_running = False
             st.session_state.mode1_start_cooldown_until = time.time() + 1.5
-            st.subheader("提取完成统计（按教材 -> 单元）")
+            st.subheader("单元统计 -> 教材")
             uid_to_name = {job["uid"]: job["display_name"] for job in prepared_jobs}
             for uid, unit_map in live_unit_stats.items():
                 pdf_name = uid_to_name.get(uid, uid)

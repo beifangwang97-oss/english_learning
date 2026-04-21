@@ -97,6 +97,7 @@ LLM_MAX_RETRIES = 4
 LLM_CLIENT_CACHE = {}
 STAGE1_ITEM_RETRY_LIMIT = 2
 SOURCE_TAG_OPTIONS = {
+    "不设置": "",
     "当前册单词": "current_book",
     "复习单词（小学）": "primary_school_review",
 }
@@ -109,6 +110,32 @@ def ensure_runtime_dirs():
     os.makedirs(PASSAGE_AUDIO_DIR, exist_ok=True)
     os.makedirs(RUNS_DIR, exist_ok=True)
     os.makedirs(PREPROCESS_DOC_DIR, exist_ok=True)
+
+
+def discover_local_textbook_pdfs():
+    items = []
+    if not os.path.isdir(TARGET_TEXTBOOK_DIR):
+        return items
+    for abs_path in sorted(
+        os.path.join(root, name)
+        for root, _, files in os.walk(TARGET_TEXTBOOK_DIR)
+        for name in files
+        if name.lower().endswith(".pdf")
+    ):
+        rel_path = os.path.relpath(abs_path, TARGET_TEXTBOOK_DIR).replace("\\", "/")
+        book_version, grade, semester = _parse_book_meta_from_filename(abs_path)
+        items.append({
+            "abs_path": abs_path,
+            "rel_path": rel_path,
+            "raw_name": os.path.basename(abs_path),
+            "display_name": rel_path,
+            "meta": {
+                "book_version": book_version,
+                "grade": grade,
+                "semester": semester,
+            },
+        })
+    return items
 
 
 def reset_preprocess_editor_state():
@@ -301,41 +328,43 @@ def get_preprocess_profile_for_pdf(pdf_filename):
 
 
 def preprocess_filename_for_pdf(pdf_filename, source_tag=None):
-    stem = get_pdf_stem(pdf_filename)
-    if source_tag:
-        return f"{stem}.{sanitize_filename(source_tag)}.preprocess.jsonl"
-    return f"{stem}.preprocess.jsonl"
+    book_version, grade, semester = _parse_book_meta_from_filename(pdf_filename)
+    filename = f"{sanitize_filename(grade)}_{sanitize_filename(semester)}"
+    if str(source_tag or "").strip():
+        filename += f"_{sanitize_filename(source_tag)}"
+    return f"{filename}.jsonl"
 
 
 def get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag=None):
-    paths = []
-    if source_tag:
-        paths.append(os.path.join(PREPROCESS_DOC_DIR, preprocess_filename_for_pdf(pdf_filename, source_tag)))
-    paths.append(os.path.join(PREPROCESS_DOC_DIR, preprocess_filename_for_pdf(pdf_filename)))
-    deduped = []
-    seen = set()
-    for path in paths:
-        if path in seen:
-            continue
-        seen.add(path)
-        deduped.append(path)
-    return deduped
+    book_version, grade, semester = _parse_book_meta_from_filename(pdf_filename)
+    if not (book_version and grade and semester):
+        return []
+    return [
+        os.path.join(
+            PREPROCESS_DOC_DIR,
+            sanitize_filename(book_version),
+            preprocess_filename_for_pdf(pdf_filename, source_tag),
+        )
+    ]
 
 
 def get_preprocess_profile_path_for_pdf(pdf_filename, source_tag=None):
-    return get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag)[0]
+    paths = get_preprocess_profile_paths_for_pdf(pdf_filename, source_tag)
+    return paths[0] if paths else ""
 
 
 def save_preprocess_profile_by_pdf(pdf_filename, start_page, end_page, preprocessed_pages, odd_default_split=None, odd_left_ratio=None, even_default_split=None, even_left_ratio=None, source_tag=None):
     ensure_runtime_dirs()
     save_path = get_preprocess_profile_path_for_pdf(pdf_filename, source_tag)
+    parent = os.path.dirname(save_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     start_page = int(start_page)
     end_page = int(end_page)
 
     meta = {
         "record_type": "meta",
         "pdf_filename": os.path.basename(str(pdf_filename or "")),
-        "source_tag": str(source_tag or "").strip(),
         "start_page": start_page,
         "end_page": end_page,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1001,10 +1030,14 @@ Rules:
 
 
 def _parse_book_meta_from_filename(filename):
-    stem = os.path.splitext(filename or "")[0].strip()
+    raw = str(filename or "").strip()
+    stem = os.path.splitext(os.path.basename(raw))[0].strip()
     parts = [p.strip() for p in stem.split("_") if p.strip()]
+    parent_name = os.path.basename(os.path.dirname(raw)).strip() if os.path.dirname(raw) else ""
     if len(parts) >= 3:
         return parts[0], parts[1], parts[2]
+    if parent_name and len(parts) >= 2:
+        return parent_name, parts[0], parts[1]
     return "", "", ""
 
 
@@ -1602,11 +1635,20 @@ with tab0:
     st.header("PDF 预处理 - 分割左右双列")
     st.info("使用此模式预先分割双列页面，可提高提取准确性。")
     
-    preprocess_uploaded_pdf = st.file_uploader("上传教材 PDF（模式零）", type=["pdf"], key="preprocess_pdf_uploader")
-    if not preprocess_uploaded_pdf:
-        st.warning("请在本页上传 PDF 文件")
+    local_pdf_items = discover_local_textbook_pdfs()
+    local_pdf_map = {item["display_name"]: item for item in local_pdf_items}
+    selected_preprocess_pdf = st.selectbox(
+        "从本地目录选择教材 PDF（模式零）",
+        options=[""] + list(local_pdf_map.keys()),
+        format_func=lambda x: "请选择教材 PDF" if not x else x,
+        key="preprocess_pdf_selector",
+    )
+    if not selected_preprocess_pdf:
+        st.warning("请在本页选择本地教材 PDF 文件")
     else:
-        pre_pdf_bytes = preprocess_uploaded_pdf.getvalue()
+        selected_pdf_item = local_pdf_map[selected_preprocess_pdf]
+        with open(selected_pdf_item["abs_path"], "rb") as rf:
+            pre_pdf_bytes = rf.read()
         pre_doc = PDFCache.get_doc(pre_pdf_bytes)
         pre_total_p = len(pre_doc)
         col_pre_start, col_pre_end = st.columns(2)
@@ -1616,12 +1658,28 @@ with tab0:
             pre_end_p = st.number_input("结束页（模式零）", min_value=1, max_value=pre_total_p, value=pre_total_p, key="preprocess_end_page")
         st.subheader("预处理教材标识")
         col_book1, col_book2, col_book3 = st.columns(3)
+        preprocess_meta_key = sanitize_filename(selected_pdf_item["display_name"])
         with col_book1:
-            preprocess_book_version = st.text_input("教材版本（预处理）", "人教版", key="preprocess_book_version")
+            preprocess_book_version = st.text_input(
+                "教材版本（预处理）",
+                selected_pdf_item["meta"]["book_version"],
+                key=f"preprocess_book_version_{preprocess_meta_key}",
+                disabled=True,
+            )
         with col_book2:
-            preprocess_grade = st.selectbox("年级（预处理）", ["七年级", "八年级", "九年级", "高一", "高二", "高三"], key="preprocess_grade")
+            preprocess_grade = st.text_input(
+                "年级（预处理）",
+                selected_pdf_item["meta"]["grade"],
+                key=f"preprocess_grade_{preprocess_meta_key}",
+                disabled=True,
+            )
         with col_book3:
-            preprocess_semester = st.selectbox("上下册（预处理）", ["上册", "下册", "全一册"], key="preprocess_semester")
+            preprocess_semester = st.text_input(
+                "册别（预处理）",
+                selected_pdf_item["meta"]["semester"],
+                key=f"preprocess_semester_{preprocess_meta_key}",
+                disabled=True,
+            )
 
         preprocess_source_label = st.radio(
             "词表来源（预处理）",
@@ -1630,8 +1688,8 @@ with tab0:
             key="preprocess_source_tag_label"
         )
         preprocess_source_tag = SOURCE_TAG_OPTIONS[preprocess_source_label]
-        preprocess_pdf_name = preprocess_uploaded_pdf.name if preprocess_uploaded_pdf else "unknown.pdf"
-        preprocess_book_key = build_book_key(preprocess_book_version, preprocess_grade, preprocess_semester, preprocess_pdf_name)
+        preprocess_pdf_name = selected_pdf_item["abs_path"]
+        preprocess_book_key = build_book_key(preprocess_book_version, preprocess_grade, preprocess_semester, selected_pdf_item["raw_name"])
         current_preprocess_signature = "|".join([
             str(preprocess_pdf_name or ""),
             str(preprocess_source_tag or ""),
@@ -1641,7 +1699,10 @@ with tab0:
         if st.session_state.preprocess_context_signature != current_preprocess_signature:
             reset_preprocess_editor_state()
             st.session_state.preprocess_context_signature = current_preprocess_signature
-        st.caption(f"当前预处理产物会写入来源标签：`{preprocess_source_tag}`")
+        if preprocess_source_tag:
+            st.caption(f"当前预处理文件会附带来源标签：`{preprocess_source_tag}`")
+        else:
+            st.caption("当前预处理文件不附带 source_tag。")
         st.caption(f"预处理匹配键：`{preprocess_book_key}`")
 
         st.write(f"当前处理范围：第 **{pre_start_p}** 页 到 第 **{pre_end_p}** 页")
@@ -1722,7 +1783,7 @@ with tab0:
                             "mode": "none",
                             "original_bytes": pix.tobytes("png")
                         }
-                saved_preprocess_path = save_preprocess_profile_by_pdf(preprocess_uploaded_pdf.name, pre_start_p, pre_end_p, st.session_state.preprocessed_pages, odd_default_split, odd_left_ratio, even_default_split, even_left_ratio, preprocess_source_tag)
+                saved_preprocess_path = save_preprocess_profile_by_pdf(selected_pdf_item["abs_path"], pre_start_p, pre_end_p, st.session_state.preprocessed_pages, odd_default_split, odd_left_ratio, even_default_split, even_left_ratio, preprocess_source_tag)
                 saved_page_count = sum(1 for p_num in st.session_state.preprocessed_pages.keys() if int(p_num) >= int(pre_start_p) and int(p_num) <= int(pre_end_p))
                 st.success(f"已保存预处理结果，共 {len(st.session_state.preprocessed_pages)} 页\n保存路径：{saved_preprocess_path}")
         

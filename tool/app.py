@@ -80,15 +80,13 @@ if "stop_extraction" not in st.session_state:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
-DATA_DIR = os.path.join(BASE_DIR, "word_data")
-UNRECORDED_DIR = os.path.join(DATA_DIR, "未录音")
-RECORDED_DIR = os.path.join(DATA_DIR, "已录音")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 RUNS_DIR = os.path.join(BASE_DIR, "runs")
 PREPROCESS_DOC_DIR = os.path.join(BASE_DIR, "教材预处理文档")
 STRUCTURE_DIR = os.path.join(BASE_DIR, "structure_data")
 TARGET_TEXTBOOK_DIR = os.path.join(BASE_DIR, "待处理教材")
-PASSAGE_OUTPUT_DIR = UNRECORDED_DIR
-PASSAGE_AUDIO_DIR = os.path.join(BASE_DIR, "passage_audio")
+LEGACY_DATA_DIR = os.path.join(BASE_DIR, "word_data")
+LEGACY_PASSAGE_AUDIO_DIR = os.path.join(BASE_DIR, "passage_audio")
 MAX_CONCURRENT_TTS = 4
 LLM_TIMEOUT_SECONDS = 90
 LLM_MAX_RETRIES = 4
@@ -97,10 +95,7 @@ STAGE1_ITEM_RETRY_LIMIT = 2
 
 def ensure_runtime_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(UNRECORDED_DIR, exist_ok=True)
-    os.makedirs(RECORDED_DIR, exist_ok=True)
     os.makedirs(AUDIO_DIR, exist_ok=True)
-    os.makedirs(PASSAGE_AUDIO_DIR, exist_ok=True)
     os.makedirs(RUNS_DIR, exist_ok=True)
     os.makedirs(PREPROCESS_DOC_DIR, exist_ok=True)
 
@@ -115,6 +110,94 @@ def sanitize_filename(text):
     return safe or "unknown"
 
 
+def normalize_catalog_name(text):
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", str(text or "").strip())
+    return cleaned or "未分类"
+
+
+def normalize_content_type_name(content_type):
+    raw = str(content_type or "").strip()
+    mapping = {
+        "word": "单词",
+        "words": "单词",
+        "单词": "单词",
+        "单词表": "单词",
+        "phrase": "短语",
+        "phrases": "短语",
+        "短语": "短语",
+        "短语表": "短语",
+        "passage": "课文",
+        "passages": "课文",
+        "课文": "课文",
+    }
+    return mapping.get(raw, raw or "未分类")
+
+
+def build_grade_semester_label(grade, semester):
+    parts = [str(grade or "").strip(), str(semester or "").strip()]
+    parts = [p for p in parts if p]
+    return normalize_catalog_name("_".join(parts) if parts else "未知教材")
+
+
+def get_data_output_dir(book_version, content_type):
+    return os.path.join(
+        DATA_DIR,
+        normalize_catalog_name(book_version),
+        normalize_content_type_name(content_type),
+    )
+
+
+def get_data_output_path(book_version, grade, semester, content_type):
+    return os.path.join(
+        get_data_output_dir(book_version, content_type),
+        f"{build_grade_semester_label(grade, semester)}.jsonl",
+    )
+
+
+def get_audio_output_dir(book_version, grade, semester, content_type):
+    return os.path.join(
+        AUDIO_DIR,
+        normalize_catalog_name(book_version),
+        normalize_content_type_name(content_type),
+        build_grade_semester_label(grade, semester),
+    )
+
+
+def ensure_parent_dir(file_path):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+
+def rel_path_from_base(abs_path):
+    return os.path.relpath(abs_path, BASE_DIR).replace("\\", "/")
+
+
+def infer_meta_from_items(items, fallback_name=""):
+    meta = {
+        "book_version": "",
+        "grade": "",
+        "semester": "",
+    }
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        for key in meta.keys():
+            if not meta[key]:
+                meta[key] = str(item.get(key, "") or "").strip()
+        if all(meta.values()):
+            break
+    if not all(meta.values()) and fallback_name:
+        stem = os.path.splitext(os.path.basename(str(fallback_name)))[0]
+        parts = [p.strip() for p in stem.split("_") if p.strip()]
+        if len(parts) >= 3:
+            meta["book_version"] = meta["book_version"] or parts[0]
+            meta["grade"] = meta["grade"] or parts[1]
+            meta["semester"] = meta["semester"] or parts[2]
+    meta["book_version"] = meta["book_version"] or "未知版本"
+    meta["grade"] = meta["grade"] or "未知年级"
+    meta["semester"] = meta["semester"] or "未知学期"
+    return meta
+
+
 def to_abs_audio_path(audio_rel_path):
     if not audio_rel_path:
         return ""
@@ -124,9 +207,9 @@ def to_abs_audio_path(audio_rel_path):
     if cleaned.startswith("audio/"):
         return os.path.join(AUDIO_DIR, cleaned.replace("audio/", ""))
     if cleaned.startswith("./passage_audio/"):
-        return os.path.join(PASSAGE_AUDIO_DIR, cleaned.replace("./passage_audio/", ""))
+        return os.path.join(LEGACY_PASSAGE_AUDIO_DIR, cleaned.replace("./passage_audio/", ""))
     if cleaned.startswith("passage_audio/"):
-        return os.path.join(PASSAGE_AUDIO_DIR, cleaned.replace("passage_audio/", ""))
+        return os.path.join(LEGACY_PASSAGE_AUDIO_DIR, cleaned.replace("passage_audio/", ""))
     if cleaned.startswith("./"):
         return os.path.join(BASE_DIR, cleaned[2:])
     if os.path.isabs(cleaned):
@@ -1855,10 +1938,10 @@ with tab1:
             for job_idx, (uf, pdf_bytes, doc, tasks, file_meta) in enumerate(prepared_jobs):
                 job_api_key = pick_api_key_for_job(extract_api_keys, job_idx)
                 task_id = f"{make_task_id()}_{job_idx + 1}"
-                words_filename = build_result_filename(file_meta["book_version"], file_meta["grade"], file_meta["semester"], "单词表", task_id)
-                phrases_filename = build_result_filename(file_meta["book_version"], file_meta["grade"], file_meta["semester"], "短语表", task_id)
-                words_file_path = os.path.join(UNRECORDED_DIR, words_filename)
-                phrases_file_path = os.path.join(UNRECORDED_DIR, phrases_filename)
+                words_file_path = get_data_output_path(file_meta["book_version"], file_meta["grade"], file_meta["semester"], "单词")
+                phrases_file_path = get_data_output_path(file_meta["book_version"], file_meta["grade"], file_meta["semester"], "短语")
+                ensure_parent_dir(words_file_path)
+                ensure_parent_dir(phrases_file_path)
 
                 with open(words_file_path, "w", encoding="utf-8") as _wf_init:
                     _wf_init.write("")

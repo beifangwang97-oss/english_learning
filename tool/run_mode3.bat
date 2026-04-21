@@ -1,1 +1,3 @@
-@echo off`r`ncd /d %~dp0`r`nconda run -n english_book streamlit run mode3_jsonl_to_pdf.py --server.port 8504`r`n
+@echo off
+cd /d %~dp0
+conda run -n english_book streamlit run mode3_word_syllable_fill.py --server.port 8504

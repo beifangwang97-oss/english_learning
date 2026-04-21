@@ -620,7 +620,6 @@ public class LexiconController {
     @GetMapping("/tags/textbook-scopes")
     public ResponseEntity<?> getTextbookScopes() {
         try {
-            ensureDefaultScopesForExistingTextbooks();
             List<TextbookScopeTag> scopes = textbookScopeTagRepository.findAll();
             Map<String, Map<String, List<String>>> grouped = new TreeMap<>();
             for (TextbookScopeTag scope : scopes) {

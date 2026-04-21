@@ -279,10 +279,23 @@ def get_data_output_dir(book_version, content_type):
     )
 
 
-def get_data_output_path(book_version, grade, semester, content_type):
+def get_source_tag_file_suffix(source_tag):
+    source = str(source_tag or "").strip().lower()
+    mapping = {
+        "current_book": "current",
+        "primary_school_review": "primary",
+    }
+    return mapping.get(source, sanitize_filename(source) if source else "")
+
+
+def get_data_output_path(book_version, grade, semester, content_type, source_tag=""):
+    filename = build_grade_semester_label(grade, semester)
+    short_tag = get_source_tag_file_suffix(source_tag)
+    if short_tag:
+        filename = f"{filename}_{short_tag}"
     return os.path.join(
         get_data_output_dir(book_version, content_type),
-        f"{build_grade_semester_label(grade, semester)}.jsonl",
+        f"{filename}.jsonl",
     )
 
 
@@ -298,6 +311,34 @@ def build_mode2_copy_output_path(source_path):
         if not os.path.exists(candidate):
             return candidate
         index += 1
+
+
+def find_latest_mode2_copy_output_path(source_path):
+    root, ext = os.path.splitext(source_path)
+    base_dir = os.path.dirname(source_path)
+    base_name = os.path.basename(root)
+    pattern = re.compile(rf"^{re.escape(base_name)}_mode2(?:_(\d+))?{re.escape(ext)}$")
+    candidates = []
+    if not os.path.isdir(base_dir):
+        return ""
+    for name in os.listdir(base_dir):
+        if not pattern.match(name):
+            continue
+        abs_path = os.path.join(base_dir, name)
+        if os.path.isfile(abs_path):
+            candidates.append(abs_path)
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda path: os.path.getmtime(path))
+
+
+def choose_mode2_save_path(base_save_path, output_mode):
+    if output_mode == "原文件写回":
+        return base_save_path
+    latest_copy = find_latest_mode2_copy_output_path(base_save_path)
+    if latest_copy:
+        return latest_copy
+    return build_mode2_copy_output_path(base_save_path)
 
 
 class LocalJsonlInput:
@@ -1974,12 +2015,15 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent, output_mode=
         success, fail = generate_audios_in_batch(repair_tasks, None, None, max_concurrent=audio_max_concurrent)
 
     book_version, grade, semester, content_type = infer_meta_from_items(fixed_rows, uploaded_file.name)
-    base_save_path = get_data_output_path(book_version, grade, semester, content_type)
-    save_path = (
-        base_save_path
-        if output_mode == "原文件写回"
-        else build_mode2_copy_output_path(base_save_path)
-    )
+    source_tag = ""
+    for row in fixed_rows:
+        if not isinstance(row, dict):
+            continue
+        source_tag = str(row.get("source_tag", "") or "").strip()
+        if source_tag:
+            break
+    base_save_path = get_data_output_path(book_version, grade, semester, content_type, source_tag)
+    save_path = choose_mode2_save_path(base_save_path, output_mode)
     ensure_parent_dir(save_path)
     with open(save_path, "w", encoding="utf-8") as wf:
         for row in fixed_rows:
@@ -2142,6 +2186,16 @@ with tab2:
             )
             st.code(repair_summary["save_path"])
 
+    mode2_dynamic_updates = st.checkbox(
+        "Enable live updates",
+        value=True,
+        key="mode2_dynamic_updates",
+        disabled=st.session_state.is_generating_audio,
+        help="Disable this for large batches to reduce Streamlit rerender pressure during processing.",
+    )
+    if not mode2_dynamic_updates:
+        st.caption("Live updates are disabled for this run. The page will only keep essential progress and will show results after completion.")
+
     btn_jsonl = False
     if upload_tasks:
         st.info("系统会根据 JSONL 内容自动推断输出路径，并写入 `data/版本/单词|短语|课文/年级_册数.jsonl` 与对应的 `audio/版本/类型/年级_册数/` 目录。原文件写回时不修改文件名；副本输出时会在当前文件名后追加 `_mode2`，并自动避让重名。")
@@ -2163,13 +2217,21 @@ with tab2:
             source_label = get_source_file_label(uploaded_file)
             preview_items = load_items_from_uploaded(uploaded_file, source_type)
             bv, gg, ss, content_type = infer_meta_from_items(preview_items, uploaded_file.name)
-            base_expected_path = get_data_output_path(bv, gg, ss, content_type)
-            expected_path = (
-                base_expected_path
-                if output_mode == "原文件写回"
-                else build_mode2_copy_output_path(base_expected_path)
-            )
-            existing_by_source[source_label] = [expected_path] if os.path.exists(expected_path) else []
+            source_tag = ""
+            for row in preview_items:
+                if not isinstance(row, dict):
+                    continue
+                source_tag = str(row.get("source_tag", "") or "").strip()
+                if source_tag:
+                    break
+            base_expected_path = get_data_output_path(bv, gg, ss, content_type, source_tag)
+            expected_files = []
+            if os.path.exists(base_expected_path):
+                expected_files.append(base_expected_path)
+            latest_copy = find_latest_mode2_copy_output_path(base_expected_path)
+            if latest_copy and latest_copy not in expected_files:
+                expected_files.append(latest_copy)
+            existing_by_source[source_label] = expected_files
 
         conflict_count = sum(1 for _, existing in existing_by_source.items() if existing)
         if conflict_count > 0:
@@ -2195,6 +2257,20 @@ with tab2:
         main_status = st.empty()
         table_placeholder_2 = st.empty()
         detail_placeholder_2 = st.empty()
+
+        class _Mode2StatusProxy:
+            def __init__(self, target, enable_text_updates):
+                self.target = target
+                self.enable_text_updates = enable_text_updates
+
+            def text(self, message):
+                if self.enable_text_updates:
+                    self.target.text(message)
+
+            def success(self, message):
+                self.target.success(message)
+
+        main_status = _Mode2StatusProxy(main_status, bool(mode2_dynamic_updates))
         
         start_time_2 = time.time()
         ensure_runtime_dirs()
@@ -2280,6 +2356,14 @@ with tab2:
 
         main_status.text("📋 正在顺序处理批量音频任务...")
 
+        enable_live_updates = bool(mode2_dynamic_updates)
+
+        def refresh_mode2_status(message, force=False):
+            if force or enable_live_updates:
+                main_status.text(message)
+
+        refresh_mode2_status("Preparing batch JSONL audio generation...", force=True)
+
         global_success_total = 0
         global_fail_total = 0
         global_skipped_total = 0
@@ -2290,18 +2374,24 @@ with tab2:
         live_items_mode2 = {}
 
         def render_mode2_live_table(rows):
-            if not rows:
+            if not enable_live_updates or not rows:
                 return
             with table_placeholder_2.container():
                 st.markdown("**音频任务实时进度（按文件）**")
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         st.markdown("**实时回传（按文件，增量追加）**")
+        if enable_live_updates:
+            st.markdown("**Live Batch Details**")
+        else:
+            detail_placeholder_2.info("Live updates are disabled for this batch. Detailed results will be shown after processing finishes.")
         detail_area = detail_placeholder_2.container()
         file_detail_slots = {}
         file_detail_seen_ids = {}
 
         def ensure_mode2_file_panel(src_file):
+            if not enable_live_updates:
+                return
             if src_file in file_detail_slots:
                 return
             with detail_area:
@@ -2311,6 +2401,8 @@ with tab2:
             file_detail_seen_ids[src_file] = set()
 
         def render_mode2_file_detail(src_file):
+            if not enable_live_updates:
+                return
             slot = file_detail_slots.get(src_file)
             src_items = live_items_mode2.get(src_file, [])
             if not slot:
@@ -2367,6 +2459,8 @@ with tab2:
                             c4.caption("无音频")
 
         def append_mode2_live_item(src_file, item):
+            if not enable_live_updates:
+                return
             ensure_mode2_file_panel(src_file)
             rid = (item.get("id", "") or "").strip()
             if rid and rid in file_detail_seen_ids.get(src_file, set()):
@@ -2384,12 +2478,15 @@ with tab2:
                 continue
 
             book_version, grade, semester, content_type = infer_meta_from_items(all_items, uploaded_file.name)
-            base_save_path = get_data_output_path(book_version, grade, semester, content_type)
-            save_path = (
-                base_save_path
-                if output_mode == "原文件写回"
-                else build_mode2_copy_output_path(base_save_path)
-            )
+            source_tag = ""
+            for row in all_items:
+                if not isinstance(row, dict):
+                    continue
+                source_tag = str(row.get("source_tag", "") or "").strip()
+                if source_tag:
+                    break
+            base_save_path = get_data_output_path(book_version, grade, semester, content_type, source_tag)
+            save_path = choose_mode2_save_path(base_save_path, output_mode)
             ensure_parent_dir(save_path)
 
             live_row = {
