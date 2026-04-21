@@ -181,6 +181,44 @@ def get_passage_sentence_voice():
     return st.session_state.get("mode2_passage_sentence_voice", BRITISH_FEMALE_VOICE)
 
 
+def normalize_phrase_text_for_tts(text):
+    phrase = re.sub(r"\s+", " ", str(text or "").strip())
+    if not phrase:
+        return ""
+
+    replacements = [
+        (r"(?<![A-Za-z])sb\.'?s(?![A-Za-z])", "somebody's"),
+        (r"(?<![A-Za-z])sth\.'?s(?![A-Za-z])", "something's"),
+        (r"(?<![A-Za-z])sb\.(?![A-Za-z])", "somebody"),
+        (r"(?<![A-Za-z])sth\.(?![A-Za-z])", "something"),
+        (r"\bsp\b", "someplace"),
+        (r"(?<![A-Za-z])sb's(?![A-Za-z])", "somebody's"),
+        (r"\bone's\b", "someone's"),
+    ]
+    for pattern, repl in replacements:
+        phrase = re.sub(pattern, repl, phrase, flags=re.IGNORECASE)
+
+    phrase = re.sub(r"(?i)\b(How|What)\s+about\s+\.\.\.\s*\?", lambda m: f"{m.group(1)} about?", phrase)
+    phrase = re.sub(r"\(\s*\.\.\.\s*\)", ",", phrase)
+    phrase = re.sub(r"\.\.\.", ",", phrase)
+    phrase = phrase.replace("/", " or ")
+    phrase = re.sub(r"[()\[\]{}]", " ", phrase)
+    phrase = re.sub(r"\s+", " ", phrase).strip(" ,;")
+    phrase = re.sub(r"\s*,\s*", ", ", phrase)
+    phrase = re.sub(r",\s*,+", ", ", phrase)
+    phrase = re.sub(r"\s+([?.!,;:])", r"\1", phrase)
+    phrase = re.sub(r",\s*([?.!])", r"\1", phrase)
+    return phrase
+
+
+def get_tts_text_for_item(word, item_type):
+    text = str(word or "").strip()
+    if str(item_type or "").strip().lower() == "phrase":
+        normalized = normalize_phrase_text_for_tts(text)
+        return normalized or text
+    return text
+
+
 def get_voice_option_index(selected_voice, default_voice):
     voice = selected_voice if selected_voice in VOICE_OPTIONS else default_voice
     return VOICE_OPTIONS.index(voice)
@@ -1896,7 +1934,11 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent, output_mode=
             path_fixed_count += 1
         item[main_field] = resolved_main_rel
         if not main_exists:
-            repair_tasks.append((word, to_abs_audio_path(resolved_main_rel), get_word_voice() if item_type == "word" else get_phrase_voice()))
+            repair_tasks.append((
+                get_tts_text_for_item(word, item_type),
+                to_abs_audio_path(resolved_main_rel),
+                get_word_voice() if item_type == "word" else get_phrase_voice(),
+            ))
             generated_task_count += 1
 
         meanings = item.get("meanings", [])
@@ -2478,7 +2520,11 @@ with tab2:
                     if main_exists:
                         global_skipped_total += 1
                     else:
-                        audio_tasks_for_item.append((word, os.path.join(item_audio_dir, main_filename), get_word_voice() if item_type == "word" else get_phrase_voice()))
+                        audio_tasks_for_item.append((
+                            get_tts_text_for_item(word, item_type),
+                            os.path.join(item_audio_dir, main_filename),
+                            get_word_voice() if item_type == "word" else get_phrase_voice(),
+                        ))
 
                     meanings = item.get("meanings", [])
                     if isinstance(meanings, list):
@@ -2705,6 +2751,7 @@ with tab2:
                         "type": "phrase",
                         "audio_type": "短语发音",
                         "audio_path": phrase_audio,
+                        "text_to_generate": get_tts_text_for_item(word, item_type),
                         "status": "缺失" if status == "missing" else "空文件"
                     })
             elif item_type == "passage":

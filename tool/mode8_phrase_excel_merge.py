@@ -59,6 +59,12 @@ OPENROUTER_MODEL_OPTIONS = [
     {"id": "google/gemini-2.5-flash-lite", "name": "Google Gemini 2.5 Flash Lite", "input_price": "$0.10/M", "output_price": "$0.40/M"},
     {"id": "google/gemini-2.5-flash", "name": "Google Gemini 2.5 Flash", "input_price": "$0.15/M", "output_price": "$0.60/M"},
     {"id": "google/gemini-2.5-pro", "name": "Google Gemini 2.5 Pro", "input_price": "$1.25/M", "output_price": "$10.00/M"},
+    {
+        "id": "qwen/qwen-2.5-vl-72b-instruct",
+        "name": "Qwen 2.5 VL 72B Instruct",
+        "input_price": "OpenRouter实时价",
+        "output_price": "OpenRouter实时价",
+    },
 ]
 
 
