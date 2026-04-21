@@ -37,7 +37,12 @@ venv/
 # Large local datasets / media (keep local, do not push to GitHub)
 english_book/
 tool/audio/
+tool/passage_audio/
 tool/**/*.jsonl
+tool/待处理教材/
+tool/待处理短语/
+tool/待处理试卷/
+tool/课文提取范围/
 
 # Local caches
 Microsoft/
@@ -45,3 +50,8 @@ Microsoft/
 
 # Local DB/package artifacts
 backend/user-service/postgresql-*.tar.gz
+
+# Local temp / backups created during extraction and repair
+tmp_mode5_head.py
+tmp_mode5_oldpep/
+CODEX_LOG.md.bak_before_utf8_fix
