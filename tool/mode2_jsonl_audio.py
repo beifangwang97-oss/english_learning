@@ -82,32 +82,116 @@ if "mode2_pause_requested" not in st.session_state:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
-DATA_DIR = os.path.join(BASE_DIR, "word_data")
-UNRECORDED_DIR = os.path.join(DATA_DIR, "未录音")
-RECORDED_DIR = os.path.join(DATA_DIR, "已录音")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+LEGACY_DATA_DIR = os.path.join(BASE_DIR, "word_data")
+LEGACY_UNRECORDED_DIR = os.path.join(LEGACY_DATA_DIR, "未录音")
+LEGACY_RECORDED_DIR = os.path.join(LEGACY_DATA_DIR, "已录音")
+RECORDED_DIR = LEGACY_RECORDED_DIR
 RUNS_DIR = os.path.join(BASE_DIR, "runs")
 PREPROCESS_DOC_DIR = os.path.join(BASE_DIR, "教材预处理文档")
 STRUCTURE_DIR = os.path.join(BASE_DIR, "structure_data")
 TARGET_TEXTBOOK_DIR = os.path.join(BASE_DIR, "待处理教材")
-PASSAGE_OUTPUT_DIR = UNRECORDED_DIR
-PASSAGE_AUDIO_DIR = os.path.join(BASE_DIR, "passage_audio")
 MAX_CONCURRENT_TTS = 2
 LLM_TIMEOUT_SECONDS = 90
 LLM_MAX_RETRIES = 4
 LLM_CLIENT_CACHE = {}
 STAGE1_ITEM_RETRY_LIMIT = 2
+BRITISH_MALE_VOICE = "en-GB-RyanNeural"
+BRITISH_FEMALE_VOICE = "en-GB-SoniaNeural"
+VOICE_OPTIONS = [
+    "en-GB-RyanNeural",
+    "en-GB-SoniaNeural",
+    "en-GB-ThomasNeural",
+    "en-GB-LibbyNeural",
+    "en-GB-MaisieNeural",
+    "en-US-GuyNeural",
+    "en-US-JennyNeural",
+    "en-US-AndrewNeural",
+    "en-US-EmmaNeural",
+    "en-US-AriaNeural",
+    "en-AU-WilliamNeural",
+    "en-AU-NatashaNeural",
+    "en-CA-LiamNeural",
+    "en-CA-ClaraNeural",
+    "en-IE-ConnorNeural",
+    "en-IE-EmilyNeural",
+    "en-IN-PrabhatNeural",
+    "en-IN-NeerjaNeural",
+]
+VOICE_LABELS = {
+    "en-GB-RyanNeural": "英式男声",
+    "en-GB-SoniaNeural": "英式女声",
+    "en-GB-ThomasNeural": "英式男声（沉稳）",
+    "en-GB-LibbyNeural": "英式女声（清晰）",
+    "en-GB-MaisieNeural": "英式女声（年轻）",
+    "en-US-GuyNeural": "美式男声",
+    "en-US-JennyNeural": "美式女声",
+    "en-US-AndrewNeural": "美式男声（温和）",
+    "en-US-EmmaNeural": "美式女声（自然）",
+    "en-US-AriaNeural": "美式女声（明亮）",
+    "en-AU-WilliamNeural": "澳式男声",
+    "en-AU-NatashaNeural": "澳式女声",
+    "en-CA-LiamNeural": "加式男声",
+    "en-CA-ClaraNeural": "加式女声",
+    "en-IE-ConnorNeural": "爱尔兰男声",
+    "en-IE-EmilyNeural": "爱尔兰女声",
+    "en-IN-PrabhatNeural": "印度男声",
+    "en-IN-NeerjaNeural": "印度女声",
+}
 
 if "audio_max_concurrent_input" not in st.session_state:
     st.session_state.audio_max_concurrent_input = MAX_CONCURRENT_TTS
 if "audio_max_concurrent_applied" not in st.session_state:
     st.session_state.audio_max_concurrent_applied = MAX_CONCURRENT_TTS
+if "mode2_word_voice" not in st.session_state:
+    st.session_state.mode2_word_voice = BRITISH_MALE_VOICE
+if "mode2_phrase_voice" not in st.session_state:
+    st.session_state.mode2_phrase_voice = BRITISH_MALE_VOICE
+if "mode2_passage_sentence_voice" not in st.session_state:
+    st.session_state.mode2_passage_sentence_voice = BRITISH_FEMALE_VOICE
+
+
+def unpack_audio_task(task):
+    if isinstance(task, (list, tuple)):
+        if len(task) >= 3:
+            return task[0], task[1], task[2]
+        if len(task) == 2:
+            return task[0], task[1], BRITISH_MALE_VOICE
+    raise ValueError(f"不支持的音频任务格式: {task}")
+
+
+def choose_voice_for_audio_type(audio_type_label):
+    label = str(audio_type_label or "").strip()
+    if label in {"例句发音", "课文句子发音"}:
+        return st.session_state.get("mode2_passage_sentence_voice", BRITISH_FEMALE_VOICE)
+    if label == "短语发音":
+        return st.session_state.get("mode2_phrase_voice", BRITISH_MALE_VOICE)
+    return st.session_state.get("mode2_word_voice", BRITISH_MALE_VOICE)
+
+
+def get_word_voice():
+    return st.session_state.get("mode2_word_voice", BRITISH_MALE_VOICE)
+
+
+def get_phrase_voice():
+    return st.session_state.get("mode2_phrase_voice", BRITISH_MALE_VOICE)
+
+
+def get_passage_sentence_voice():
+    return st.session_state.get("mode2_passage_sentence_voice", BRITISH_FEMALE_VOICE)
+
+
+def get_voice_option_index(selected_voice, default_voice):
+    voice = selected_voice if selected_voice in VOICE_OPTIONS else default_voice
+    return VOICE_OPTIONS.index(voice)
+
+
+def format_voice_option(voice_id):
+    return f"{voice_id} | {VOICE_LABELS.get(voice_id, '英语语音')}"
 
 def ensure_runtime_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(UNRECORDED_DIR, exist_ok=True)
-    os.makedirs(RECORDED_DIR, exist_ok=True)
     os.makedirs(AUDIO_DIR, exist_ok=True)
-    os.makedirs(PASSAGE_AUDIO_DIR, exist_ok=True)
     os.makedirs(RUNS_DIR, exist_ok=True)
     os.makedirs(PREPROCESS_DOC_DIR, exist_ok=True)
 
@@ -122,6 +206,135 @@ def sanitize_filename(text):
     return safe or "unknown"
 
 
+def normalize_catalog_name(text, fallback="未分类"):
+    value = sanitize_filename(text)
+    return value if value != "unknown" else fallback
+
+
+def normalize_content_type_name(content_type):
+    raw = str(content_type or "").strip().lower()
+    mapping = {
+        "word": "单词",
+        "words": "单词",
+        "单词": "单词",
+        "单词表": "单词",
+        "phrase": "短语",
+        "phrases": "短语",
+        "短语": "短语",
+        "短语表": "短语",
+        "passage": "课文",
+        "passages": "课文",
+        "课文": "课文",
+    }
+    return mapping.get(raw, str(content_type or "").strip() or "未分类")
+
+
+def build_grade_semester_label(grade, semester):
+    return f"{normalize_catalog_name(grade, '未知年级')}_{normalize_catalog_name(semester, '未知册别')}"
+
+
+def get_data_output_dir(book_version, content_type):
+    return os.path.join(
+        DATA_DIR,
+        normalize_catalog_name(book_version, "未知版本"),
+        normalize_content_type_name(content_type),
+    )
+
+
+def get_data_output_path(book_version, grade, semester, content_type):
+    return os.path.join(
+        get_data_output_dir(book_version, content_type),
+        f"{build_grade_semester_label(grade, semester)}.jsonl",
+    )
+
+
+def build_mode2_copy_output_path(source_path):
+    root, ext = os.path.splitext(source_path)
+    candidate = f"{root}_mode2{ext}"
+    if not os.path.exists(candidate):
+        return candidate
+
+    index = 2
+    while True:
+        candidate = f"{root}_mode2_{index}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        index += 1
+
+
+class LocalJsonlInput:
+    def __init__(self, abs_path, display_name=None):
+        self.abs_path = abs_path
+        self.name = os.path.basename(abs_path)
+        self.display_name = display_name or rel_path(abs_path)
+
+    def getvalue(self):
+        with open(self.abs_path, "rb") as rf:
+            return rf.read()
+
+
+def get_audio_output_dir(book_version, grade, semester, content_type):
+    return os.path.join(
+        AUDIO_DIR,
+        normalize_catalog_name(book_version, "未知版本"),
+        normalize_content_type_name(content_type),
+        build_grade_semester_label(grade, semester),
+    )
+
+
+def ensure_parent_dir(path):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+def discover_local_jsonl_files_by_type(content_type_folder):
+    results = []
+    if not os.path.isdir(DATA_DIR):
+        return results
+
+    for root, _, files in os.walk(DATA_DIR):
+        if os.path.basename(root) != content_type_folder:
+            continue
+        for name in files:
+            if not name.lower().endswith(".jsonl"):
+                continue
+            abs_path = os.path.join(root, name)
+            results.append(
+                {
+                    "abs_path": abs_path,
+                    "raw_name": name,
+                    "display_name": os.path.relpath(abs_path, BASE_DIR).replace("\\", "/"),
+                }
+            )
+    return sorted(results, key=lambda item: item["display_name"])
+
+
+def get_source_file_label(file_obj):
+    return getattr(file_obj, "display_name", getattr(file_obj, "name", ""))
+
+
+def load_items_from_uploaded(uploaded_file, source_type):
+    parsed = []
+    inferred_source_tag = infer_source_tag_from_filename(uploaded_file.name)
+    source_label = get_source_file_label(uploaded_file)
+    for line in uploaded_file.getvalue().decode("utf-8-sig", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        item = _load_json_line(line)
+        if inferred_source_tag and not str(item.get("source_tag", "") or "").strip():
+            item["source_tag"] = inferred_source_tag
+        item["_source_type"] = source_type
+        item["_source_file"] = source_label
+        parsed.append(item)
+    return parsed
+
+
+def rel_path_from_base(abs_path):
+    rel_path = os.path.relpath(abs_path, BASE_DIR).replace("\\", "/")
+    return f"./{rel_path}"
+
+
 def to_abs_audio_path(audio_rel_path):
     if not audio_rel_path:
         return ""
@@ -130,12 +343,6 @@ def to_abs_audio_path(audio_rel_path):
         return os.path.join(AUDIO_DIR, cleaned.replace("./audio/", ""))
     if cleaned.startswith("audio/"):
         return os.path.join(AUDIO_DIR, cleaned.replace("audio/", ""))
-    if cleaned.startswith("./passage_audio/"):
-        return os.path.join(PASSAGE_AUDIO_DIR, cleaned.replace("./passage_audio/", ""))
-    if cleaned.startswith("passage_audio/"):
-        return os.path.join(PASSAGE_AUDIO_DIR, cleaned.replace("passage_audio/", ""))
-    if cleaned.startswith("./"):
-        return os.path.join(BASE_DIR, cleaned[2:])
     if os.path.isabs(cleaned):
         return cleaned
     return os.path.join(AUDIO_DIR, cleaned)
@@ -189,7 +396,7 @@ def find_audio_filename_by_rule(uid, expected_filename, audio_dir=AUDIO_DIR, exa
     return ""
 
 
-def resolve_audio_rel(current_rel_path, uid, expected_filename, audio_dir=AUDIO_DIR, rel_prefix="audio", example_idx=None):
+def resolve_audio_rel(current_rel_path, uid, expected_filename, audio_dir=AUDIO_DIR, rel_dir="audio", example_idx=None):
     if current_rel_path:
         abs_from_rel = to_abs_audio_path(current_rel_path)
         if is_valid_audio_file(abs_from_rel):
@@ -197,9 +404,9 @@ def resolve_audio_rel(current_rel_path, uid, expected_filename, audio_dir=AUDIO_
 
     found_name = find_audio_filename_by_rule(uid, expected_filename, audio_dir=audio_dir, example_idx=example_idx)
     if found_name:
-        return f"./{rel_prefix}/{found_name}", True
+        return f"./{str(rel_dir).strip('./')}/{found_name}", True
 
-    return f"./{rel_prefix}/{expected_filename}", False
+    return f"./{str(rel_dir).strip('./')}/{expected_filename}", False
 
 
 def list_existing_recorded_versions(base_name):
@@ -221,6 +428,41 @@ def build_book_key(book_version, grade, semester, pdf_filename):
 
 def build_result_filename(book_version, grade, semester, kind_text, task_id):
     return f"{sanitize_filename(book_version)}_{sanitize_filename(grade)}_{sanitize_filename(semester)}_{kind_text}_{task_id}.jsonl"
+
+
+def infer_meta_from_items(items, fallback_name=""):
+    book_version = ""
+    grade = ""
+    semester = ""
+    content_type = ""
+
+    for row in items or []:
+        if not isinstance(row, dict):
+            continue
+        book_version = book_version or str(row.get("book_version", "") or "").strip()
+        grade = grade or str(row.get("grade", "") or "").strip()
+        semester = semester or str(row.get("semester", "") or "").strip()
+        row_type = str(row.get("type", "") or row.get("item_type", "") or "").strip()
+        if row_type:
+            content_type = content_type or normalize_content_type_name(row_type)
+        if book_version and grade and semester and content_type:
+            break
+
+    fallback_lower = str(fallback_name or "").lower()
+    if not content_type:
+        if "phrase" in fallback_lower or "短语" in fallback_lower:
+            content_type = "短语"
+        elif "passage" in fallback_lower or "课文" in fallback_lower:
+            content_type = "课文"
+        else:
+            content_type = "单词"
+
+    return (
+        book_version or "未知版本",
+        grade or "未知年级",
+        semester or "未知册别",
+        content_type,
+    )
 
 
 def get_pdf_stem(filename):
@@ -1146,7 +1388,7 @@ def _is_tts_service_unavailable(error_msg: str) -> bool:
     return any(keyword in normalized for keyword in keywords)
 
 
-async def _generate_single_audio_with_retry(text, filepath, semaphore, voice="en-US-GuyNeural", max_retries=4):
+async def _generate_single_audio_with_retry(text, filepath, semaphore, voice=BRITISH_MALE_VOICE, max_retries=4):
     async with semaphore:
         if not text or not str(text).strip():
             return True
@@ -1191,8 +1433,9 @@ async def _generate_audios_with_progress(audio_tasks, progress_callback=None):
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_TTS)
     results = []
     
-    for i, (text, path) in enumerate(audio_tasks):
-        result = await _generate_single_audio_with_retry(text, path, semaphore)
+    for i, task in enumerate(audio_tasks):
+        text, path, voice = unpack_audio_task(task)
+        result = await _generate_single_audio_with_retry(text, path, semaphore, voice=voice)
         results.append(result)
         if progress_callback:
             progress_callback(i + 1, len(audio_tasks))
@@ -1210,10 +1453,10 @@ def generate_audios_in_batch(audio_tasks, progress_bar=None, status_text=None, m
         success_count = [0]
         fail_count = [0]
         
-        async def process_one(text, path, idx):
+        async def process_one(text, path, voice, idx):
             async with semaphore:
                 await asyncio.sleep(min(0.35 * idx, 1.2))
-                result = await _generate_single_audio_concurrent(text, path)
+                result = await _generate_single_audio_concurrent(text, path, voice=voice)
                 completed[0] += 1
                 if result:
                     success_count[0] += 1
@@ -1226,7 +1469,10 @@ def generate_audios_in_batch(audio_tasks, progress_bar=None, status_text=None, m
                     status_text.text(f"🎵 音频生成进度: {completed[0]}/{total} (成功: {success_count[0]}, 失败: {fail_count[0]})")
                 return result
         
-        tasks = [process_one(text, path, i) for i, (text, path) in enumerate(audio_tasks)]
+        tasks = []
+        for i, task in enumerate(audio_tasks):
+            text, path, voice = unpack_audio_task(task)
+            tasks.append(process_one(text, path, voice, i))
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         return success_count[0], fail_count[0]
@@ -1240,7 +1486,7 @@ def generate_audios_in_batch(audio_tasks, progress_bar=None, status_text=None, m
     return loop.run_until_complete(run_all())
 
 
-async def _generate_single_audio_concurrent(text, filepath, voice="en-US-GuyNeural", max_retries=4):
+async def _generate_single_audio_concurrent(text, filepath, voice=BRITISH_MALE_VOICE, max_retries=4):
     if not text or not str(text).strip():
         return True
 
@@ -1556,7 +1802,7 @@ def flatten_meanings_for_display(item):
         }
 
 
-def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
+def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent, output_mode="原文件写回"):
     ensure_runtime_dirs()
     inferred_source_tag = infer_source_tag_from_filename(uploaded_file.name)
     fixed_rows = []
@@ -1572,8 +1818,14 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
             item["source_tag"] = inferred_source_tag
 
         item_type = (item.get("type", "") or "word").strip().lower()
+        item_book_version = (item.get("book_version", "") or "").strip() or "未知版本"
+        item_grade = (item.get("grade", "") or "").strip() or "未知年级"
+        item_semester = (item.get("semester", "") or "").strip() or "未知册别"
 
         if item_type == "passage":
+            sentence_audio_dir = get_audio_output_dir(item_book_version, item_grade, item_semester, "课文")
+            sentence_rel_dir = rel_path_from_base(sentence_audio_dir)[2:]
+            os.makedirs(sentence_audio_dir, exist_ok=True)
             target_id = (item.get("target_id", "") or "").strip()
             if not target_id:
                 target_id = f"{item.get('unit', 'Unit ?')} Section {item.get('section', '')} {item.get('label', '')}".strip()
@@ -1595,15 +1847,15 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
                         current_audio,
                         uid,
                         expected_filename,
-                        audio_dir=PASSAGE_AUDIO_DIR,
-                        rel_prefix="passage_audio",
+                        audio_dir=sentence_audio_dir,
+                        rel_dir=sentence_rel_dir,
                         example_idx=sent_idx,
                     )
                     if resolved_rel != current_audio:
                         path_fixed_count += 1
                     s_item["audio"] = resolved_rel
                     if not exists:
-                        repair_tasks.append((sent_en, to_abs_audio_path(resolved_rel)))
+                        repair_tasks.append((sent_en, to_abs_audio_path(resolved_rel), get_passage_sentence_voice()))
                         generated_task_count += 1
 
             fixed_rows.append(item)
@@ -1614,6 +1866,10 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
             fixed_rows.append(item)
             continue
 
+        content_type = "单词" if item_type == "word" else "短语"
+        item_audio_dir = get_audio_output_dir(item_book_version, item_grade, item_semester, content_type)
+        item_rel_dir = rel_path_from_base(item_audio_dir)[2:]
+        os.makedirs(item_audio_dir, exist_ok=True)
         word_clean = "".join([c for c in word if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
         uid = (item.get("id", "") or "").strip() or get_unique_id(
             word_clean,
@@ -1632,15 +1888,15 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
             current_main_rel,
             uid,
             expected_main_filename,
-            audio_dir=AUDIO_DIR,
-            rel_prefix="audio",
+            audio_dir=item_audio_dir,
+            rel_dir=item_rel_dir,
             example_idx=None,
         )
         if resolved_main_rel != current_main_rel:
             path_fixed_count += 1
         item[main_field] = resolved_main_rel
         if not main_exists:
-            repair_tasks.append((word, to_abs_audio_path(resolved_main_rel)))
+            repair_tasks.append((word, to_abs_audio_path(resolved_main_rel), get_word_voice() if item_type == "word" else get_phrase_voice()))
             generated_task_count += 1
 
         meanings = item.get("meanings", [])
@@ -1657,15 +1913,15 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
                     current_ex_rel,
                     uid,
                     expected_ex_filename,
-                    audio_dir=AUDIO_DIR,
-                    rel_prefix="audio",
+                    audio_dir=item_audio_dir,
+                    rel_dir=item_rel_dir,
                     example_idx=meaning_idx,
                 )
                 if resolved_ex_rel != current_ex_rel:
                     path_fixed_count += 1
                 meaning["example_audio"] = resolved_ex_rel
                 if not ex_exists:
-                    repair_tasks.append((example, to_abs_audio_path(resolved_ex_rel)))
+                    repair_tasks.append((example, to_abs_audio_path(resolved_ex_rel), get_passage_sentence_voice()))
                     generated_task_count += 1
 
         fixed_rows.append(item)
@@ -1675,8 +1931,14 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent):
     if repair_tasks:
         success, fail = generate_audios_in_batch(repair_tasks, None, None, max_concurrent=audio_max_concurrent)
 
-    save_name = os.path.basename(str(uploaded_file.name or "repaired_recorded.jsonl"))
-    save_path = os.path.join(RECORDED_DIR, save_name)
+    book_version, grade, semester, content_type = infer_meta_from_items(fixed_rows, uploaded_file.name)
+    base_save_path = get_data_output_path(book_version, grade, semester, content_type)
+    save_path = (
+        base_save_path
+        if output_mode == "原文件写回"
+        else build_mode2_copy_output_path(base_save_path)
+    )
+    ensure_parent_dir(save_path)
     with open(save_path, "w", encoding="utf-8") as wf:
         for row in fixed_rows:
             wf.write(json.dumps(_sanitize_item_for_jsonl(row), ensure_ascii=False) + "\n")
@@ -1713,19 +1975,80 @@ with st.sidebar:
         st.info(f"生成进行中，本次任务固定使用并发数：{audio_max_concurrent}")
     else:
         st.caption("当前模式不做续跑；如果中断，本次任务结束。下次重新开始时会重新检查现有音频与路径。")
+    st.divider()
+    st.header("模型配置")
+    st.selectbox(
+        "单词：英式男声",
+        options=VOICE_OPTIONS,
+        index=get_voice_option_index(st.session_state.get("mode2_word_voice", BRITISH_MALE_VOICE), BRITISH_MALE_VOICE),
+        format_func=format_voice_option,
+        key="mode2_word_voice",
+        disabled=st.session_state.is_generating_audio,
+        help="用于单词主音频生成。默认英式男声。",
+    )
+    st.selectbox(
+        "短语：英式男声",
+        options=VOICE_OPTIONS,
+        index=get_voice_option_index(st.session_state.get("mode2_phrase_voice", BRITISH_MALE_VOICE), BRITISH_MALE_VOICE),
+        format_func=format_voice_option,
+        key="mode2_phrase_voice",
+        disabled=st.session_state.is_generating_audio,
+        help="用于短语主音频生成。默认英式男声。",
+    )
+    st.selectbox(
+        "课文句子：英式女声",
+        options=VOICE_OPTIONS,
+        index=get_voice_option_index(st.session_state.get("mode2_passage_sentence_voice", BRITISH_FEMALE_VOICE), BRITISH_FEMALE_VOICE),
+        format_func=format_voice_option,
+        key="mode2_passage_sentence_voice",
+        disabled=st.session_state.is_generating_audio,
+        help="用于例句和课文逐句音频生成。默认英式女声。",
+    )
+    st.caption("以上下拉选项提供常用 Edge TTS 英语声音类型，后续生成与修复音频都会按当前选择执行。")
 
 tab2 = st.tabs(["模式二：JSONL 导入与音频生成"])[0]
 
 with tab2:
-    st.info("在此模式下，您可以导入已保存的 JSONL 文件来生成或修复音频。")
+    st.info("上传单词、短语或课文 JSONL，系统会自动补齐音频路径、生成缺失音频，并按当前语音配置写回结果。")
 
     col_upload1, col_upload2, col_upload3 = st.columns(3)
     with col_upload1:
-        uploaded_words = st.file_uploader("上传单词 JSONL 文件（未录音版，可批量）", type=["jsonl"], accept_multiple_files=True, key="words_uploader")
+        uploaded_words = st.file_uploader("上传单词 JSONL 文件（可多选）", type=["jsonl"], accept_multiple_files=True, key="words_uploader")
     with col_upload2:
-        uploaded_phrases = st.file_uploader("上传短语 JSONL 文件（未录音版，可批量）", type=["jsonl"], accept_multiple_files=True, key="phrases_uploader")
+        uploaded_phrases = st.file_uploader("上传短语 JSONL 文件（可多选）", type=["jsonl"], accept_multiple_files=True, key="phrases_uploader")
     with col_upload3:
-        uploaded_passages = st.file_uploader("上传课文 JSONL 文件（可批量）", type=["jsonl"], accept_multiple_files=True, key="passages_uploader")
+        uploaded_passages = st.file_uploader("上传课文 JSONL 文件（可多选）", type=["jsonl"], accept_multiple_files=True, key="passages_uploader")
+
+    local_word_items = discover_local_jsonl_files_by_type("单词")
+    local_phrase_items = discover_local_jsonl_files_by_type("短语")
+    local_passage_items = discover_local_jsonl_files_by_type("课文")
+    local_word_map = {item["display_name"]: item for item in local_word_items}
+    local_phrase_map = {item["display_name"]: item for item in local_phrase_items}
+    local_passage_map = {item["display_name"]: item for item in local_passage_items}
+
+    st.markdown("**从本地目录选择 JSONL**")
+    col_local1, col_local2, col_local3 = st.columns(3)
+    with col_local1:
+        selected_local_word_labels = st.multiselect(
+            "从本地目录选择单词 JSONL（data/版本/单词/*.jsonl）",
+            options=list(local_word_map.keys()),
+            default=[],
+            key="mode2_local_word_selector",
+        )
+    with col_local2:
+        selected_local_phrase_labels = st.multiselect(
+            "从本地目录选择短语 JSONL（data/版本/短语/*.jsonl）",
+            options=list(local_phrase_map.keys()),
+            default=[],
+            key="mode2_local_phrase_selector",
+        )
+    with col_local3:
+        selected_local_passage_labels = st.multiselect(
+            "从本地目录选择课文 JSONL（data/版本/课文/*.jsonl）",
+            options=list(local_passage_map.keys()),
+            default=[],
+            key="mode2_local_passage_selector",
+        )
 
     upload_tasks = []
     for wf in (uploaded_words or []):
@@ -1734,64 +2057,93 @@ with tab2:
         upload_tasks.append((pf, "phrase"))
     for tf in (uploaded_passages or []):
         upload_tasks.append((tf, "passage"))
+    for label in selected_local_word_labels:
+        item = local_word_map[label]
+        upload_tasks.append((LocalJsonlInput(item["abs_path"], item["display_name"]), "word"))
+    for label in selected_local_phrase_labels:
+        item = local_phrase_map[label]
+        upload_tasks.append((LocalJsonlInput(item["abs_path"], item["display_name"]), "phrase"))
+    for label in selected_local_passage_labels:
+        item = local_passage_map[label]
+        upload_tasks.append((LocalJsonlInput(item["abs_path"], item["display_name"]), "passage"))
 
-    with st.expander("已录音 JSONL 兜底修复", expanded=False):
-        st.caption("上传已录音目录中的 JSONL。系统会逐行检查音频路径、扫描 audio 目录补路径；若路径和音频都缺失，则自动补生成。")
+    output_mode = st.radio(
+        "JSONL 输出方式",
+        options=["原文件写回", "同目录新建副本"],
+        index=0,
+        horizontal=True,
+        key="mode2_output_mode",
+        disabled=st.session_state.is_generating_audio,
+        help="原文件写回会直接写入目标结果文件；同目录新建副本会在同一目录生成 `_mode2.jsonl`，如重名则自动顺延为 `_mode2_2.jsonl`、`_mode2_3.jsonl`。",
+    )
+
+    with st.expander("已录音 JSONL 修复", expanded=False):
+        st.caption("如果已有 JSONL 中的音频路径缺失、旧路径失效或音频文件损坏，可以在这里自动修复并补生成缺失音频。")
         recorded_repair_file = st.file_uploader(
-            "上传已录音 JSONL 文件",
+            "选择要修复的 JSONL 文件",
             type=["jsonl"],
             accept_multiple_files=False,
             key="recorded_jsonl_repair_uploader",
         )
         if recorded_repair_file is not None:
-            st.write(f"待修复文件：{recorded_repair_file.name}")
-        if st.button("执行兜底修复", disabled=st.session_state.is_generating_audio or recorded_repair_file is None, key="btn_repair_recorded_jsonl"):
-            with st.spinner("正在检查路径并补全缺失音频..."):
-                repair_summary = repair_recorded_jsonl_file(recorded_repair_file, audio_max_concurrent)
+            st.write(f"当前文件：{recorded_repair_file.name}")
+        if st.button("开始修复", disabled=st.session_state.is_generating_audio or recorded_repair_file is None, key="btn_repair_recorded_jsonl"):
+            with st.spinner("正在修复 JSONL 音频路径与缺失音频..."):
+                repair_summary = repair_recorded_jsonl_file(
+                    recorded_repair_file,
+                    audio_max_concurrent,
+                    output_mode=output_mode,
+                )
             st.success(
-                f"修复完成：共 {repair_summary['row_count']} 行，补路径 {repair_summary['path_fixed_count']} 处，"
-                f"待生成 {repair_summary['generated_task_count']} 个，成功 {repair_summary['success']} 个，失败 {repair_summary['fail']} 个。"
+                f"修复完成：共处理 {repair_summary['row_count']} 条，修正路径 {repair_summary['path_fixed_count']} 处，"
+                f"补生成任务 {repair_summary['generated_task_count']} 个，成功 {repair_summary['success']} 个，失败 {repair_summary['fail']} 个。"
             )
             st.code(repair_summary["save_path"])
 
-    overwrite_mode = "保留历史"
     btn_jsonl = False
     if upload_tasks:
-        st.info('📁 单词/短语写入 word_data/已录音；课文句子音频写入 passage_audio（支持批量顺序处理）')
+        st.info("系统会根据 JSONL 内容自动推断输出路径，并写入 `data/版本/单词|短语|课文/年级_册数.jsonl` 与对应的 `audio/版本/类型/年级_册数/` 目录。原文件写回时不修改文件名；副本输出时会在当前文件名后追加 `_mode2`，并自动避让重名。")
         if uploaded_words:
-            st.write(f"单词文件数量：{len(uploaded_words)}")
+            st.write(f"单词文件数：{len(uploaded_words)}")
         if uploaded_phrases:
-            st.write(f"短语文件数量：{len(uploaded_phrases)}")
+            st.write(f"短语文件数：{len(uploaded_phrases)}")
         if uploaded_passages:
-            st.write(f"课文文件数量：{len(uploaded_passages)}")
+            st.write(f"课文文件数：{len(uploaded_passages)}")
+        if selected_local_word_labels:
+            st.write(f"本地单词文件数：{len(selected_local_word_labels)}")
+        if selected_local_phrase_labels:
+            st.write(f"本地短语文件数：{len(selected_local_phrase_labels)}")
+        if selected_local_passage_labels:
+            st.write(f"本地课文文件数：{len(selected_local_passage_labels)}")
 
         existing_by_source = {}
         for uploaded_file, source_type in upload_tasks:
-            base_name = build_recorded_output_base(uploaded_file.name, source_type)
-            existing_by_source[uploaded_file.name] = list_existing_recorded_versions(base_name)
+            source_label = get_source_file_label(uploaded_file)
+            preview_items = load_items_from_uploaded(uploaded_file, source_type)
+            bv, gg, ss, content_type = infer_meta_from_items(preview_items, uploaded_file.name)
+            base_expected_path = get_data_output_path(bv, gg, ss, content_type)
+            expected_path = (
+                base_expected_path
+                if output_mode == "原文件写回"
+                else build_mode2_copy_output_path(base_expected_path)
+            )
+            existing_by_source[source_label] = [expected_path] if os.path.exists(expected_path) else []
 
         conflict_count = sum(1 for _, existing in existing_by_source.items() if existing)
         if conflict_count > 0:
-            st.warning(f"检测到 {conflict_count} 个来源文件在“已录音”目录已有历史版本。")
-            with st.expander("查看同源历史文件", expanded=False):
+            st.warning(f"发现 {conflict_count} 个输入文件对应的目标结果已存在。")
+            with st.expander("查看冲突文件", expanded=False):
                 for source_name, files in existing_by_source.items():
                     if not files:
                         continue
                     st.markdown(f"**{source_name}**")
                     for p in files:
                         st.write(f"- {os.path.basename(p)}")
-            overwrite_mode = st.radio(
-                "同源文件处理策略",
-                options=["保留历史", "覆盖同源历史"],
-                index=0,
-                horizontal=True,
-                help="保留历史：新建时间戳文件；覆盖同源历史：先删除同源旧文件再写入新文件。",
-                key="mode2_overwrite_strategy",
-            )
+            st.caption("当前输出方式已在上方统一设置；如果选择副本输出，会自动生成 `_mode2` 后缀文件。")
         else:
-            st.caption("未检测到同源历史文件，将直接按“来源文件名 + 时间戳”写入。")
+            st.caption("当前未发现同名目标文件，可直接生成。")
 
-        btn_jsonl = st.button("🎵 开始生成音频", type="primary", width="stretch", key="btn_jsonl_record")
+        btn_jsonl = st.button("开始生成音频", type="primary", width="stretch", key="btn_jsonl_record")
 
     if btn_jsonl:
         st.session_state.jsonl_audio_data = []
@@ -1805,7 +2157,6 @@ with tab2:
         start_time_2 = time.time()
         ensure_runtime_dirs()
         os.makedirs(AUDIO_DIR, exist_ok=True)
-        os.makedirs(PASSAGE_AUDIO_DIR, exist_ok=True)
 
         def load_existing_items_map(file_path):
             items_map = {}
@@ -1856,7 +2207,7 @@ with tab2:
                     return name
             return ""
 
-        def resolve_audio_rel(current_rel_path, uid, expected_filename, audio_dir=AUDIO_DIR, rel_prefix="audio", example_idx=None):
+        def resolve_audio_rel(current_rel_path, uid, expected_filename, audio_dir=AUDIO_DIR, rel_dir="audio", example_idx=None):
             if current_rel_path:
                 abs_from_rel = to_abs_audio_path(current_rel_path)
                 if is_valid_audio_file(abs_from_rel):
@@ -1864,23 +2215,9 @@ with tab2:
 
             found_name = find_audio_filename_by_rule(uid, expected_filename, audio_dir=audio_dir, example_idx=example_idx)
             if found_name:
-                return f"./{rel_prefix}/{found_name}", True
+                return f"./{str(rel_dir).strip('./')}/{found_name}", True
 
-            return f"./{rel_prefix}/{expected_filename}", False
-
-        def load_items_from_uploaded(uploaded_file, source_type):
-            parsed = []
-            inferred_source_tag = infer_source_tag_from_filename(uploaded_file.name)
-            for line in uploaded_file.getvalue().decode("utf-8-sig", errors="replace").splitlines():
-                if not line.strip():
-                    continue
-                item = _load_json_line(line)
-                if inferred_source_tag and not str(item.get("source_tag", "") or "").strip():
-                    item["source_tag"] = inferred_source_tag
-                item["_source_type"] = source_type
-                item["_source_file"] = uploaded_file.name
-                parsed.append(item)
-            return parsed
+            return f"./{str(rel_dir).strip('./')}/{expected_filename}", False
 
         def pick_meta(items):
             for row in items:
@@ -1969,12 +2306,12 @@ with tab2:
                     render_vocab_audio_rows(vocab_items)
 
                 if passage_rows:
-                    st.markdown("**课文句子音频（实时行内试听）**")
+                    st.markdown("**课文句子音频回传**")
                     h1, h2, h3, h4 = st.columns([2, 3, 3, 2])
-                    h1.markdown("**目标**")
+                    h1.markdown("**课文标识**")
                     h2.markdown("**英文**")
                     h3.markdown("**中文**")
-                    h4.markdown("**试听**")
+                    h4.markdown("**音频**")
                     for row in passage_rows:
                         c1, c2, c3, c4 = st.columns([2, 3, 3, 2])
                         c1.write(f"{row.get('target_id', '')} | 第{row.get('句序', '')}句")
@@ -1998,29 +2335,23 @@ with tab2:
             render_mode2_file_detail(src_file)
 
         for file_idx, (uploaded_file, source_type) in enumerate(upload_tasks):
+            file_label = get_source_file_label(uploaded_file)
             all_items = load_items_from_uploaded(uploaded_file, source_type)
             if not all_items:
                 main_progress.progress((file_idx + 1) / len(upload_tasks))
                 continue
 
-            _ = pick_meta(all_items)
-            base_name = build_recorded_output_base(uploaded_file.name, source_type)
-            existing_versions = list_existing_recorded_versions(base_name)
-            if overwrite_mode == "覆盖同源历史" and existing_versions:
-                for old_file in existing_versions:
-                    try:
-                        os.remove(old_file)
-                    except Exception:
-                        pass
-            file_name = f"{base_name}_{make_task_id()}.jsonl"
-            name_try = 1
-            while os.path.exists(os.path.join(RECORDED_DIR, file_name)):
-                file_name = f"{base_name}_{make_task_id()}_{name_try:02d}.jsonl"
-                name_try += 1
-            save_path = os.path.join(RECORDED_DIR, file_name)
+            book_version, grade, semester, content_type = infer_meta_from_items(all_items, uploaded_file.name)
+            base_save_path = get_data_output_path(book_version, grade, semester, content_type)
+            save_path = (
+                base_save_path
+                if output_mode == "原文件写回"
+                else build_mode2_copy_output_path(base_save_path)
+            )
+            ensure_parent_dir(save_path)
 
             live_row = {
-                "文件": uploaded_file.name,
+                "文件": file_label,
                 "类型": source_type,
                 "状态": "running",
                 "总条数": len(all_items),
@@ -2031,8 +2362,8 @@ with tab2:
                 "输出": save_path,
             }
             live_rows_mode2.append(live_row)
-            live_items_mode2[uploaded_file.name] = []
-            ensure_mode2_file_panel(uploaded_file.name)
+            live_items_mode2[file_label] = []
+            ensure_mode2_file_panel(file_label)
             render_mode2_live_table(live_rows_mode2)
 
             existing_items_map = load_existing_items_map(save_path)
@@ -2044,6 +2375,14 @@ with tab2:
                 item_fail = 0
 
                 if item_type == "passage":
+                    sentence_audio_dir = get_audio_output_dir(
+                        uploaded_item.get("book_version", "") or book_version,
+                        uploaded_item.get("grade", "") or grade,
+                        uploaded_item.get("semester", "") or semester,
+                        "课文",
+                    )
+                    sentence_rel_dir = rel_path_from_base(sentence_audio_dir)[2:]
+                    os.makedirs(sentence_audio_dir, exist_ok=True)
                     target_id = (uploaded_item.get("target_id", "") or "").strip()
                     if not target_id:
                         target_id = f"{uploaded_item.get('unit','Unit ?')} Section {uploaded_item.get('section','')} {uploaded_item.get('label','')}".strip()
@@ -2076,15 +2415,15 @@ with tab2:
                             current_sent_rel,
                             uid,
                             sent_filename,
-                            audio_dir=PASSAGE_AUDIO_DIR,
-                            rel_prefix="passage_audio",
+                            audio_dir=sentence_audio_dir,
+                            rel_dir=sentence_rel_dir,
                             example_idx=sent_idx,
                         )
                         s_item["audio"] = resolved_sent_rel
                         if sent_exists:
                             global_skipped_total += 1
                         else:
-                            audio_tasks_for_item.append((sent_en, os.path.join(PASSAGE_AUDIO_DIR, sent_filename)))
+                            audio_tasks_for_item.append((sent_en, os.path.join(sentence_audio_dir, sent_filename), get_passage_sentence_voice()))
 
                     display_name = target_id[:20] if target_id else "passage"
                 else:
@@ -2092,6 +2431,15 @@ with tab2:
                     if not word:
                         continue
 
+                    item_content_type = "单词" if item_type == "word" else "短语"
+                    item_audio_dir = get_audio_output_dir(
+                        uploaded_item.get("book_version", "") or book_version,
+                        uploaded_item.get("grade", "") or grade,
+                        uploaded_item.get("semester", "") or semester,
+                        item_content_type,
+                    )
+                    item_rel_dir = rel_path_from_base(item_audio_dir)[2:]
+                    os.makedirs(item_audio_dir, exist_ok=True)
                     word_clean = "".join([c for c in word if c.isalpha() or c.isspace() or c == "'"]).strip().replace(" ", "_")
                     uid = get_unique_id(
                         word_clean,
@@ -2121,8 +2469,8 @@ with tab2:
                         current_main_rel,
                         uid,
                         main_filename,
-                        audio_dir=AUDIO_DIR,
-                        rel_prefix="audio",
+                        audio_dir=item_audio_dir,
+                        rel_dir=item_rel_dir,
                         example_idx=None,
                     )
                     item[main_field] = resolved_main_rel
@@ -2130,7 +2478,7 @@ with tab2:
                     if main_exists:
                         global_skipped_total += 1
                     else:
-                        audio_tasks_for_item.append((word, os.path.join(AUDIO_DIR, main_filename)))
+                        audio_tasks_for_item.append((word, os.path.join(item_audio_dir, main_filename), get_word_voice() if item_type == "word" else get_phrase_voice()))
 
                     meanings = item.get("meanings", [])
                     if isinstance(meanings, list):
@@ -2147,8 +2495,8 @@ with tab2:
                                 current_ex_rel,
                                 uid,
                                 ex_filename,
-                                audio_dir=AUDIO_DIR,
-                                rel_prefix="audio",
+                                audio_dir=item_audio_dir,
+                                rel_dir=item_rel_dir,
                                 example_idx=meaning_idx,
                             )
                             m["example_audio"] = resolved_ex_rel
@@ -2156,7 +2504,7 @@ with tab2:
                             if ex_exists:
                                 global_skipped_total += 1
                             else:
-                                audio_tasks_for_item.append((example, os.path.join(AUDIO_DIR, ex_filename)))
+                                audio_tasks_for_item.append((example, os.path.join(item_audio_dir, ex_filename), get_passage_sentence_voice()))
 
                     display_name = word[:20]
 
@@ -2164,7 +2512,7 @@ with tab2:
                     del item["_source_type"]
 
                 if audio_tasks_for_item:
-                    main_status.text(f"🎵 [{file_idx + 1}/{len(upload_tasks)}] {uploaded_file.name} -> {display_name}")
+                    main_status.text(f"🎵 [{file_idx + 1}/{len(upload_tasks)}] {file_label} -> {display_name}")
                     s, f = generate_audios_in_batch(audio_tasks_for_item, None, None, max_concurrent=audio_max_concurrent)
                     global_success_total += s
                     global_fail_total += f
@@ -2183,7 +2531,7 @@ with tab2:
                         clean_row = _sanitize_item_for_jsonl(row)
                         wf_snap.write(json.dumps(clean_row, ensure_ascii=False) + '\n')
 
-                append_mode2_live_item(uploaded_file.name, item)
+                append_mode2_live_item(file_label, item)
                 render_mode2_live_table(live_rows_mode2)
 
                 main_status.text(
@@ -2278,12 +2626,12 @@ with tab2:
                     render_vocab_audio_rows(file_vocab_items)
     
                 if file_passage_rows:
-                    st.markdown("**课文句子音频（行内试听）**")
+                    st.markdown("**课文句子音频**")
                     h1, h2, h3, h4 = st.columns([2, 3, 3, 2])
-                    h1.markdown("**目标**")
+                    h1.markdown("**课文标识**")
                     h2.markdown("**英文**")
                     h3.markdown("**中文**")
-                    h4.markdown("**试听**")
+                    h4.markdown("**音频**")
                     for row in file_passage_rows:
                         c1, c2, c3, c4 = st.columns([2, 3, 3, 2])
                         c1.write(f"{row.get('target_id', '')} | 第{row.get('句序', '')}句")
@@ -2299,7 +2647,7 @@ with tab2:
 
         if display_items:
             render_vocab_audio_rows(display_items)
-    
+
         if passage_items_all:
             article_ids = set()
             audio_count = 0
@@ -2313,12 +2661,11 @@ with tab2:
                     audio_abs = to_abs_audio_path(audio_rel)
                     if audio_abs and os.path.exists(audio_abs) and os.path.getsize(audio_abs) > 0:
                         audio_count += 1
-            st.subheader("课文句子音频总览")
-            st.info(f"共为 **{len(article_ids)}** 篇文章生成了 **{audio_count}** 条句子音频。")
+            st.subheader("课文音频统计")
+            st.info(f"共检测到 **{len(article_ids)}** 篇课文，已生成 **{audio_count}** 条句子音频。")
 
         st.divider()
-        st.subheader("🔧 音频修复工具")
-        
+        st.subheader("损坏音频检查")
         def check_audio_status(audio_path):
             if not audio_path:
                 return "missing"
@@ -2413,7 +2760,7 @@ with tab2:
                         audio_path = d_item["audio_path"]
                         if audio_path:
                             full_path = to_abs_audio_path(audio_path)
-                            repair_tasks.append((text, full_path))
+                            repair_tasks.append((text, full_path, choose_voice_for_audio_type(d_item.get("audio_type", ""))))
                     
                     if repair_tasks:
                         repair_progress = st.progress(0)
@@ -2439,7 +2786,7 @@ with tab2:
                         audio_path = d_item["audio_path"]
                         if audio_path:
                             full_path = to_abs_audio_path(audio_path)
-                            repair_tasks.append((text, full_path))
+                            repair_tasks.append((text, full_path, choose_voice_for_audio_type(d_item.get("audio_type", ""))))
                     
                     if repair_tasks:
                         repair_progress = st.progress(0)
