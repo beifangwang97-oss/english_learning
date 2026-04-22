@@ -53,11 +53,26 @@ public class Passage {
     @Column(name = "unit_name", nullable = false, length = 50)
     private String unitName;
 
+    @Column(name = "unit_no")
+    private Integer unitNo;
+
+    @Column(name = "is_starter", nullable = false)
+    private boolean starter;
+
     @Column(nullable = false, length = 20)
     private String section;
 
-    @Column(nullable = false, length = 20)
+    @Column(nullable = false, length = 100)
     private String label;
+
+    @Column(name = "labels_text", columnDefinition = "text")
+    private String labelsText;
+
+    @Column(name = "display_label", length = 100)
+    private String displayLabel;
+
+    @Column(name = "task_kind", length = 100)
+    private String taskKind;
 
     @Column(name = "target_id", nullable = false, length = 100)
     private String targetId;
@@ -70,6 +85,15 @@ public class Passage {
 
     @Column(name = "source_pages", nullable = false, columnDefinition = "text")
     private String sourcePages;
+
+    @Column(name = "matched_labels_text", columnDefinition = "text")
+    private String matchedLabelsText;
+
+    @Column(name = "source_line")
+    private Integer sourceLine;
+
+    @Column(name = "raw_scope_line", columnDefinition = "text")
+    private String rawScopeLine;
 
     @Column(name = "book_version", nullable = false, length = 100)
     private String bookVersion;
@@ -104,4 +128,3 @@ public class Passage {
         updatedAt = LocalDateTime.now();
     }
 }
-

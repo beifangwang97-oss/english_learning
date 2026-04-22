@@ -34,12 +34,12 @@ const sortUnit = (a: string, b: string) => {
 const parseFileMeta = (fileName: string) => {
   const base = fileName.replace(/\.jsonl$/i, '');
   const parts = base.split('_');
-  const p3 = (parts[3] || '').trim();
+  const grade = (parts[0] || '').trim();
+  const semester = normalizeSemester((parts[1] || '').trim());
   return {
-    bookVersion: (parts[0] || '').trim(),
-    grade: (parts[1] || '').trim(),
-    semester: normalizeSemester((parts[2] || '').trim()),
-    isUnitFile: p3.includes('单元信息') || p3.includes('单元'),
+    grade,
+    semester,
+    isUnitFile: Boolean(grade && semester),
   };
 };
 
@@ -195,6 +195,15 @@ export const UnitManagement: React.FC = () => {
       loadItems(selectedBookVersion, selectedGrade, selectedSemester);
     }
   }, [selectedBookVersion, selectedGrade, selectedSemester]);
+  useEffect(() => {
+    if (!showImportModal) return;
+    setImportRows((prev) => prev.map((row) => ({
+      ...row,
+      bookVersion: selectedBookVersion,
+      status: row.status === 'success' ? row.status : 'unchecked',
+      note: row.status === 'success' ? row.note : undefined,
+    })));
+  }, [selectedBookVersion, showImportModal]);
 
   const selectUnit = (id: number) => {
     setSelectedId(id);
@@ -303,24 +312,41 @@ export const UnitManagement: React.FC = () => {
   const buildImportRows = async (files: File[]) => {
     const rows: ImportRow[] = [];
     for (const file of files) {
-      const { bookVersion, grade, semester, isUnitFile } = parseFileMeta(file.name);
+      const { grade, semester, isUnitFile } = parseFileMeta(file.name);
       let count = 0;
       let status: ImportStatus = 'unchecked';
       let note = '';
-      if (!bookVersion || !grade || !semester || !isUnitFile) {
+      if (!selectedBookVersion) {
         status = 'invalid';
-        note = '文件名需包含 教材版本_年级_册次_单元信息';
+        note = '请先在页面顶部选择目标教材版本';
+      } else if (!grade || !semester || !isUnitFile) {
+        status = 'invalid';
+        note = '文件名需包含 年级_册次，例如：七年级_上册.jsonl';
       }
       try {
         const text = await file.text();
         const lines = text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        count = Math.max(0, lines.length - 1);
-        for (const line of lines) JSON.parse(line);
+        for (const line of lines) {
+          const row = JSON.parse(line);
+          if (String(row?.record_type || '').trim().toLowerCase() === 'unit') {
+            count += 1;
+          }
+        }
       } catch {
         status = 'invalid';
         note = 'JSONL 格式错误';
       }
-      rows.push({ id: newId(), file, fileName: file.name, bookVersion, grade, semester, count, status, note: note || undefined });
+      rows.push({
+        id: newId(),
+        file,
+        fileName: file.name,
+        bookVersion: selectedBookVersion,
+        grade,
+        semester,
+        count,
+        status,
+        note: note || undefined,
+      });
     }
     return rows;
   };
@@ -524,14 +550,17 @@ export const UnitManagement: React.FC = () => {
       </div>
 
       {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-[min(1100px,98vw)] rounded-xl bg-white border border-outline-variant/30 shadow-xl p-5 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h4 className="text-lg font-black">批量导入单元 JSONL</h4>
               <button onClick={() => setShowImportModal(false)} className="rounded-md p-1 hover:bg-surface-container-low"><X className="w-4 h-4" /></button>
             </div>
             <div className="rounded-lg bg-surface-container-low p-3 text-sm text-on-surface-variant">
-              请按“教材版本_年级_册次_单元信息*.jsonl”命名文件。导入按整册覆盖执行，导入文件中的首行 meta 必须与当前识别范围一致。
+              导入将使用当前页面顶部选中的教材版本作为目标版本。文件名只需包含“年级_册次”，例如“七年级_上册.jsonl”或“九年级_全册.jsonl”。系统会先校验该教材版本下是否存在对应的年级与册次，再按整册覆盖导入。
+            </div>
+            <div className="rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-sm">
+              目标教材版本：<b>{selectedBookVersion || '未选择'}</b>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <input type="file" accept=".jsonl" multiple onChange={onImportFilesSelected} className="block border rounded-lg px-3 py-2" />
@@ -543,7 +572,7 @@ export const UnitManagement: React.FC = () => {
                 <thead className="bg-surface-container-low">
                   <tr>
                     <th className="p-3 text-left">文件</th>
-                    <th className="p-3 text-left">教材</th>
+                    <th className="p-3 text-left">目标教材</th>
                     <th className="p-3 text-left">年级</th>
                     <th className="p-3 text-left">册次</th>
                     <th className="p-3 text-right">单元数</th>
@@ -559,16 +588,9 @@ export const UnitManagement: React.FC = () => {
                     <tr key={row.id} className="border-t">
                       <td className="p-3">{row.fileName}</td>
                       <td className="p-3">
-                        <select value={row.bookVersion} disabled={importingBatch || row.status === 'success'} onChange={(e) => {
-                          const nextBook = e.target.value;
-                          const gradeCandidates = getGradesForBook(nextBook);
-                          const nextGrade = gradeCandidates.includes(row.grade) ? row.grade : (gradeCandidates[0] || '');
-                          const semesterCandidates = getSemestersForBookGrade(nextBook, nextGrade);
-                          const nextSemester = semesterCandidates.includes(normalizeSemester(row.semester)) ? normalizeSemester(row.semester) : (semesterCandidates[0] || '');
-                          setImportRows((prev) => prev.map((x) => x.id === row.id ? { ...x, bookVersion: nextBook, grade: nextGrade, semester: nextSemester, status: 'unchecked', note: undefined } : x));
-                        }} className="w-full border rounded px-2 py-1 bg-white">
-                          {bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}
-                        </select>
+                        <div className="w-full rounded border bg-surface-container-low px-2 py-1">
+                          {row.bookVersion || '-'}
+                        </div>
                       </td>
                       <td className="p-3">
                         <select value={row.grade} disabled={importingBatch || row.status === 'success'} onChange={(e) => {

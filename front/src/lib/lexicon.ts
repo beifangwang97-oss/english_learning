@@ -22,6 +22,10 @@ export type LexiconItem = {
   meanings: LexiconMeaning[];
   word_audio?: string;
   phrase_audio?: string;
+  syllable_text?: string;
+  syllable_pronunciation?: string[];
+  memory_tip?: string;
+  proper_noun_type?: string;
 };
 
 export type LexiconGradeSemester = {
@@ -81,6 +85,10 @@ export type LearningEntry = {
   meanings: LexiconMeaning[];
   word_audio?: string;
   phrase_audio?: string;
+  syllable_text?: string;
+  syllable_pronunciation?: string[];
+  memory_tip?: string;
+  proper_noun_type?: string;
 };
 
 export type PassageSentence = {
@@ -177,10 +185,11 @@ export const normalizeTextbookPermissionToAvailable = (permission: string, avail
 };
 
 export const formatSourceTagLabel = (tag?: string) => {
-  const normalized = (tag || 'current_book').trim();
+  const normalized = (tag || '').trim();
+  if (!normalized) return '未标记';
   if (normalized === 'current_book') return '当前册单词';
   if (normalized === 'primary_school_review') return '小学复习';
-  return normalized || '未标记';
+  return normalized;
 };
 
 export const formatPassageDisplayLabel = (item: Pick<PassageItem, 'label' | 'display_label'> | { label?: string; display_label?: string }) => {
@@ -344,7 +353,7 @@ export const lexiconApi = {
       grade,
       semester,
     });
-    if (sourceTag) query.set('sourceTag', sourceTag);
+    if (sourceTag !== undefined) query.set('sourceTag', sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/items?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -371,7 +380,7 @@ export const lexiconApi = {
       grade,
       semester,
     });
-    if (sourceTag) query.set('sourceTag', sourceTag);
+    if (sourceTag !== undefined) query.set('sourceTag', sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/items/count?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -502,6 +511,44 @@ export const lexiconApi = {
     };
   },
 
+  async batchGroupItems(
+    token: string,
+    params: {
+      type: 'word' | 'phrase';
+      bookVersion: string;
+      sourceTag?: string;
+      groupSize?: number;
+      clearOnly?: boolean;
+    }
+  ) {
+    const query = new URLSearchParams({
+      type: params.type,
+      bookVersion: params.bookVersion,
+    });
+    if (params.sourceTag !== undefined) query.set('sourceTag', params.sourceTag);
+    if (params.groupSize !== undefined) query.set('groupSize', String(params.groupSize));
+    if (params.clearOnly !== undefined) query.set('clearOnly', String(params.clearOnly));
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/items/group-batch?${query.toString()}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || '批量分组失败');
+    }
+    return payload as {
+      message: string;
+      type: 'word' | 'phrase';
+      bookVersion: string;
+      sourceTag?: string | null;
+      affectedScopes: number;
+      affectedEntries: number;
+      groupSize?: number | null;
+    };
+  },
+
   async previewDeleteItems(
     token: string,
     type: 'word' | 'phrase',
@@ -572,7 +619,7 @@ export const lexiconApi = {
     form.append('bookVersion', params.bookVersion);
     form.append('grade', params.grade);
     form.append('semester', params.semester);
-    if (params.sourceTag) form.append('sourceTag', params.sourceTag);
+    if (params.sourceTag !== undefined) form.append('sourceTag', params.sourceTag);
     form.append('proofread', String(params.proofread ?? true));
     form.append('overwrite', String(params.overwrite ?? true));
     const response = await fetch(`${API_BASE_URL}/api/lexicon/import`, {
@@ -650,7 +697,7 @@ export const lexiconApi = {
       semester: params.semester,
       unit: params.unit,
     });
-    if (params.sourceTag) query.set('sourceTag', params.sourceTag);
+    if (params.sourceTag !== undefined) query.set('sourceTag', params.sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/learning/summary?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -685,7 +732,7 @@ export const lexiconApi = {
       unit: params.unit,
       groupNo: String(params.groupNo),
     });
-    if (params.sourceTag) query.set('sourceTag', params.sourceTag);
+    if (params.sourceTag !== undefined) query.set('sourceTag', params.sourceTag);
     const response = await fetch(`${API_BASE_URL}/api/lexicon/learning/items?${query.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,

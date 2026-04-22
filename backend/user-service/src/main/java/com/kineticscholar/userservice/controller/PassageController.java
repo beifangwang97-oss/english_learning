@@ -238,6 +238,7 @@ public class PassageController {
             String line;
             while ((line = reader.readLine()) != null) {
                 lineCount += 1;
+                line = stripBom(line);
                 if (line.isBlank()) continue;
                 Map<String, Object> raw = objectMapper.readValue(line, new TypeReference<>() {});
                 Passage row = mapToPassageEntity(raw, bookVersion, grade, semester, true);
@@ -245,6 +246,11 @@ public class PassageController {
             }
         }
         return new ParseResult(rows, lineCount);
+    }
+
+    private String stripBom(String value) {
+        if (value == null || value.isEmpty()) return value;
+        return value.charAt(0) == '\uFEFF' ? value.substring(1) : value;
     }
 
     private Passage mapToPassageEntity(
@@ -258,8 +264,13 @@ public class PassageController {
         passage.setPassageUid(resolvePassageUid(item));
         passage.setType(PASSAGE);
         passage.setUnitName(safeStr(item.get("unit")).isBlank() ? "Unit 1" : safeStr(item.get("unit")));
+        passage.setUnitNo(parsePositiveInt(item.get("unit_no")));
+        passage.setStarter(parseBoolean(item.get("is_starter")));
         passage.setSection(safeStr(item.get("section")).isBlank() ? "A" : safeStr(item.get("section")));
         passage.setLabel(safeStr(item.get("label")).isBlank() ? "1a" : safeStr(item.get("label")));
+        passage.setLabelsText(writeStringList(item.get("labels")));
+        passage.setDisplayLabel(safeStr(item.get("display_label")));
+        passage.setTaskKind(safeStr(item.get("task_kind")));
         passage.setTargetId(resolveTargetId(item, passage.getUnitName(), passage.getSection(), passage.getLabel()));
         passage.setTitle(safeStr(item.get("title")));
         passage.setPassageTextEn(safeStr(item.get("passage_text")));
@@ -267,6 +278,9 @@ public class PassageController {
             throw new RuntimeException("课文英文内容不能为空");
         }
         passage.setSourcePages(joinSourcePages(item.get("source_pages")));
+        passage.setMatchedLabelsText(writeStringList(item.get("matched_labels")));
+        passage.setSourceLine(parsePositiveInt(item.get("source_line")));
+        passage.setRawScopeLine(safeStrKeepNewline(item.get("raw_scope_line")));
         passage.setBookVersion(bookVersion);
         passage.setGrade(grade);
         passage.setSemester(semester);
@@ -296,10 +310,15 @@ public class PassageController {
 
         String unit = safeStr(payload.get("unit"));
         if (!unit.isBlank()) existing.setUnitName(unit);
+        if (payload.containsKey("unit_no")) existing.setUnitNo(parsePositiveInt(payload.get("unit_no")));
+        if (payload.containsKey("is_starter")) existing.setStarter(parseBoolean(payload.get("is_starter")));
         String section = safeStr(payload.get("section"));
         if (!section.isBlank()) existing.setSection(section);
         String label = safeStr(payload.get("label"));
         if (!label.isBlank()) existing.setLabel(label);
+        if (payload.containsKey("labels")) existing.setLabelsText(writeStringList(payload.get("labels")));
+        if (payload.containsKey("display_label")) existing.setDisplayLabel(safeStr(payload.get("display_label")));
+        if (payload.containsKey("task_kind")) existing.setTaskKind(safeStr(payload.get("task_kind")));
 
         existing.setTargetId(resolveTargetId(payload, existing.getUnitName(), existing.getSection(), existing.getLabel()));
         existing.setTitle(safeStr(payload.get("title")));
@@ -310,6 +329,9 @@ public class PassageController {
         if (payload.containsKey("source_pages")) {
             existing.setSourcePages(joinSourcePages(payload.get("source_pages")));
         }
+        if (payload.containsKey("matched_labels")) existing.setMatchedLabelsText(writeStringList(payload.get("matched_labels")));
+        if (payload.containsKey("source_line")) existing.setSourceLine(parsePositiveInt(payload.get("source_line")));
+        if (payload.containsKey("raw_scope_line")) existing.setRawScopeLine(safeStrKeepNewline(payload.get("raw_scope_line")));
 
         String sourceFile = safeStr(payload.get("source_file"));
         if (!sourceFile.isBlank()) existing.setSourceFile(sourceFile);
@@ -398,12 +420,20 @@ public class PassageController {
         row.put("id", safeStr(p.getPassageUid()));
         row.put("type", safeStr(p.getType()));
         row.put("unit", safeStr(p.getUnitName()));
+        row.put("unit_no", p.getUnitNo());
+        row.put("is_starter", p.isStarter());
         row.put("section", safeStr(p.getSection()));
         row.put("label", safeStr(p.getLabel()));
+        row.put("labels", readStringList(p.getLabelsText()));
+        row.put("display_label", safeStr(p.getDisplayLabel()));
+        row.put("task_kind", safeStr(p.getTaskKind()));
         row.put("target_id", safeStr(p.getTargetId()));
         row.put("title", safeStr(p.getTitle()));
         row.put("passage_text", safeStr(p.getPassageTextEn()));
         row.put("source_pages", parseSourcePagesAsList(p.getSourcePages()));
+        row.put("matched_labels", readStringList(p.getMatchedLabelsText()));
+        row.put("source_line", p.getSourceLine());
+        row.put("raw_scope_line", safeStrKeepNewline(p.getRawScopeLine()));
         row.put("book_version", safeStr(p.getBookVersion()));
         row.put("grade", safeStr(p.getGrade()));
         row.put("semester", safeStr(p.getSemester()));
@@ -551,6 +581,36 @@ public class PassageController {
         if ("true".equals(s) || "1".equals(s)) return true;
         if ("false".equals(s) || "0".equals(s)) return false;
         return null;
+    }
+
+    private boolean parseBoolean(Object value) {
+        Boolean parsed = parseNullableBool(value);
+        return parsed != null && parsed;
+    }
+
+    private String writeStringList(Object value) {
+        if (!(value instanceof List<?> list)) return "";
+        List<String> rows = new ArrayList<>();
+        for (Object item : list) {
+            String s = safeStr(item);
+            if (!s.isBlank()) rows.add(s);
+        }
+        if (rows.isEmpty()) return "";
+        try {
+            return objectMapper.writeValueAsString(rows);
+        } catch (Exception e) {
+            throw new RuntimeException("failed to serialize string list");
+        }
+    }
+
+    private List<String> readStringList(String raw) {
+        String text = safeStr(raw);
+        if (text.isBlank()) return List.of();
+        try {
+            return objectMapper.readValue(text, new TypeReference<>() {});
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     private String safeStrKeepNewline(Object value) {

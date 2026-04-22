@@ -59,6 +59,18 @@ public class LexiconEntry {
     @Column(name = "phrase_audio", length = 255)
     private String phraseAudio;
 
+    @Column(name = "syllable_text", length = 255)
+    private String syllableText;
+
+    @Column(name = "syllable_pronunciation", columnDefinition = "TEXT")
+    private String syllablePronunciation;
+
+    @Column(name = "memory_tip", columnDefinition = "TEXT")
+    private String memoryTip;
+
+    @Column(name = "proper_noun_type", length = 100)
+    private String properNounType;
+
     @Column(name = "group_no")
     private Integer groupNo;
 
@@ -76,16 +88,10 @@ public class LexiconEntry {
     protected void onCreate() {
         createdAt = LocalDateTime.now();
         updatedAt = LocalDateTime.now();
-        if (sourceTag == null || sourceTag.isBlank()) {
-            sourceTag = "current_book";
-        }
     }
 
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
-        if (sourceTag == null || sourceTag.isBlank()) {
-            sourceTag = "current_book";
-        }
     }
 }

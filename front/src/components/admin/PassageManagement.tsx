@@ -34,12 +34,10 @@ const normalizeSemester = (semester: string) => {
 const parseFileMeta = (fileName: string) => {
   const base = fileName.replace(/\.jsonl$/i, '');
   const parts = base.split('_');
-  const p3 = (parts[3] || '');
   return {
-    bookVersion: (parts[0] || '').trim(),
-    grade: (parts[1] || '').trim(),
-    semester: normalizeSemester((parts[2] || '').trim()),
-    isPassage: p3.includes('\u8bfe\u6587\u8868') || p3.includes('\u8bfe\u6587'),
+    grade: (parts[0] || '').trim(),
+    semester: normalizeSemester((parts[1] || '').trim()),
+    isPassageFile: parts.length >= 2,
   };
 };
 
@@ -192,6 +190,15 @@ export const PassageManagement: React.FC = () => {
       loadItems(selectedBookVersion, selectedGrade, selectedSemester);
     }
   }, [selectedBookVersion, selectedGrade, selectedSemester]);
+  useEffect(() => {
+    if (!showImportModal) return;
+    setImportRows((prev) => prev.map((row) => ({
+      ...row,
+      bookVersion: selectedBookVersion,
+      status: row.status === 'success' ? row.status : 'unchecked',
+      note: row.status === 'success' ? row.note : undefined,
+    })));
+  }, [selectedBookVersion, showImportModal]);
 
   const selectPassage = (id: string) => {
     setSelectedId(id);
@@ -328,45 +335,44 @@ export const PassageManagement: React.FC = () => {
     }
   };
 
-  const getGradesForBook = (bookVersion: string) => {
-    const fromScope = Array.from(scopeMap.get(bookVersion || '')?.keys() || []);
-    return fromScope.length ? fromScope : grades;
-  };
-  const getSemestersForBookGrade = (bookVersion: string, gradeValue: string) => {
-    const fromScope = scopeMap.get(bookVersion || '')?.get(gradeValue || '') || [];
-    return fromScope.length ? fromScope : semesters.map(normalizeSemester);
-  };
-  const updateImportRow = (id: string, patch: Partial<ImportRow>) => {
-    setImportRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== id) return row;
-        if (row.status === 'success') return row;
-        return { ...row, ...patch, status: 'unchecked', note: undefined };
-      })
-    );
-  };
-
   const buildImportRows = async (files: File[]) => {
     const rows: ImportRow[] = [];
     for (const file of files) {
-      const { bookVersion, grade, semester, isPassage } = parseFileMeta(file.name);
+      const { grade, semester, isPassageFile } = parseFileMeta(file.name);
       let count = 0;
       let status: ImportStatus = 'unchecked';
       let note = '';
-      if (!bookVersion || !grade || !semester || !isPassage) {
+      if (!selectedBookVersion) {
         status = 'invalid';
-        note = '\u6587\u4ef6\u540d\u9700\u5305\u542b\u6559\u6750\u7248\u672c_\u5e74\u7ea7_\u518c\u6b21_\u8bfe\u6587\u8868';
+        note = '\u8bf7\u5148\u9009\u62e9\u76ee\u6807\u6559\u6750\u7248\u672c';
+      } else if (!grade || !semester || !isPassageFile) {
+        status = 'invalid';
+        note = '\u6587\u4ef6\u540d\u9700\u4e3a \u5e74\u7ea7_\u518c\u6b21.jsonl\uff0c\u4f8b\u5982\uff1a\u4e03\u5e74\u7ea7_\u4e0a\u518c.jsonl';
       }
       try {
-        const text = await file.text();
+        const text = (await file.text()).replace(/^\uFEFF/, '');
         const lines = text.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
-        count = lines.length;
-        for (const line of lines) JSON.parse(line);
+        for (const line of lines) {
+          const parsed = JSON.parse(line.replace(/^\uFEFF/, ''));
+          if (String(parsed?.type || '').trim().toLowerCase() === 'passage') {
+            count += 1;
+          }
+        }
       } catch {
         status = 'invalid';
         note = 'JSONL \u683c\u5f0f\u9519\u8bef';
       }
-      rows.push({ id: newId(), file, fileName: file.name, bookVersion, grade, semester, count, status, note: note || undefined });
+      rows.push({
+        id: newId(),
+        file,
+        fileName: file.name,
+        bookVersion: selectedBookVersion,
+        grade,
+        semester,
+        count,
+        status,
+        note: note || undefined,
+      });
     }
     return rows;
   };
@@ -631,7 +637,8 @@ export const PassageManagement: React.FC = () => {
               <button onClick={() => setShowImportModal(false)} className="rounded-md p-1 hover:bg-surface-container-low"><X className="w-4 h-4" /></button>
             </div>
             <div className="rounded-lg bg-surface-container-low p-3 text-sm text-on-surface-variant">
-              请按“教材版本_年级_册次_课文表*.jsonl”命名文件。可在下方手动调整版本、年级和册次后再导入。</div>
+              请选择目标教材版本后上传课文 JSONL。文件名使用“年级_册次.jsonl”，例如“七年级_上册.jsonl”；导入时会校验该教材版本下是否存在对应年级册次。
+            </div>
             <div className="flex flex-wrap items-center gap-3">
               <input type="file" accept=".jsonl" multiple onChange={onImportFilesSelected} className="block border rounded-lg px-3 py-2" />
               <button onClick={recheckRows} disabled={checkingImportRows || importingBatch || !importRows.length} className="px-4 py-2 border rounded-lg font-bold disabled:opacity-40">{checkingImportRows ? '检查中...' : '重新检查'}</button>
@@ -653,24 +660,9 @@ export const PassageManagement: React.FC = () => {
                   {importRows.map((row) => (
                     <tr key={row.id} className="border-t">
                       <td className="p-2">{row.fileName}</td>
-                      <td className="p-2">
-                        <select value={row.bookVersion} disabled={importingBatch || row.status === 'success'} onChange={(e) => { const nextBook = e.target.value; const gradeCandidates = getGradesForBook(nextBook); const nextGrade = gradeCandidates.includes(row.grade) ? row.grade : (gradeCandidates[0] || ''); const semesterCandidates = getSemestersForBookGrade(nextBook, nextGrade); const nextSemester = semesterCandidates.includes(normalizeSemester(row.semester)) ? normalizeSemester(row.semester) : (semesterCandidates[0] || ''); updateImportRow(row.id, { bookVersion: nextBook, grade: nextGrade, semester: nextSemester }); }} className="w-full border rounded px-2 py-1 bg-white">
-                          <option value="">请选择教材版本</option>
-                          {bookVersions.map((v) => <option key={v} value={v}>{v}</option>)}
-                        </select>
-                      </td>
-                      <td className="p-2">
-                        <select value={row.grade} disabled={importingBatch || row.status === 'success'} onChange={(e) => { const nextGrade = e.target.value; const semesterCandidates = getSemestersForBookGrade(row.bookVersion, nextGrade); const nextSemester = semesterCandidates.includes(normalizeSemester(row.semester)) ? normalizeSemester(row.semester) : (semesterCandidates[0] || ''); updateImportRow(row.id, { grade: nextGrade, semester: nextSemester }); }} className="w-full border rounded px-2 py-1 bg-white">
-                          <option value="">请选择年级</option>
-                          {getGradesForBook(row.bookVersion).map((g) => <option key={g} value={g}>{g}</option>)}
-                        </select>
-                      </td>
-                      <td className="p-2">
-                        <select value={normalizeSemester(row.semester)} disabled={importingBatch || row.status === 'success'} onChange={(e) => updateImportRow(row.id, { semester: normalizeSemester(e.target.value) })} className="w-full border rounded px-2 py-1 bg-white">
-                          <option value="">请选择册次</option>
-                          {getSemestersForBookGrade(row.bookVersion, row.grade).map((s) => <option key={s} value={normalizeSemester(s)}>{normalizeSemester(s)}</option>)}
-                        </select>
-                      </td>
+                      <td className="p-2">{row.bookVersion || '未选择'}</td>
+                      <td className="p-2">{row.grade || '-'}</td>
+                      <td className="p-2">{normalizeSemester(row.semester) || '-'}</td>
                       <td className="p-2 text-right">{row.count}</td>
                       <td className="p-2">
                         <div className="font-semibold">{statusLabel[row.status]}</div>

@@ -1220,6 +1220,36 @@ def _split_passage_sentences(passage_text):
     return sentences
 
 
+PASSAGE_TTS_NON_SPEAKER_LABELS = {
+    "name",
+    "date",
+    "address",
+    "email",
+    "telephone",
+    "phone",
+    "tel",
+}
+
+
+def _clean_passage_sentence_for_tts(text):
+    if not isinstance(text, str):
+        return ""
+    cleaned = text.strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"^\(?\d+[\).]?\s+", "", cleaned)
+    speaker_match = re.match(
+        r"^(?P<label>[A-Z][A-Za-z'\.\-]*(?:\s+[A-Z][A-Za-z'\.\-]*){0,3})\s*:\s*(?P<body>.+)$",
+        cleaned,
+    )
+    if speaker_match:
+        label = (speaker_match.group("label") or "").strip().lower()
+        body = (speaker_match.group("body") or "").strip()
+        if label not in PASSAGE_TTS_NON_SPEAKER_LABELS and body:
+            cleaned = body
+    return cleaned.strip()
+
+
 def _translate_sentences_to_zh(sentences, api_key, base_url, model_name):
     if not sentences:
         return []
@@ -1920,6 +1950,7 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent, output_mode=
                     sent_en = (s_item.get("en", "") or "").strip()
                     if not sent_en:
                         continue
+                    sent_tts = _clean_passage_sentence_for_tts(sent_en) or sent_en
                     current_audio = s_item.get("audio", "")
                     expected_filename = f"{uid}_sent_{sent_idx}.mp3"
                     resolved_rel, exists = resolve_audio_rel(
@@ -1934,7 +1965,7 @@ def repair_recorded_jsonl_file(uploaded_file, audio_max_concurrent, output_mode=
                         path_fixed_count += 1
                     s_item["audio"] = resolved_rel
                     if not exists:
-                        repair_tasks.append((sent_en, to_abs_audio_path(resolved_rel), get_passage_sentence_voice()))
+                        repair_tasks.append((sent_tts, to_abs_audio_path(resolved_rel), get_passage_sentence_voice()))
                         generated_task_count += 1
 
             fixed_rows.append(item)
@@ -2437,26 +2468,21 @@ with tab2:
                     vocab_items.append(flat)
 
                 if vocab_items:
-                    render_vocab_audio_rows(vocab_items)
+                    st.markdown("**单词/短语音频回传**")
+                    vocab_df = pd.DataFrame(vocab_items)
+                    st.dataframe(vocab_df, width="stretch", hide_index=True, height=400)
 
                 if passage_rows:
                     st.markdown("**课文句子音频回传**")
-                    h1, h2, h3, h4 = st.columns([2, 3, 3, 2])
-                    h1.markdown("**课文标识**")
-                    h2.markdown("**英文**")
-                    h3.markdown("**中文**")
-                    h4.markdown("**音频**")
+                    passage_display_rows = []
                     for row in passage_rows:
-                        c1, c2, c3, c4 = st.columns([2, 3, 3, 2])
-                        c1.write(f"{row.get('target_id', '')} | 第{row.get('句序', '')}句")
-                        c2.write(row.get("英文", ""))
-                        c3.write(row.get("中文", ""))
-                        audio_abs = to_abs_audio_path((row.get("audio", "") or "").strip())
-                        if audio_abs and os.path.exists(audio_abs) and os.path.getsize(audio_abs) > 0:
-                            with open(audio_abs, "rb") as af:
-                                c4.audio(af.read(), format="audio/mp3")
-                        else:
-                            c4.caption("无音频")
+                        passage_display_rows.append({
+                            "课文标识": f"{row.get('target_id', '')} | 第{row.get('句序', '')}句",
+                            "英文": row.get("英文", ""),
+                            "中文": row.get("中文", ""),
+                            "音频": row.get("audio", ""),
+                        })
+                    st.dataframe(pd.DataFrame(passage_display_rows), width="stretch", hide_index=True, height=400)
 
         def append_mode2_live_item(src_file, item):
             if not enable_live_updates:
@@ -2548,6 +2574,7 @@ with tab2:
                         sent_en = (s_item.get("en", "") or "").strip()
                         if not sent_en:
                             continue
+                        sent_tts = _clean_passage_sentence_for_tts(sent_en) or sent_en
                         sent_filename = f"{uid}_sent_{sent_idx}.mp3"
                         current_sent_rel = s_item.get("audio", "")
                         resolved_sent_rel, sent_exists = resolve_audio_rel(
@@ -2562,7 +2589,7 @@ with tab2:
                         if sent_exists:
                             global_skipped_total += 1
                         else:
-                            audio_tasks_for_item.append((sent_en, os.path.join(sentence_audio_dir, sent_filename), get_passage_sentence_voice()))
+                            audio_tasks_for_item.append((sent_tts, os.path.join(sentence_audio_dir, sent_filename), get_passage_sentence_voice()))
 
                     display_name = target_id[:20] if target_id else "passage"
                 else:
@@ -2766,27 +2793,21 @@ with tab2:
                     file_vocab_items.append(flat)
     
                 if file_vocab_items:
-                    render_vocab_audio_rows(file_vocab_items)
-    
+                    st.markdown("**单词/短语音频**")
+                    file_vocab_df = pd.DataFrame(file_vocab_items)
+                    st.dataframe(file_vocab_df, width="stretch", hide_index=True, height=400)
+
                 if file_passage_rows:
                     st.markdown("**课文句子音频**")
-                    h1, h2, h3, h4 = st.columns([2, 3, 3, 2])
-                    h1.markdown("**课文标识**")
-                    h2.markdown("**英文**")
-                    h3.markdown("**中文**")
-                    h4.markdown("**音频**")
+                    file_passage_display_rows = []
                     for row in file_passage_rows:
-                        c1, c2, c3, c4 = st.columns([2, 3, 3, 2])
-                        c1.write(f"{row.get('target_id', '')} | 第{row.get('句序', '')}句")
-                        c2.write(row.get("英文", ""))
-                        c3.write(row.get("中文", ""))
-                        audio_rel = (row.get("audio", "") or "").strip()
-                        audio_abs = to_abs_audio_path(audio_rel)
-                        if audio_abs and os.path.exists(audio_abs) and os.path.getsize(audio_abs) > 0:
-                            with open(audio_abs, "rb") as af:
-                                c4.audio(af.read(), format="audio/mp3")
-                        else:
-                            c4.caption("无音频")
+                        file_passage_display_rows.append({
+                            "课文标识": f"{row.get('target_id', '')} | 第{row.get('句序', '')}句",
+                            "英文": row.get("英文", ""),
+                            "中文": row.get("中文", ""),
+                            "音频": row.get("audio", ""),
+                        })
+                    st.dataframe(pd.DataFrame(file_passage_display_rows), width="stretch", hide_index=True, height=400)
 
         if display_items:
             render_vocab_audio_rows(display_items)
