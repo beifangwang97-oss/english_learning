@@ -1,0 +1,30 @@
+{
+  "source_file": "八年级下册Unit 2 单元拔尖检测.doc",
+  "question_count": 52,
+  "counts_by_type": {
+    "single_choice": 10,
+    "cloze": 20,
+    "seven_choice": 5,
+    "reading": 17
+  },
+  "missing_answers": [],
+  "missing_analysis": [],
+  "missing_scope": [],
+  "duplicate_question_uids": [],
+  "skipped_unsupported": [
+    {
+      "question_no": 73,
+      "question_type": "reading_qa"
+    },
+    {
+      "question_no": 74,
+      "question_type": "reading_qa"
+    },
+    {
+      "question_no": 75,
+      "question_type": "reading_qa"
+    }
+  ],
+  "api_filled_analysis_count": 5,
+  "api_enhanced_question_count": 7
+}

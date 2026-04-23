@@ -1,7 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronRight, ClipboardList, Send, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { adminStoreApi, adminUserApi, authApi, unitAssignmentApi, UnitAssignment } from '../../lib/auth';
+import {
+  adminStoreApi,
+  adminUserApi,
+  authApi,
+  teacherExamPaperApi,
+  TeacherExamPaperListItem,
+  unitAssignmentApi,
+  UnitAssignment,
+} from '../../lib/auth';
 import { lexiconApi, normalizeTextbookPermissionToAvailable } from '../../lib/lexicon';
 import { getSessionToken } from '../../lib/session';
 
@@ -39,16 +47,6 @@ function safeStoreCode(value?: string | null) {
   return normalized || 'UNASSIGNED';
 }
 
-function resolveStoreCode(value: string | undefined, stores: Array<{ storeCode: string; storeName: string }>) {
-  const normalized = (value || '').trim();
-  if (!normalized) return 'UNASSIGNED';
-  const byCode = stores.find((row) => row.storeCode === normalized);
-  if (byCode) return byCode.storeCode;
-  const byName = stores.find((row) => row.storeName === normalized);
-  if (byName) return byName.storeCode;
-  return safeStoreCode(normalized);
-}
-
 export const TeachingUnits: React.FC = () => {
   const { user } = useAuth();
   const token = useMemo(() => getSessionToken(), []);
@@ -66,6 +64,8 @@ export const TeachingUnits: React.FC = () => {
   const [message, setMessage] = useState<string | null>(null);
 
   const [assignments, setAssignments] = useState<UnitAssignment[]>([]);
+  const [papers, setPapers] = useState<TeacherExamPaperListItem[]>([]);
+  const [selectedPaperId, setSelectedPaperId] = useState<number | ''>('');
   const [taskFilterStudent, setTaskFilterStudent] = useState('');
   const [selectedAssignmentIds, setSelectedAssignmentIds] = useState<number[]>([]);
   const [deleting, setDeleting] = useState(false);
@@ -113,6 +113,10 @@ export const TeachingUnits: React.FC = () => {
   }, [assignments, taskFilterStudent, studentNameMap]);
 
   const allFilteredIds = useMemo(() => filteredAssignments.map((row) => row.id), [filteredAssignments]);
+  const selectedPaper = useMemo(
+    () => (selectedPaperId === '' ? null : papers.find((row) => row.id === selectedPaperId) || null),
+    [papers, selectedPaperId]
+  );
 
   const toggleStudent = (id: string) => {
     setSelectedStudents((prev) => (prev.includes(id) ? prev.filter((row) => row !== id) : [...prev, id]));
@@ -175,7 +179,6 @@ export const TeachingUnits: React.FC = () => {
   const loadData = async () => {
     setLoading(true);
     setError(null);
-    let hasContentLoadFailure = false;
     try {
       const [allUsers, stores, textbookScopes] = await Promise.all([
         adminUserApi.getAllUsers(token),
@@ -187,8 +190,7 @@ export const TeachingUnits: React.FC = () => {
       const textbookPermissions = (store?.textbookPermissions || []).filter(Boolean);
       const scopeTree = textbookScopes.tree || [];
       const availableBooks = Array.from(new Set(scopeTree.map((row) => row.bookVersion).filter(Boolean)));
-      const storeBound = Boolean(store);
-      const allowedTextbooks = (storeBound ? textbookPermissions : availableBooks)
+      const allowedTextbooks = (store ? textbookPermissions : availableBooks)
         .map((permission) => normalizeTextbookPermissionToAvailable(permission, availableBooks))
         .filter(Boolean);
 
@@ -204,7 +206,7 @@ export const TeachingUnits: React.FC = () => {
 
       const tree: TextbookNode[] = await Promise.all(
         scopeTree
-          .filter((book) => allowedTextbooks.includes(book.bookVersion))
+          .filter((book) => allowedTextbooks.length === 0 || allowedTextbooks.includes(book.bookVersion))
           .map(async (book) => ({
             textbook: book.bookVersion,
             grades: await Promise.all(
@@ -217,7 +219,6 @@ export const TeachingUnits: React.FC = () => {
                       const units = Array.from(new Set((wordItems.items || []).map((item) => item.unit).filter(Boolean))).sort(sortUnit);
                       return { semester, units };
                     } catch {
-                      hasContentLoadFailure = true;
                       return { semester, units: [] as string[] };
                     }
                   })
@@ -240,16 +241,16 @@ export const TeachingUnits: React.FC = () => {
 
       await loadAssignments(storeStudents.map((row) => Number(row.id)).filter((id) => Number.isFinite(id)));
 
-      const hasAnyUnits = tree.some((book) => book.grades.some((grade) => grade.semesters.some((semester) => semester.units.length > 0)));
-      if (storeBound && allowedTextbooks.length === 0) {
-        setMessage('当前门店尚未配置教材权限，请先到管理员端完成配置。');
-      } else if (storeBound && !hasAnyUnits && allowedTextbooks.length > 0) {
-        setMessage('当前教材范围下暂无单元数据，请先导入对应教材的单词。');
-      } else if (hasContentLoadFailure) {
-        setMessage('部分教材范围的单词数据加载失败，当前列表可能不完整。');
+      if (user?.id) {
+        const teacherPapers = await teacherExamPaperApi.list(token, Number(user.id), currentStoreCode);
+        setPapers(teacherPapers);
+        setSelectedPaperId((prev) => (prev && teacherPapers.some((row) => row.id === prev) ? prev : ''));
       } else {
-        setMessage(null);
+        setPapers([]);
+        setSelectedPaperId('');
       }
+
+      setMessage(null);
     } catch (e: any) {
       setError(e?.message || '加载教学任务数据失败');
     } finally {
@@ -271,18 +272,25 @@ export const TeachingUnits: React.FC = () => {
   }, [token, currentStoreCode]);
 
   const handlePublish = async () => {
-    if (selectedStudents.length === 0) return setError('请先选择学生。');
-    if (selectedUnits.length === 0) return setError('请先选择要发布的单元。');
+    if (selectedStudents.length === 0) return setError('请先选择学生');
+    if (selectedUnits.length === 0) return setError('请先选择教学单元');
 
     const teacherId = Number(user?.id || 0);
-    if (!teacherId) return setError('当前教师信息无效，请重新登录后再试。');
+    if (!teacherId) return setError('当前教师账号信息无效，请重新登录后再试');
 
     const units = selectedUnits
       .map((raw) => raw.split('||'))
       .filter((parts) => parts.length === 4)
-      .map(([textbookVersion, grade, semester, unitName]) => ({ textbookVersion, grade, semester, unitName }));
+      .map(([textbookVersion, grade, semester, unitName]) => ({
+        textbookVersion,
+        grade,
+        semester,
+        unitName,
+        paperId: selectedPaper?.id,
+        paperTitle: selectedPaper?.title,
+      }));
 
-    if (!units.length) return setError('当前单元选择无效，请重新选择。');
+    if (!units.length) return setError('没有可发布的单元数据');
 
     setError(null);
     try {
@@ -290,9 +298,11 @@ export const TeachingUnits: React.FC = () => {
         assignedBy: teacherId,
         studentIds: selectedStudents.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0),
         units,
+        paperId: selectedPaper?.id,
+        paperTitle: selectedPaper?.title,
       });
       await loadAssignments(students.map((row) => Number(row.id)).filter((id) => Number.isFinite(id)));
-      setMessage(`已向 ${selectedStudents.length} 名学生发布 ${units.length} 个单元。`);
+      setMessage(`已向 ${selectedStudents.length} 名学生发布 ${units.length} 个单元任务`);
       setTimeout(() => setMessage(null), 2500);
     } catch (e: any) {
       setError(e?.message || '发布教学任务失败');
@@ -306,24 +316,24 @@ export const TeachingUnits: React.FC = () => {
       await unitAssignmentApi.deleteOne(token, id);
       setAssignments((prev) => prev.filter((row) => row.id !== id));
       setSelectedAssignmentIds((prev) => prev.filter((row) => row !== id));
-      setMessage('任务已删除。');
+      setMessage('任务已删除');
       setTimeout(() => setMessage(null), 2000);
     } catch (e: any) {
-      setError(e?.message || '删除教学任务失败');
+      setError(e?.message || '删除任务失败');
     } finally {
       setDeleting(false);
     }
   };
 
   const handleBatchDelete = async () => {
-    if (!selectedAssignmentIds.length) return setError('请先勾选要删除的任务。');
+    if (!selectedAssignmentIds.length) return setError('请先选择要删除的任务');
     setDeleting(true);
     setError(null);
     try {
       await unitAssignmentApi.batchDelete(token, selectedAssignmentIds);
       setAssignments((prev) => prev.filter((row) => !selectedAssignmentIds.includes(row.id)));
       setSelectedAssignmentIds([]);
-      setMessage('已批量删除任务。');
+      setMessage('已批量删除任务');
       setTimeout(() => setMessage(null), 2000);
     } catch (e: any) {
       setError(e?.message || '批量删除任务失败');
@@ -337,9 +347,9 @@ export const TeachingUnits: React.FC = () => {
       <header className="mb-8">
         <h2 className="mb-2 flex items-center gap-3 text-3xl font-black text-on-background">
           <ClipboardList className="h-8 w-8 text-primary" />
-          教学任务管理
+          教学任务
         </h2>
-        <p className="text-on-surface-variant">当前门店：{resolvedStoreName || user?.storeName || '未分配门店'}</p>
+        <p className="text-on-surface-variant">当前门店：{resolvedStoreName || user?.storeName || '未分配'}，可为学生发布单元任务，并可关联教师自组试卷。</p>
       </header>
 
       {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
@@ -351,10 +361,16 @@ export const TeachingUnits: React.FC = () => {
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-xl font-bold">选择学生</h3>
               <button
-                onClick={() => setSelectedStudents((prev) => (prev.length === filteredStudents.length ? prev.filter((id) => !filteredStudents.some((row) => row.id === id)) : Array.from(new Set([...prev, ...filteredStudents.map((row) => row.id)]))))}
+                onClick={() =>
+                  setSelectedStudents((prev) =>
+                    prev.length === filteredStudents.length
+                      ? prev.filter((id) => !filteredStudents.some((row) => row.id === id))
+                      : Array.from(new Set([...prev, ...filteredStudents.map((row) => row.id)]))
+                  )
+                }
                 className="text-sm font-bold text-primary"
               >
-                {filteredStudents.length > 0 && filteredStudents.every((row) => selectedStudents.includes(row.id)) ? '取消当前筛选全选' : '全选当前筛选'}
+                {filteredStudents.length > 0 && filteredStudents.every((row) => selectedStudents.includes(row.id)) ? '取消全选' : '全选'}
               </button>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -374,7 +390,7 @@ export const TeachingUnits: React.FC = () => {
           </div>
           <div className="flex-1 space-y-2 overflow-y-auto p-4">
             {loading && <div className="rounded-xl bg-surface-container-high p-4 text-sm text-on-surface-variant">正在加载学生列表...</div>}
-            {!loading && filteredStudents.length === 0 && <div className="rounded-xl bg-surface-container-high p-4 text-sm text-on-surface-variant">当前筛选条件下没有学生。</div>}
+            {!loading && filteredStudents.length === 0 && <div className="rounded-xl bg-surface-container-high p-4 text-sm text-on-surface-variant">当前筛选条件下暂无学生。</div>}
             {!loading && filteredStudents.map((student) => {
               const checked = selectedStudents.includes(student.id);
               return (
@@ -397,13 +413,25 @@ export const TeachingUnits: React.FC = () => {
         </div>
 
         <div className="flex h-[720px] flex-col rounded-2xl border border-outline-variant/20 bg-surface-container-lowest shadow-sm">
-          <div className="space-y-2 rounded-t-2xl border-b border-outline-variant/20 bg-surface-container-low/50 p-6">
-            <h3 className="text-xl font-bold">选择单元</h3>
-            <p className="text-xs text-on-surface-variant">教材版本、年级和上下册来自管理员教材树，单元来自单词库。</p>
+          <div className="space-y-3 rounded-t-2xl border-b border-outline-variant/20 bg-surface-container-low/50 p-6">
+            <h3 className="text-xl font-bold">选择教学单元</h3>
+            <p className="text-xs text-on-surface-variant">可选填试卷，发布后学生在对应单元任务中会关联这份测试卷。</p>
+            <select
+              value={selectedPaperId}
+              onChange={(e) => setSelectedPaperId(e.target.value ? Number(e.target.value) : '')}
+              className="w-full rounded-xl border border-outline-variant/30 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">不关联试卷</option>
+              {papers.map((paper) => (
+                <option key={paper.id} value={paper.id}>
+                  {paper.title}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
-            {loading && <div className="rounded-xl bg-surface-container-high p-4 text-sm text-on-surface-variant">正在加载教学单元...</div>}
-            {!loading && taskTree.length === 0 && <div className="rounded-xl bg-surface-container-high p-4 text-sm text-on-surface-variant">当前权限范围下暂无可发布内容。</div>}
+            {loading && <div className="rounded-xl bg-surface-container-high p-4 text-sm text-on-surface-variant">正在加载单元树...</div>}
+            {!loading && taskTree.length === 0 && <div className="rounded-xl bg-surface-container-high p-4 text-sm text-on-surface-variant">当前门店暂无可发布的教材单元。</div>}
             {!loading && taskTree.map((book) => {
               const bookExpanded = expandedTextbooks.has(book.textbook);
               return (
@@ -446,7 +474,7 @@ export const TeachingUnits: React.FC = () => {
                                               </label>
                                             );
                                           })}
-                                          {semesterNode.units.length === 0 && <div className="px-3 py-2 text-xs text-on-surface-variant">该册别下暂无单元。</div>}
+                                          {semesterNode.units.length === 0 && <div className="px-3 py-2 text-xs text-on-surface-variant">当前册次暂无单元。</div>}
                                         </div>
                                       )}
                                     </div>
@@ -470,7 +498,7 @@ export const TeachingUnits: React.FC = () => {
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 font-black text-on-primary disabled:opacity-50"
             >
               <Send className="h-4 w-4" />
-              确认发送
+              发布教学任务
             </button>
           </div>
         </div>
@@ -478,12 +506,12 @@ export const TeachingUnits: React.FC = () => {
 
       <section className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest shadow-sm">
         <div className="flex flex-col gap-3 border-b border-outline-variant/20 px-5 py-4 md:flex-row md:items-center md:justify-between">
-          <h4 className="text-lg font-black text-on-surface">已发布教学任务</h4>
+          <h4 className="text-lg font-black text-on-surface">已发布任务</h4>
           <div className="flex items-center gap-3">
             <input
               value={taskFilterStudent}
               onChange={(e) => setTaskFilterStudent(e.target.value)}
-              placeholder="按学生姓名筛选"
+              placeholder="按学生姓名搜索"
               className="rounded-lg border border-outline-variant/30 bg-white px-3 py-2 text-sm"
             />
             <button
@@ -510,8 +538,9 @@ export const TeachingUnits: React.FC = () => {
                 <th className="px-4 py-3">学生</th>
                 <th className="px-4 py-3">教材</th>
                 <th className="px-4 py-3">年级</th>
-                <th className="px-4 py-3">册别</th>
+                <th className="px-4 py-3">册数</th>
                 <th className="px-4 py-3">单元</th>
+                <th className="px-4 py-3">试卷</th>
                 <th className="px-4 py-3">状态</th>
                 <th className="px-4 py-3">发布时间</th>
                 <th className="px-4 py-3">操作</th>
@@ -528,6 +557,7 @@ export const TeachingUnits: React.FC = () => {
                   <td className="px-4 py-2">{row.grade}</td>
                   <td className="px-4 py-2">{row.semester}</td>
                   <td className="px-4 py-2">{row.unitName}</td>
+                  <td className="px-4 py-2">{row.paperTitle || '-'}</td>
                   <td className="px-4 py-2">
                     <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">已发布</span>
                   </td>
@@ -541,7 +571,7 @@ export const TeachingUnits: React.FC = () => {
               ))}
               {!loading && filteredAssignments.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-6 text-center text-on-surface-variant">暂无任务</td>
+                  <td colSpan={10} className="px-4 py-6 text-center text-on-surface-variant">暂无已发布任务</td>
                 </tr>
               )}
             </tbody>

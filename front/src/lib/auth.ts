@@ -47,7 +47,7 @@ export interface AdminStore {
   teacherMax: number;
   studentMax: number;
   textbookPermissions: string[];
-  gradePermissions: string[];
+  gradePermissions?: string[];
   createdAt?: string;
   updatedAt?: string;
 }
@@ -68,8 +68,194 @@ export interface UnitAssignment {
   semester: string;
   unitName: string;
   status: string;
+  paperId?: number | null;
+  paperTitle?: string | null;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface TeacherExamSectionConfigRequest {
+  sectionTitle?: string;
+  questionType: string;
+  count: number;
+}
+
+export interface TeacherExamPaperGenerateRequest {
+  createdBy: number;
+  storeCode?: string;
+  title?: string;
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  unitCode?: string;
+  difficulty?: string;
+  knowledgeTag?: string;
+  sections: TeacherExamSectionConfigRequest[];
+}
+
+export interface TeacherExamPaperListItem {
+  id: number;
+  paperCode: string;
+  title: string;
+  createdBy: number;
+  storeCode?: string;
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  unitCode?: string;
+  difficulty?: string;
+  knowledgeTags?: any;
+  status: string;
+  totalSectionCount: number;
+  totalQuestionCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface TeacherExamPaperSectionItem {
+  id: number;
+  sortOrder: number;
+  itemType: 'question' | 'group';
+  questionId?: number | null;
+  groupId?: number | null;
+  snapshot: any;
+}
+
+export interface TeacherExamPaperSection {
+  id: number;
+  sectionNo: number;
+  sectionTitle: string;
+  questionType: string;
+  requestedCount: number;
+  actualCount: number;
+  itemType: 'question' | 'group';
+  items: TeacherExamPaperSectionItem[];
+}
+
+export interface TeacherExamPaperDetail {
+  id: number;
+  paperCode: string;
+  title: string;
+  createdBy: number;
+  storeCode?: string;
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  unitCode?: string;
+  difficulty?: string;
+  knowledgeTags?: any;
+  status: string;
+  totalSectionCount: number;
+  totalQuestionCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+  sections: TeacherExamPaperSection[];
+}
+
+export interface TeacherExamQuestionCandidate {
+  itemType: 'question' | 'group';
+  questionId?: number | null;
+  groupId?: number | null;
+  questionType: string;
+  label?: string;
+  stem?: string;
+  sharedStem?: string;
+  material?: string;
+  questionCount?: number;
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  unitCode?: string;
+  sourceFile?: string;
+}
+
+export interface StudentTeacherExamResultItem {
+  sectionId: number;
+  sectionTitle: string;
+  sectionQuestionType: string;
+  sectionItemId: number;
+  itemType: 'question' | 'group';
+  questionId?: number | null;
+  questionUid?: string;
+  questionNo?: number | null;
+  questionType: string;
+  submittedAnswer: any;
+  correctAnswer: any;
+  correct: boolean;
+  sourceFile?: string;
+  sharedStem?: string;
+  material?: string;
+  stem?: string;
+  options?: any;
+  analysis?: string;
+}
+
+export interface StudentTeacherExamSubmissionResult {
+  submissionId: number;
+  assignmentId: number;
+  paperId: number;
+  userId: number;
+  paperTitle: string;
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  unitCode?: string;
+  score: number;
+  correctCount: number;
+  totalCount: number;
+  durationSeconds?: number | null;
+  answers: any;
+  submittedAt?: string;
+  resultItems: StudentTeacherExamResultItem[];
+}
+
+export interface StudentTeacherExamAssignment {
+  assignmentId: number;
+  userId: number;
+  textbookVersion: string;
+  grade: string;
+  semester: string;
+  unitName: string;
+  paperId: number;
+  paperTitle?: string;
+  paper: TeacherExamPaperDetail;
+  latestSubmission?: StudentTeacherExamSubmissionResult | null;
+}
+
+export interface StudentTeacherExamWrongNotebookItem {
+  id: number;
+  assignmentId: number;
+  paperId: number;
+  paperTitle: string;
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  unitCode?: string;
+  sectionId?: number | null;
+  sectionTitle?: string;
+  sectionQuestionType?: string;
+  sectionItemId?: number | null;
+  questionId?: number | null;
+  questionUid?: string;
+  questionNo?: number | null;
+  questionType?: string;
+  sourceFile?: string;
+  sourceLabel?: string;
+  sharedStem?: string;
+  material?: string;
+  stem?: string;
+  options?: any;
+  submittedAnswer?: any;
+  correctAnswer?: any;
+  analysis?: string;
+  wrongCount: number;
+  lastWrongAt?: string;
+}
+
+export interface StudentTeacherExamWrongNotebookGroup {
+  sourceKey: string;
+  sourceLabel: string;
+  items: StudentTeacherExamWrongNotebookItem[];
 }
 
 export interface LearningSessionState {
@@ -93,6 +279,29 @@ export interface LearningGroupProgress {
   itemTotal?: number;
   learnedCount?: number;
   updatedAt?: string;
+}
+
+export interface StudentCheckInCalendarData {
+  year: number;
+  month: number;
+  checkedInDates: number[];
+  todayCheckedIn: boolean;
+  streakDays: number;
+  success?: boolean;
+  message?: string;
+}
+
+export interface StudentLearningStats {
+  userId: number;
+  statsDate: string;
+  totalWordsCompleted: number;
+  todayWordsCompleted: number;
+  totalPhrasesCompleted: number;
+  todayPhrasesCompleted: number;
+  totalPassagesCompleted: number;
+  todayPassagesCompleted: number;
+  totalReviewWordsCompleted: number;
+  todayReviewWordsCompleted: number;
 }
 
 export interface WordTestGroupScope {
@@ -247,170 +456,118 @@ export interface WordReviewDailySession {
   items: WordReviewSessionItem[];
 }
 
-export interface ExamQuestionOption {
+export interface QuestionBankOptionItem {
+  id?: number;
   key: string;
   text: string;
   sortOrder?: number;
 }
 
-export interface ExamMaterialItem {
-  id: number;
-  materialUid: string;
-  materialLabel: string;
-  questionType: string;
-  title?: string;
-  content: string;
-  analysis?: string;
-  sortOrder?: number;
+export interface QuestionBankImportResult {
+  batchId: number;
+  batchCode: string;
+  totalCount: number;
+  successCount: number;
+  failedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  errors: string[];
 }
 
-export interface ExamQuestionItem {
+export interface QuestionBankImportBatch {
   id: number;
-  questionUid: string;
-  questionNo: number;
-  questionType: string;
-  stem: string;
-  answerText?: string;
-  analysis?: string;
-  difficulty?: string;
-  status?: string;
-  sortOrder?: number;
-  materialId?: number | null;
-  materialUid?: string;
-  materialLabel?: string;
-  options: ExamQuestionOption[];
-}
-
-export interface ExamPaperSummary {
-  id: number;
-  paperCode: string;
-  paperName: string;
-  paperType: string;
+  batchCode: string;
   sourceType: string;
+  sourceFile?: string;
+  parserVersion?: string;
   bookVersion: string;
   grade: string;
   semester: string;
-  unitCode: string;
-  sourceFile?: string;
-  questionCount: number;
-  status?: string;
+  unitCode?: string;
+  importStatus: string;
+  overwriteMode: string;
+  totalCount: number;
+  successCount: number;
+  failedCount: number;
+  createdBy?: number;
   createdAt?: string;
   updatedAt?: string;
 }
 
-export interface ExamPaperDetail extends ExamPaperSummary {
-  createdBy?: number | null;
-  materials: ExamMaterialItem[];
-  questions: ExamQuestionItem[];
-}
-
-export interface ExamImportResult {
-  paperId: number;
-  paperCode: string;
-  paperName: string;
-  paperType: string;
-  sourceType: string;
-  bookVersion: string;
-  grade: string;
-  semester: string;
-  unitCode: string;
-  materialCount: number;
-  questionCount: number;
-  overwritten: boolean;
-}
-
-export interface StudentExamPracticeQuestionResult {
-  questionId: number;
-  questionNo: number;
-  submittedAnswer: string;
-  correctAnswer: string;
-  correct: boolean;
-}
-
-export interface StudentExamPracticeResult {
-  practiceId: number;
-  userId: number;
-  paperId: number;
-  paperName: string;
-  bookVersion: string;
-  grade: string;
-  semester: string;
-  unitCode: string;
-  score: number;
-  correctCount: number;
-  totalCount: number;
-  durationSeconds?: number | null;
-  submittedAt?: string;
-  answers: StudentExamPracticeQuestionResult[];
-}
-
-export interface StudentExamPracticeSubmitRequest {
-  userId: number;
-  durationSeconds?: number;
-  answers: Array<{ questionId: number; answerText: string }>;
-}
-
-export interface StudentExamWrongNotebookItem {
+export interface QuestionBankQuestionSummary {
   id: number;
-  paperId: number;
-  paperName: string;
+  questionUid: string;
+  questionType: string;
+  stem?: string;
   bookVersion: string;
   grade: string;
   semester: string;
-  unitCode: string;
-  questionId: number;
-  questionUid: string;
-  questionNo: number;
-  questionType: string;
-  materialLabel?: string;
-  materialTitle?: string;
-  materialContent?: string;
-  materialAnalysis?: string;
-  stem: string;
-  options: ExamQuestionOption[];
-  submittedAnswer?: string;
-  correctAnswer?: string;
-  analysis?: string;
-  wrongCount: number;
-  lastWrongAt?: string;
-}
-
-export interface ExamDeleteResult {
-  message: string;
-  deletedPaperCount: number;
-  deletedMaterialCount: number;
-  deletedQuestionCount: number;
-  deletedOptionCount: number;
-}
-
-export interface ExamPaperUpdateRequest {
-  paperName?: string;
+  unitCode?: string;
+  examScene?: string;
+  groupId?: number | null;
   status?: string;
   sourceFile?: string;
+  updatedAt?: string;
 }
 
-export interface ExamMaterialUpsertRequest {
-  materialUid?: string;
-  materialLabel: string;
+export interface QuestionBankQuestionDetail {
+  id: number;
+  questionUid: string;
+  batchId: number;
+  groupId?: number | null;
+  groupUid?: string;
   questionType: string;
-  title?: string;
-  content: string;
-  analysis?: string;
-  sortOrder?: number;
-}
-
-export interface ExamQuestionUpsertRequest {
-  questionUid?: string;
-  questionNo: number;
-  questionType: string;
-  stem: string;
-  answerText?: string;
+  questionNo?: number | null;
+  stem?: string;
+  answer: any;
+  answerJson?: string;
   analysis?: string;
   difficulty?: string;
+  knowledgeTags?: any;
+  knowledgeTagsJson?: string;
+  sourceType: string;
+  sourceFile?: string;
+  parserVersion?: string;
+  bookVersion: string;
+  grade: string;
+  semester: string;
+  unitCode?: string;
+  examScene?: string;
   status?: string;
-  sortOrder?: number;
-  materialId?: number | null;
-  options: ExamQuestionOption[];
+  remarks?: string;
+  sharedStem?: string;
+  material?: string;
+  createdBy?: number | null;
+  createdAt?: string;
+  updatedAt?: string;
+  options: QuestionBankOptionItem[];
+}
+
+export interface QuestionBankQuestionUpdateRequest {
+  stem?: string;
+  answer?: any;
+  analysis?: string;
+  difficulty?: string;
+  knowledgeTags?: any;
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  unitCode?: string;
+  examScene?: string;
+  status?: string;
+  remarks?: string;
+  sharedStem?: string;
+  material?: string;
+  options?: QuestionBankOptionItem[];
+}
+
+export interface SpringPage<T> {
+  content: T[];
+  totalElements: number;
+  totalPages: number;
+  number: number;
+  size: number;
 }
 
 export const authApi = {
@@ -566,7 +723,7 @@ export const teacherStudentApi = {
   createStudent: async (
     token: string,
     data: Pick<AdminUser, 'username' | 'name' | 'loginPassword' | 'textbookVersion' | 'grade' | 'active'> &
-      Partial<Pick<AdminUser, 'expireDate'>>
+      Partial<Pick<AdminUser, 'phone' | 'expireDate'>>
   ): Promise<AdminUser> => {
     const response = await fetch(`${API_BASE_URL}/api/users/teacher/students`, {
       method: 'POST',
@@ -577,7 +734,6 @@ export const teacherStudentApi = {
       body: JSON.stringify({
         ...data,
         role: 'student',
-        phone: data.username,
       }),
     });
     const payload = await response.json();
@@ -590,7 +746,7 @@ export const teacherStudentApi = {
   updateStudent: async (
     token: string,
     userId: number,
-    data: Partial<Pick<AdminUser, 'username' | 'name' | 'loginPassword' | 'textbookVersion' | 'grade' | 'expireDate' | 'active'>>
+    data: Partial<Pick<AdminUser, 'username' | 'phone' | 'name' | 'loginPassword' | 'textbookVersion' | 'grade' | 'expireDate' | 'active'>>
   ): Promise<AdminUser> => {
     const response = await fetch(`${API_BASE_URL}/api/users/teacher/students/${userId}`, {
       method: 'PUT',
@@ -601,7 +757,6 @@ export const teacherStudentApi = {
       body: JSON.stringify({
         ...data,
         role: 'student',
-        phone: data.username,
       }),
     });
     const payload = await response.json();
@@ -662,7 +817,7 @@ export const adminStoreApi = {
 
   createStore: async (
     token: string,
-    data: Pick<AdminStore, 'storeName' | 'teacherMax' | 'studentMax' | 'textbookPermissions' | 'gradePermissions'>
+    data: Pick<AdminStore, 'storeName' | 'teacherMax' | 'studentMax' | 'textbookPermissions'>
   ): Promise<AdminStore> => {
     const response = await fetch(`${API_BASE_URL}/api/stores`, {
       method: 'POST',
@@ -682,7 +837,7 @@ export const adminStoreApi = {
   updateStore: async (
     token: string,
     storeCode: string,
-    data: Partial<Pick<AdminStore, 'storeName' | 'teacherMax' | 'studentMax' | 'textbookPermissions' | 'gradePermissions'>>
+    data: Partial<Pick<AdminStore, 'storeName' | 'teacherMax' | 'studentMax' | 'textbookPermissions'>>
   ): Promise<AdminStore> => {
     const response = await fetch(`${API_BASE_URL}/api/stores/${encodeURIComponent(storeCode)}`, {
       method: 'PUT',
@@ -756,7 +911,7 @@ export const unitAssignmentApi = {
 
   batchAssign: async (
     token: string,
-    request: { assignedBy: number; studentIds: number[]; units: UnitTaskItem[] }
+    request: { assignedBy: number; studentIds: number[]; units: UnitTaskItem[]; paperId?: number; paperTitle?: string }
   ): Promise<{ message: string }> => {
     const response = await fetch(`${API_BASE_URL}/api/tests/unit-assignments/batch-assign`, {
       method: 'POST',
@@ -800,6 +955,195 @@ export const unitAssignmentApi = {
     if (!response.ok) {
       throw new Error(payload?.error || 'Failed to delete unit assignments');
     }
+    return payload;
+  },
+};
+
+export const teacherExamPaperApi = {
+  generate: async (token: string, request: TeacherExamPaperGenerateRequest): Promise<TeacherExamPaperDetail> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(request),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to generate teacher exam paper');
+    return payload;
+  },
+
+  list: async (token: string, createdBy: number, storeCode?: string): Promise<TeacherExamPaperListItem[]> => {
+    const q = new URLSearchParams({ createdBy: String(createdBy) });
+    if (storeCode) q.set('storeCode', storeCode);
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load teacher exam papers');
+    return payload;
+  },
+
+  getDetail: async (token: string, paperId: number): Promise<TeacherExamPaperDetail> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers/${paperId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load teacher exam paper detail');
+    return payload;
+  },
+
+  update: async (token: string, paperId: number, body: { title?: string }): Promise<TeacherExamPaperDetail> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers/${paperId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to update teacher exam paper');
+    return payload;
+  },
+
+  replaceItem: async (
+    token: string,
+    paperId: number,
+    sectionId: number,
+    itemId: number,
+    body: { questionId?: number; groupId?: number }
+  ): Promise<TeacherExamPaperDetail> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers/${paperId}/sections/${sectionId}/items/${itemId}/replace`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to replace exam item');
+    return payload;
+  },
+
+  getCandidates: async (
+    token: string,
+    params: {
+      bookVersion?: string;
+      grade?: string;
+      semester?: string;
+      unitCode?: string;
+      difficulty?: string;
+      knowledgeTag?: string;
+      questionType: string;
+      currentQuestionId?: number;
+      currentGroupId?: number;
+      keyword?: string;
+      limit?: number;
+    }
+  ): Promise<TeacherExamQuestionCandidate[]> => {
+    const q = new URLSearchParams({ questionType: params.questionType });
+    if (params.bookVersion) q.set('bookVersion', params.bookVersion);
+    if (params.grade) q.set('grade', params.grade);
+    if (params.semester) q.set('semester', params.semester);
+    if (params.unitCode) q.set('unitCode', params.unitCode);
+    if (params.difficulty) q.set('difficulty', params.difficulty);
+    if (params.knowledgeTag) q.set('knowledgeTag', params.knowledgeTag);
+    if (typeof params.currentQuestionId === 'number') q.set('currentQuestionId', String(params.currentQuestionId));
+    if (typeof params.currentGroupId === 'number') q.set('currentGroupId', String(params.currentGroupId));
+    if (params.keyword) q.set('keyword', params.keyword);
+    if (typeof params.limit === 'number') q.set('limit', String(params.limit));
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers/question-bank/candidates?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load replacement candidates');
+    return payload;
+  },
+
+  deleteOne: async (token: string, paperId: number): Promise<{ message: string }> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers/${paperId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to delete teacher exam paper');
+    return payload;
+  },
+
+  deleteItem: async (token: string, paperId: number, sectionId: number, itemId: number): Promise<TeacherExamPaperDetail> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/teacher-exam-papers/${paperId}/sections/${sectionId}/items/${itemId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to delete exam item');
+    return payload;
+  },
+};
+
+export const studentTeacherExamApi = {
+  getAssignment: async (token: string, assignmentId: number, userId: number): Promise<StudentTeacherExamAssignment> => {
+    const q = new URLSearchParams({ userId: String(userId) });
+    const response = await fetch(`${API_BASE_URL}/api/tests/student-teacher-papers/unit-assignment/${assignmentId}?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load student teacher exam assignment');
+    return payload;
+  },
+
+  submit: async (
+    token: string,
+    assignmentId: number,
+    body: {
+      userId: number;
+      durationSeconds?: number;
+      answers: any;
+      score: number;
+      correctCount: number;
+      totalCount: number;
+      resultItems: Array<{
+        sectionId: number;
+        sectionItemId: number;
+        itemType: string;
+        questionId?: number | null;
+        questionUid?: string;
+        questionNo?: number | null;
+        questionType: string;
+        submittedAnswer: any;
+        correctAnswer: any;
+        correct: boolean;
+        sourceFile?: string;
+        sharedStem?: string;
+        material?: string;
+        stem?: string;
+        options?: any;
+        analysis?: string;
+      }>;
+    }
+  ): Promise<StudentTeacherExamSubmissionResult> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/student-teacher-papers/unit-assignment/${assignmentId}/submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to submit student teacher exam');
+    return payload;
+  },
+
+  getWrongNotebook: async (token: string, userId: number): Promise<StudentTeacherExamWrongNotebookGroup[]> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/student-teacher-papers/wrong-notebook/${userId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load student teacher exam wrong notebook');
     return payload;
   },
 };
@@ -879,6 +1223,40 @@ export const learningProgressApi = {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || 'Failed to complete group');
+    return payload;
+  },
+};
+
+export const studentCheckInApi = {
+  getCalendar: async (token: string, year: number, month: number): Promise<StudentCheckInCalendarData> => {
+    const q = new URLSearchParams({ year: String(year), month: String(month) });
+    const response = await fetch(`${API_BASE_URL}/api/users/students/check-in-calendar?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load student check-in calendar');
+    return payload;
+  },
+
+  checkInToday: async (token: string): Promise<StudentCheckInCalendarData> => {
+    const response = await fetch(`${API_BASE_URL}/api/users/students/check-in`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to check in today');
+    return payload;
+  },
+};
+
+export const studentLearningStatsApi = {
+  get: async (token: string, userId: number): Promise<StudentLearningStats> => {
+    const q = new URLSearchParams({ userId: String(userId) });
+    const response = await fetch(`${API_BASE_URL}/api/tests/student-learning-stats?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load student learning stats');
     return payload;
   },
 };
@@ -1063,7 +1441,7 @@ export const wordReviewApi = {
   },
 };
 
-export const examApi = {
+export const questionBankApi = {
   importJsonl: async (
     token: string,
     params: {
@@ -1071,80 +1449,108 @@ export const examApi = {
       bookVersion: string;
       grade: string;
       semester: string;
-      unitCode: string;
-      overwrite?: boolean;
+      unitCode?: string;
+      sourceType?: string;
+      overwriteMode?: 'skip_existing' | 'overwrite_existing';
       createdBy?: number;
     }
-  ): Promise<ExamImportResult> => {
+  ): Promise<QuestionBankImportResult> => {
     const form = new FormData();
     form.append('file', params.file);
     form.append('bookVersion', params.bookVersion);
     form.append('grade', params.grade);
     form.append('semester', params.semester);
-    form.append('unitCode', params.unitCode);
-    form.append('overwrite', String(Boolean(params.overwrite)));
-    if (typeof params.createdBy === 'number') {
-      form.append('createdBy', String(params.createdBy));
-    }
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/import`, {
+    if (params.unitCode) form.append('unitCode', params.unitCode);
+    if (params.sourceType) form.append('sourceType', params.sourceType);
+    form.append('overwriteMode', params.overwriteMode || 'overwrite_existing');
+    if (typeof params.createdBy === 'number') form.append('createdBy', String(params.createdBy));
+    const response = await fetch(`${API_BASE_URL}/api/tests/question-bank/import`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
       body: form,
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to import exam jsonl');
+    if (!response.ok) throw new Error(payload?.error || 'Failed to import question bank jsonl');
     return payload;
   },
 
-  getPapers: async (
+  getImportBatches: async (
     token: string,
-    params: { bookVersion: string; grade: string; semester: string; unitCode?: string; paperType?: string }
-  ): Promise<ExamPaperSummary[]> => {
-    const q = new URLSearchParams({
-      bookVersion: params.bookVersion,
-      grade: params.grade,
-      semester: params.semester,
-    });
+    params: {
+      bookVersion?: string;
+      grade?: string;
+      semester?: string;
+      unitCode?: string;
+      status?: string;
+      page?: number;
+      size?: number;
+    }
+  ): Promise<SpringPage<QuestionBankImportBatch>> => {
+    const q = new URLSearchParams();
+    if (params.bookVersion) q.set('bookVersion', params.bookVersion);
+    if (params.grade) q.set('grade', params.grade);
+    if (params.semester) q.set('semester', params.semester);
     if (params.unitCode) q.set('unitCode', params.unitCode);
-    if (params.paperType) q.set('paperType', params.paperType);
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers?${q.toString()}`, {
+    if (params.status) q.set('status', params.status);
+    q.set('page', String(params.page ?? 0));
+    q.set('size', String(params.size ?? 20));
+    const response = await fetch(`${API_BASE_URL}/api/tests/question-bank/import-batches?${q.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to load exam papers');
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load import batches');
     return payload;
   },
 
-  countPapers: async (
+  getQuestions: async (
     token: string,
-    params: { bookVersion: string; grade: string; semester: string; unitCode?: string; paperType?: string }
-  ): Promise<number> => {
-    const q = new URLSearchParams({
-      bookVersion: params.bookVersion,
-      grade: params.grade,
-      semester: params.semester,
-    });
+    params: {
+      bookVersion?: string;
+      grade?: string;
+      semester?: string;
+      unitCode?: string;
+      questionType?: string;
+      examScene?: string;
+      status?: string;
+      keyword?: string;
+      sourceType?: string;
+      batchId?: number;
+      page?: number;
+      size?: number;
+    }
+  ): Promise<SpringPage<QuestionBankQuestionSummary>> => {
+    const q = new URLSearchParams();
+    if (params.bookVersion) q.set('bookVersion', params.bookVersion);
+    if (params.grade) q.set('grade', params.grade);
+    if (params.semester) q.set('semester', params.semester);
     if (params.unitCode) q.set('unitCode', params.unitCode);
-    if (params.paperType) q.set('paperType', params.paperType);
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/count?${q.toString()}`, {
+    if (params.questionType) q.set('questionType', params.questionType);
+    if (params.examScene) q.set('examScene', params.examScene);
+    if (params.status) q.set('status', params.status);
+    if (params.keyword) q.set('keyword', params.keyword);
+    if (params.sourceType) q.set('sourceType', params.sourceType);
+    if (typeof params.batchId === 'number') q.set('batchId', String(params.batchId));
+    q.set('page', String(params.page ?? 0));
+    q.set('size', String(params.size ?? 50));
+    const response = await fetch(`${API_BASE_URL}/api/tests/question-bank/questions?${q.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to count exam papers');
-    return Number(payload?.count || 0);
-  },
-
-  getPaperDetail: async (token: string, paperId: number): Promise<ExamPaperDetail> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to load exam paper detail');
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load question bank items');
     return payload;
   },
 
-  updatePaper: async (token: string, paperId: number, body: ExamPaperUpdateRequest): Promise<ExamPaperDetail> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}`, {
+  getQuestionDetail: async (token: string, id: number): Promise<QuestionBankQuestionDetail> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/question-bank/questions/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to load question detail');
+    return payload;
+  },
+
+  updateQuestion: async (token: string, id: number, body: QuestionBankQuestionUpdateRequest): Promise<QuestionBankQuestionDetail> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/question-bank/questions/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -1153,171 +1559,17 @@ export const examApi = {
       body: JSON.stringify(body),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to update exam paper');
+    if (!response.ok) throw new Error(payload?.error || 'Failed to update question');
     return payload;
   },
 
-  createMaterial: async (token: string, paperId: number, body: ExamMaterialUpsertRequest): Promise<ExamMaterialItem> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}/materials`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to create exam material');
-    return payload;
-  },
-
-  updateMaterial: async (token: string, paperId: number, materialId: number, body: ExamMaterialUpsertRequest): Promise<ExamMaterialItem> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}/materials/${materialId}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to update exam material');
-    return payload;
-  },
-
-  deleteMaterial: async (token: string, paperId: number, materialId: number) => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}/materials/${materialId}`, {
+  deleteQuestion: async (token: string, id: number): Promise<{ message: string }> => {
+    const response = await fetch(`${API_BASE_URL}/api/tests/question-bank/questions/${id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to delete exam material');
-    return payload as { message: string };
-  },
-
-  createQuestion: async (token: string, paperId: number, body: ExamQuestionUpsertRequest): Promise<ExamQuestionItem> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}/questions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to create exam question');
-    return payload;
-  },
-
-  updateQuestion: async (token: string, paperId: number, questionId: number, body: ExamQuestionUpsertRequest): Promise<ExamQuestionItem> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}/questions/${questionId}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to update exam question');
-    return payload;
-  },
-
-  deleteQuestion: async (token: string, paperId: number, questionId: number) => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}/questions/${questionId}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to delete exam question');
-    return payload as { message: string };
-  },
-
-  deletePaper: async (token: string, paperId: number): Promise<ExamDeleteResult> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/${paperId}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to delete exam paper');
-    return payload;
-  },
-
-  deleteUnitScope: async (
-    token: string,
-    params: { bookVersion: string; grade: string; semester: string; unitCode: string; paperType?: string }
-  ): Promise<ExamDeleteResult> => {
-    const q = new URLSearchParams({
-      bookVersion: params.bookVersion,
-      grade: params.grade,
-      semester: params.semester,
-      unitCode: params.unitCode,
-    });
-    if (params.paperType) q.set('paperType', params.paperType);
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/scope/unit?${q.toString()}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to delete unit exam papers');
-    return payload;
-  },
-
-  deleteSemesterScope: async (
-    token: string,
-    params: { bookVersion: string; grade: string; semester: string; paperType?: string }
-  ): Promise<ExamDeleteResult> => {
-    const q = new URLSearchParams({
-      bookVersion: params.bookVersion,
-      grade: params.grade,
-      semester: params.semester,
-    });
-    if (params.paperType) q.set('paperType', params.paperType);
-    const response = await fetch(`${API_BASE_URL}/api/tests/exam-papers/scope/semester?${q.toString()}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to delete semester exam papers');
-    return payload;
-  },
-
-  getLatestPractice: async (token: string, paperId: number, userId: number): Promise<StudentExamPracticeResult | null> => {
-    const q = new URLSearchParams({ userId: String(userId) });
-    const response = await fetch(`${API_BASE_URL}/api/tests/student-exam-practices/papers/${paperId}/latest?${q.toString()}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (response.status === 404) return null;
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to load latest exam practice');
-    return payload;
-  },
-
-  submitPractice: async (token: string, paperId: number, body: StudentExamPracticeSubmitRequest): Promise<StudentExamPracticeResult> => {
-    const response = await fetch(`${API_BASE_URL}/api/tests/student-exam-practices/papers/${paperId}/submit`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to submit exam practice');
-    return payload;
-  },
-
-  getWrongNotebook: async (token: string, userId: number): Promise<StudentExamWrongNotebookItem[]> => {
-    const q = new URLSearchParams({ userId: String(userId) });
-    const response = await fetch(`${API_BASE_URL}/api/tests/student-exam-practices/wrong-notebook?${q.toString()}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'Failed to load exam wrong notebook');
+    if (!response.ok) throw new Error(payload?.error || 'Failed to delete question');
     return payload;
   },
 };
-
-
-
-

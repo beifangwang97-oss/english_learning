@@ -8,14 +8,24 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Optional;
-import java.util.Locale;
+import java.nio.charset.Charset;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 @Service
 public class UserServiceImpl implements UserService {
+    private static final Charset GBK = Charset.forName("GBK");
+    private static final int[] CHINESE_INITIAL_BOUNDARIES = {
+            1601, 1637, 1833, 2078, 2274, 2302, 2433, 2594, 2787, 3106, 3212,
+            3472, 3635, 3722, 3730, 3858, 4027, 4086, 4390, 4558, 4684, 4925, 5249, 5600
+    };
+    private static final char[] CHINESE_INITIALS = {
+            'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M',
+            'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'W', 'X', 'Y', 'Z'
+    };
 
     @Autowired
     private UserRepository userRepository;
@@ -28,7 +38,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public User register(User user) {
-        normalizeAccountIdentity(user);
+        prepareAccountIdentity(user, null);
         validateBusinessRules(user);
         if (userRepository.existsByUsername(user.getUsername())) {
             throw new RuntimeException("Username already exists");
@@ -50,21 +60,19 @@ public class UserServiceImpl implements UserService {
     @Override
     public Optional<User> login(String username, String password) {
         Optional<User> user = userRepository.findByUsername(username);
-        if (user.isPresent()) {
-            if (passwordEncoder.matches(password, user.get().getPasswordHash())) {
-                User u = user.get();
-                if (!u.isActive()) {
-                    throw new RuntimeException("账号已停用");
-                }
-                LocalDate today = LocalDate.now();
-                if (u.getExpireDate() == null || today.isAfter(u.getExpireDate())) {
-                    throw new RuntimeException("账号已到期");
-                }
-                u.setOnlineStatus(1);
-                u.setLastActiveAt(LocalDateTime.now());
-                userRepository.save(u);
-                return user;
+        if (user.isPresent() && passwordEncoder.matches(password, user.get().getPasswordHash())) {
+            User u = user.get();
+            if (!u.isActive()) {
+                throw new RuntimeException("Account is disabled");
             }
+            LocalDate today = LocalDate.now();
+            if (u.getExpireDate() == null || today.isAfter(u.getExpireDate())) {
+                throw new RuntimeException("Account has expired");
+            }
+            u.setOnlineStatus(1);
+            u.setLastActiveAt(LocalDateTime.now());
+            userRepository.save(u);
+            return user;
         }
         return Optional.empty();
     }
@@ -99,7 +107,11 @@ public class UserServiceImpl implements UserService {
         }
 
         User updatedUser = existingUser.get();
-        if (user.getUsername() != null && !user.getUsername().isBlank()
+        String targetRole = user.getRole() != null && !user.getRole().isBlank() ? user.getRole() : updatedUser.getRole();
+
+        if (!"student".equalsIgnoreCase(targetRole)
+                && user.getUsername() != null
+                && !user.getUsername().isBlank()
                 && !user.getUsername().equals(updatedUser.getUsername())) {
             if (userRepository.existsByUsername(user.getUsername())) {
                 throw new RuntimeException("Username already exists");
@@ -122,12 +134,6 @@ public class UserServiceImpl implements UserService {
         if (user.getPhone() != null) {
             updatedUser.setPhone(user.getPhone());
         }
-        if (user.getTextbookVersion() != null) {
-            updatedUser.setTextbookVersion(user.getTextbookVersion());
-        }
-        if (user.getGrade() != null) {
-            updatedUser.setGrade(user.getGrade());
-        }
         if (user.getStoreName() != null) {
             updatedUser.setStoreName(user.getStoreName());
         }
@@ -137,9 +143,19 @@ public class UserServiceImpl implements UserService {
         if (user.isActive() != updatedUser.isActive()) {
             updatedUser.setActive(user.isActive());
         }
+        if ("student".equalsIgnoreCase(updatedUser.getRole())) {
+            if (user.getTextbookVersion() != null) {
+                updatedUser.setTextbookVersion(user.getTextbookVersion());
+            }
+            if (user.getGrade() != null) {
+                updatedUser.setGrade(user.getGrade());
+            }
+        } else {
+            updatedUser.setTextbookVersion(null);
+            updatedUser.setGrade(null);
+        }
 
-        // Keep username and phone consistent for student/teacher accounts.
-        normalizeAccountIdentity(updatedUser);
+        prepareAccountIdentity(updatedUser, updatedUser.getId());
         validateBusinessRules(updatedUser);
 
         return userRepository.save(updatedUser);
@@ -179,25 +195,34 @@ public class UserServiceImpl implements UserService {
         return userRepository.countByRoleAndOnlineStatus(role, 1);
     }
 
-    private void normalizeAccountIdentity(User user) {
+    private void prepareAccountIdentity(User user, Long currentUserId) {
         if (user == null || user.getRole() == null) {
             return;
         }
-        if ("student".equalsIgnoreCase(user.getRole()) || "teacher".equalsIgnoreCase(user.getRole())) {
-            String username = user.getUsername();
-            String phone = user.getPhone();
+        if ("teacher".equalsIgnoreCase(user.getRole())) {
+            normalizeTeacherIdentity(user);
+            return;
+        }
+        if ("student".equalsIgnoreCase(user.getRole())) {
+            String generatedLoginId = generateStudentLoginId(user, currentUserId);
+            user.setUsername(generatedLoginId);
+        }
+    }
 
-            if ((username == null || username.isBlank()) && phone != null && !phone.isBlank()) {
-                user.setUsername(phone);
-                username = phone;
-            }
-            if ((phone == null || phone.isBlank()) && username != null && !username.isBlank()) {
-                user.setPhone(username);
-                phone = username;
-            }
-            if (username != null && !username.isBlank()) {
-                user.setPhone(username);
-            }
+    private void normalizeTeacherIdentity(User user) {
+        String username = safeTrim(user.getUsername());
+        String phone = safeTrim(user.getPhone());
+
+        if (username.isBlank() && !phone.isBlank()) {
+            user.setUsername(phone);
+            username = phone;
+        }
+        if (phone.isBlank() && !username.isBlank()) {
+            user.setPhone(username);
+            phone = username;
+        }
+        if (!username.isBlank()) {
+            user.setPhone(username);
         }
     }
 
@@ -205,46 +230,162 @@ public class UserServiceImpl implements UserService {
         if (user == null || user.getRole() == null) {
             return;
         }
-        if ("student".equalsIgnoreCase(user.getRole()) || "teacher".equalsIgnoreCase(user.getRole())) {
-            if (user.getUsername() == null || !user.getUsername().matches("^1\\d{10}$")) {
-                throw new RuntimeException("Username must be a valid 11-digit mobile number");
-            }
-            if (user.getName() == null || user.getName().isBlank()) {
-                throw new RuntimeException("Name is required");
-            }
-            if (user.getLoginPassword() == null || user.getLoginPassword().isBlank()) {
-                throw new RuntimeException("Password is required");
-            }
-            if (user.getStoreName() == null || user.getStoreName().isBlank()) {
-                throw new RuntimeException("Store is required");
-            }
-            if (user.getExpireDate() == null) {
-                throw new RuntimeException("Expire date is required");
-            }
+        if ("teacher".equalsIgnoreCase(user.getRole())) {
+            validateTeacherRules(user);
+            return;
         }
         if ("student".equalsIgnoreCase(user.getRole())) {
-            String normalizedVersion = normalizeTextbookVersion(user.getTextbookVersion());
-            if (normalizedVersion.isBlank()) {
-                throw new RuntimeException("Textbook version is required");
-            }
-            if (!textbookVersionTagRepository.existsByName(normalizedVersion)) {
-                throw new RuntimeException("Invalid textbook version");
-            }
-            user.setTextbookVersion(normalizedVersion);
-            if (user.getGrade() == null || user.getGrade().isBlank()) {
-                throw new RuntimeException("Grade is required");
-            }
+            validateStudentRules(user);
         }
     }
 
-    private String normalizeTextbookVersion(String value) {
-        if (value == null) return "";
-        String s = value.trim();
-        if (s.isBlank()) return "";
-        String upper = s.toUpperCase(Locale.ROOT);
-        if ("PEP".equals(upper) || s.contains("人教")) return "人教版";
-        if ("FLTRP".equals(upper) || s.contains("外研")) return "外研版";
-        if ("SHJ".equals(upper) || s.contains("沪教")) return "沪教版";
-        return s;
+    private void validateTeacherRules(User user) {
+        if (safeTrim(user.getUsername()).isBlank() || !user.getUsername().matches("^1\\d{10}$")) {
+            throw new RuntimeException("Teacher username must be a valid 11-digit mobile number");
+        }
+        if (user.getName() == null || user.getName().isBlank()) {
+            throw new RuntimeException("Name is required");
+        }
+        if (user.getLoginPassword() == null || user.getLoginPassword().isBlank()) {
+            throw new RuntimeException("Password is required");
+        }
+        if (safeTrim(user.getStoreName()).isBlank()) {
+            throw new RuntimeException("Store is required");
+        }
+        if (user.getExpireDate() == null) {
+            throw new RuntimeException("Expire date is required");
+        }
+    }
+
+    private void validateStudentRules(User user) {
+        if (safeTrim(user.getUsername()).isBlank()) {
+            throw new RuntimeException("Student login id generation failed");
+        }
+        if (user.getName() == null || user.getName().isBlank()) {
+            throw new RuntimeException("Name is required");
+        }
+        if (user.getLoginPassword() == null || user.getLoginPassword().isBlank()) {
+            throw new RuntimeException("Password is required");
+        }
+        if (safeTrim(user.getPhone()).isBlank()) {
+            throw new RuntimeException("Contact is required");
+        }
+        if (safeTrim(user.getStoreName()).isBlank()) {
+            throw new RuntimeException("Store is required");
+        }
+        if (user.getExpireDate() == null) {
+            throw new RuntimeException("Expire date is required");
+        }
+        String textbookVersion = user.getTextbookVersion() == null ? "" : user.getTextbookVersion().trim();
+        if (textbookVersion.isBlank()) {
+            throw new RuntimeException("Textbook version is required");
+        }
+        if (!textbookVersionTagRepository.existsByName(textbookVersion)) {
+            throw new RuntimeException("Invalid textbook version");
+        }
+        user.setTextbookVersion(textbookVersion);
+        if (user.getGrade() == null || user.getGrade().isBlank()) {
+            throw new RuntimeException("Grade is required");
+        }
+    }
+
+    private String generateStudentLoginId(User user, Long currentUserId) {
+        String storePart = deriveStoreSuffix(user.getStoreName());
+        String contactPart = deriveContactTail(user.getPhone());
+        String initialsPart = extractNameInitials(user.getName());
+        String base = (storePart + contactPart + initialsPart).toUpperCase();
+        if (base.isBlank()) {
+            base = "000000X";
+        }
+        String candidate = base;
+        int suffix = 1;
+        while (usernameTakenByOtherUser(candidate, currentUserId)) {
+            candidate = base + String.format("%02d", suffix++);
+        }
+        return candidate;
+    }
+
+    private boolean usernameTakenByOtherUser(String username, Long currentUserId) {
+        return userRepository.findByUsername(username)
+                .map(user -> !Objects.equals(user.getId(), currentUserId))
+                .orElse(false);
+    }
+
+    private String deriveStoreSuffix(String storeName) {
+        String normalized = safeTrim(storeName);
+        String digits = normalized.replaceAll("\\D", "");
+        if (!digits.isBlank()) {
+            return digits.length() <= 3 ? String.format("%03d", Integer.parseInt(digits)) : digits.substring(digits.length() - 3);
+        }
+        String alnum = normalized.replaceAll("[^A-Za-z0-9]", "").toUpperCase();
+        if (alnum.isBlank()) return "000";
+        return alnum.length() <= 3 ? String.format("%3s", alnum).replace(' ', '0') : alnum.substring(alnum.length() - 3);
+    }
+
+    private String deriveContactTail(String contact) {
+        String normalized = safeTrim(contact).replaceAll("[^A-Za-z0-9]", "").toUpperCase();
+        if (normalized.isBlank()) return "0000";
+        if (normalized.length() >= 4) {
+            return normalized.substring(normalized.length() - 4);
+        }
+        return String.format("%4s", normalized).replace(' ', '0');
+    }
+
+    private String extractNameInitials(String name) {
+        String normalized = safeTrim(name);
+        if (normalized.isBlank()) return "X";
+
+        StringBuilder initials = new StringBuilder();
+        boolean asciiSegmentStarted = false;
+        for (int i = 0; i < normalized.length() && initials.length() < 3; i++) {
+            char ch = normalized.charAt(i);
+            if (Character.isWhitespace(ch) || isCommonSeparator(ch)) {
+                asciiSegmentStarted = false;
+                continue;
+            }
+            if (isAsciiLetter(ch)) {
+                if (!asciiSegmentStarted) {
+                    initials.append(Character.toUpperCase(ch));
+                }
+                asciiSegmentStarted = true;
+                continue;
+            }
+            asciiSegmentStarted = false;
+            if (Character.UnicodeScript.of(ch) == Character.UnicodeScript.HAN) {
+                initials.append(extractChineseInitial(ch));
+            }
+        }
+        return initials.isEmpty() ? "X" : initials.toString();
+    }
+
+    private boolean isCommonSeparator(char ch) {
+        return ch == '-' || ch == '_' || ch == '·' || ch == '.' || ch == '•';
+    }
+
+    private boolean isAsciiLetter(char ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+    }
+
+    private char extractChineseInitial(char ch) {
+        try {
+            byte[] bytes = String.valueOf(ch).getBytes(GBK);
+            if (bytes.length < 2) {
+                return 'X';
+            }
+            int secPos = (bytes[0] & 0xFF) - 160;
+            int secCode = (bytes[1] & 0xFF) - 160;
+            int position = secPos * 100 + secCode;
+            for (int i = CHINESE_INITIAL_BOUNDARIES.length - 1; i >= 0; i--) {
+                if (position >= CHINESE_INITIAL_BOUNDARIES[i]) {
+                    return CHINESE_INITIALS[i];
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return 'X';
+    }
+
+    private String safeTrim(String value) {
+        return value == null ? "" : value.trim();
     }
 }

@@ -744,12 +744,29 @@ def _normalize_unit_text(unit, fallback_unit):
     unit_text = (unit or fallback_unit or "").strip()
     if not unit_text:
         return "Unit ?"
-    match = re.search(r"Unit\s*\d+", unit_text, flags=re.IGNORECASE)
+    match = re.search(r"(Starter\s+Unit|Unit)\s*\d+", unit_text, flags=re.IGNORECASE)
     if match:
         compact = re.sub(r"\s+", " ", match.group(0)).strip()
-        compact = compact.replace("unit", "Unit").replace("UNIT", "Unit")
-        return compact
+        compact_lower = compact.lower()
+        if compact_lower.startswith("starter unit"):
+            number_match = re.search(r"(\d+)", compact)
+            return f"Starter Unit {number_match.group(1)}" if number_match else "Starter Unit ?"
+        number_match = re.search(r"(\d+)", compact)
+        return f"Unit {number_match.group(1)}" if number_match else "Unit ?"
     return unit_text
+
+
+def _is_supported_unit_text(unit):
+    unit_text = (unit or "").strip()
+    return bool(re.match(r"^(Starter\s+Unit|Unit)\s*\d+$", unit_text, flags=re.IGNORECASE))
+
+
+def _unit_sort_key(unit):
+    unit_text = (unit or "").strip()
+    number_match = re.search(r"(\d+)", unit_text)
+    number_value = int(number_match.group(1)) if number_match else 9999
+    is_starter = bool(re.match(r"^Starter\s+Unit\s*\d+$", unit_text, flags=re.IGNORECASE))
+    return (0 if is_starter else 1, number_value, unit_text.lower())
 
 
 def _normalize_单元信息_item(raw_item, page_number):
@@ -774,7 +791,7 @@ def _validate_单元信息_item(item, require_unit_title=True):
     if not isinstance(item, dict):
         return False
     unit = (item.get("unit", "") or "").strip()
-    if not re.match(r"^Unit\s*\d+$", unit, flags=re.IGNORECASE):
+    if not _is_supported_unit_text(unit):
         return False
     title = (item.get("unit_title", "") or "").strip()
     if require_unit_title and not title:
@@ -796,7 +813,7 @@ def _looks_like_pep_primary_directory_page(items):
         unit = (item.get("unit", "") or "").strip()
         title = (item.get("unit_title", "") or "").strip()
         desc = (item.get("unit_desc_short", "") or "").strip()
-        if not re.match(r"^Unit\s*\d+$", unit, flags=re.IGNORECASE):
+        if not _is_supported_unit_text(unit):
             continue
         if not title:
             continue
@@ -832,12 +849,12 @@ def _repair_单元信息_item_with_retry(raw_item, page_number, api_key, base_ur
 Fix one unit-index JSON item from a textbook directory page.
 Return ONE JSON object only:
 {{
-  "unit": "Unit X",
+  "unit": "Unit X or Starter Unit X",
   "unit_title": "....",
   "unit_desc_short": "One short question under the unit title"
 }}
 Rules:
-- unit must match Unit + number.
+- unit must match Unit + number, or Starter Unit + number.
 - unit_title must be non-empty.
 - unit_desc_short must be non-empty and should be the short question line under the unit title.
 - Keep text as in textbook language (do not translate).
@@ -866,13 +883,13 @@ You are extracting unit metadata from a textbook directory/contents page image.
 Return JSON array only (no markdown).
 Each item schema:
 {
-  "unit": "Unit X",
+  "unit": "Unit X or Starter Unit X",
   "unit_title": "Unit title",
   "unit_desc_short": "Short question under unit title"
 }
 Rules:
 - Only include real units visible on this page.
-- unit must use Unit + number.
+- unit must use Unit + number, or Starter Unit + number.
 - Keep original language text; do not translate.
 - unit_title and unit_desc_short should both be non-empty.
 """
@@ -881,13 +898,13 @@ You are extracting unit metadata from a primary-school English textbook contents
 Return JSON array only (no markdown).
 Each item schema:
 {
-  "unit": "Unit X",
+  "unit": "Unit X or Starter Unit X",
   "unit_title": "Unit title",
   "unit_desc_short": ""
 }
 Rules:
 - Only include real units visible on this page.
-- unit must use Unit + number.
+- unit must use Unit + number, or Starter Unit + number.
 - Keep original language text; do not translate.
 - This page type may only show unit number + unit title. In that case, set unit_desc_short to empty string.
 - Do not invent question lines or descriptions that are not visible.
@@ -1937,7 +1954,7 @@ if bool(st.session_state.get("mode4_pending_start", False)):
             for rec in merged.values():
                 rec["source_pages"] = sorted(set([p for p in rec.get("source_pages", []) if isinstance(p, int)]))
                 rows.append(rec)
-            rows = sorted(rows, key=lambda x: int(re.search(r"(\\d+)", x["unit"]).group(1)) if re.search(r"(\\d+)", x["unit"]) else 9999)
+            rows = sorted(rows, key=lambda x: _unit_sort_key(x.get("unit", "")))
 
             ensure_parent_dir(job["output_path"])
             with open(job["output_path"], "w", encoding="utf-8") as wf:

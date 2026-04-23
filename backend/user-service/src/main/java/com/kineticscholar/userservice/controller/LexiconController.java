@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.kineticscholar.userservice.model.LexiconEntry;
 import com.kineticscholar.userservice.model.LexiconMeaning;
+import com.kineticscholar.userservice.model.Passage;
 import com.kineticscholar.userservice.model.PhoneticSymbol;
 import com.kineticscholar.userservice.model.Store;
 import com.kineticscholar.userservice.model.TextbookScopeTag;
@@ -559,6 +560,7 @@ public class LexiconController {
             UnitImportParseResult parseResult = parseUnitJsonl(file);
             if (overwrite) {
                 textbookUnitRepository.deleteByBookVersionAndGradeAndSemester(bv, g, s);
+                textbookUnitRepository.flush();
             } else if (textbookUnitRepository.countByBookVersionAndGradeAndSemester(bv, g, s) > 0) {
                 throw new RuntimeException("当前册已存在单元，请先删除或使用覆盖导入");
             }
@@ -1318,6 +1320,93 @@ public class LexiconController {
         }
     }
 
+    @PostMapping("/tags/textbook-scopes/cascade-delete")
+    @Transactional
+    public ResponseEntity<?> cascadeDeleteTextbookScope(@RequestBody Map<String, String> body) {
+        try {
+            String bv = safeStr(body.get("bookVersion"));
+            String g = safeStr(body.get("grade"));
+            String s = normalizeSemesterTag(body.get("semester"));
+            if (bv.isBlank()) {
+                throw new RuntimeException("教材版本不能为空");
+            }
+
+            Map<String, Object> usage = collectScopeUsage(bv, g, s);
+            long userCount = asLong(usage.get("userCount"));
+            long storeCount = asLong(usage.get("storeCount"));
+            if (userCount > 0 || storeCount > 0) {
+                return new ResponseEntity<>(Map.of(
+                        "error", "当前仍有门店或用户占用，不能执行级联删除",
+                        "usage", usage
+                ), HttpStatus.CONFLICT);
+            }
+
+            List<LexiconEntry> lexiconMatches = entryRepository.findAll().stream()
+                    .filter(e -> matchesScope(e.getBookVersion(), e.getGrade(), e.getSemester(), bv, g, s))
+                    .toList();
+            long deletedWords = lexiconMatches.stream().filter(e -> WORD.equals(safeStr(e.getType()))).count();
+            long deletedPhrases = lexiconMatches.stream().filter(e -> PHRASE.equals(safeStr(e.getType()))).count();
+            if (!lexiconMatches.isEmpty()) {
+                entryRepository.deleteAll(lexiconMatches);
+                entryRepository.flush();
+            }
+
+            List<Passage> passageMatches = passageRepository.findAll().stream()
+                    .filter(p -> matchesScope(p.getBookVersion(), p.getGrade(), p.getSemester(), bv, g, s))
+                    .toList();
+            long deletedPassages = passageMatches.size();
+            if (!passageMatches.isEmpty()) {
+                passageRepository.deleteAll(passageMatches);
+                passageRepository.flush();
+            }
+
+            List<TextbookUnit> unitMatches = textbookUnitRepository.findAll().stream()
+                    .filter(u -> matchesScope(u.getBookVersion(), u.getGrade(), u.getSemester(), bv, g, s))
+                    .toList();
+            long deletedUnits = unitMatches.size();
+            if (!unitMatches.isEmpty()) {
+                textbookUnitRepository.deleteAllInBatch(unitMatches);
+                textbookUnitRepository.flush();
+            }
+
+            long deletedScopes = 0;
+            boolean deletedTextbookTag = false;
+            if (!s.isBlank()) {
+                if (textbookScopeTagRepository.existsByTextbookVersionAndGradeAndSemester(bv, g, s)) {
+                    textbookScopeTagRepository.deleteByTextbookVersionAndGradeAndSemester(bv, g, s);
+                    deletedScopes = 1;
+                }
+            } else if (!g.isBlank()) {
+                deletedScopes = textbookScopeTagRepository.findByTextbookVersionOrderByGradeAscSemesterAsc(bv).stream()
+                        .filter(scope -> g.equals(safeStr(scope.getGrade())))
+                        .count();
+                textbookScopeTagRepository.deleteByTextbookVersionAndGrade(bv, g);
+            } else {
+                deletedScopes = textbookScopeTagRepository.findByTextbookVersionOrderByGradeAscSemesterAsc(bv).size();
+                textbookScopeTagRepository.deleteByTextbookVersion(bv);
+                textbookVersionTagRepository.findByName(bv).ifPresent(tag -> {
+                    textbookVersionTagRepository.delete(tag);
+                });
+                deletedTextbookTag = !textbookVersionTagRepository.existsByName(bv);
+            }
+
+            return new ResponseEntity<>(Map.of(
+                    "message", "cascade_deleted",
+                    "bookVersion", bv,
+                    "grade", g,
+                    "semester", s,
+                    "deletedWords", deletedWords,
+                    "deletedPhrases", deletedPhrases,
+                    "deletedPassages", deletedPassages,
+                    "deletedUnits", deletedUnits,
+                    "deletedScopes", deletedScopes,
+                    "deletedTextbookTag", deletedTextbookTag
+            ), HttpStatus.OK);
+        } catch (Exception e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
     @DeleteMapping("/items")
     public ResponseEntity<?> deleteItems(
             @RequestParam("type") String type,
@@ -1595,9 +1684,9 @@ public class LexiconController {
         item.put("meanings", meanings);
         item.put("word_audio", safeStr(raw.get("word_audio")));
         item.put("phrase_audio", safeStr(raw.get("phrase_audio")));
-        item.put("syllable_text", safeStr(raw.get("syllable_text")));
-        item.put("syllable_pronunciation", parseStringList(raw.get("syllable_pronunciation")));
-        item.put("memory_tip", safeStr(raw.get("memory_tip")));
+        item.put("syllable_text", sanitizeSyllableText(raw.get("syllable_text")));
+        item.put("syllable_pronunciation", sanitizeSyllablePronunciation(raw.get("syllable_pronunciation")));
+        item.put("memory_tip", sanitizeMemoryTip(raw.get("memory_tip")));
         item.put("proper_noun_type", safeStr(raw.get("proper_noun_type")));
         return item;
     }
@@ -1623,9 +1712,9 @@ public class LexiconController {
         entry.setSourceTag(normalizeSourceTag(item.get("source_tag"), false));
         entry.setWordAudio(safeStr(item.get("word_audio")));
         entry.setPhraseAudio(safeStr(item.get("phrase_audio")));
-        entry.setSyllableText(safeStr(item.get("syllable_text")));
-        entry.setSyllablePronunciation(writeStringList(item.get("syllable_pronunciation")));
-        entry.setMemoryTip(safeStr(item.get("memory_tip")));
+        entry.setSyllableText(sanitizeSyllableText(item.get("syllable_text")));
+        entry.setSyllablePronunciation(writeStringList(sanitizeSyllablePronunciation(item.get("syllable_pronunciation"))));
+        entry.setMemoryTip(sanitizeMemoryTip(item.get("memory_tip")));
         entry.setProperNounType(safeStr(item.get("proper_noun_type")));
 
         List<LexiconMeaning> meanings = new ArrayList<>();
@@ -1674,9 +1763,9 @@ public class LexiconController {
         item.put("source_tag", normalizeSourceTag(e.getSourceTag(), false));
         item.put("word_audio", safeStr(e.getWordAudio()));
         item.put("phrase_audio", safeStr(e.getPhraseAudio()));
-        item.put("syllable_text", safeStr(e.getSyllableText()));
-        item.put("syllable_pronunciation", readStringList(e.getSyllablePronunciation()));
-        item.put("memory_tip", safeStr(e.getMemoryTip()));
+        item.put("syllable_text", sanitizeSyllableText(e.getSyllableText()));
+        item.put("syllable_pronunciation", sanitizeSyllablePronunciation(e.getSyllablePronunciation()));
+        item.put("memory_tip", sanitizeMemoryTip(e.getMemoryTip()));
         item.put("proper_noun_type", safeStr(e.getProperNounType()));
         List<Map<String, Object>> meanings = new ArrayList<>();
         for (LexiconMeaning m : e.getMeanings()) {
@@ -1893,6 +1982,32 @@ public class LexiconController {
         } catch (Exception e) {
             throw new RuntimeException("Failed to serialize syllable_pronunciation", e);
         }
+    }
+
+    private String sanitizeSyllableText(Object value) {
+        String s = safeStr(value);
+        return isSuspiciousOidLikeValue(s) ? "" : s;
+    }
+
+    private String sanitizeMemoryTip(Object value) {
+        String s = safeStr(value);
+        return isSuspiciousOidLikeValue(s) ? "" : s;
+    }
+
+    private List<String> sanitizeSyllablePronunciation(Object value) {
+        return parseStringList(value).stream()
+                .map(this::safeStr)
+                .filter(s -> !s.isBlank())
+                .filter(s -> !isSuspiciousOidLikeValue(s))
+                .toList();
+    }
+
+    private boolean isSuspiciousOidLikeValue(String value) {
+        String s = safeStr(value);
+        if (s.isBlank()) {
+            return false;
+        }
+        return s.matches("\\d{4,}");
     }
 
     private List<Map<String, Object>> mapGroupSummaryRows(List<Object[]> groupRows) {
@@ -2273,6 +2388,30 @@ public class LexiconController {
         usage.put("blocked", blocked);
         usage.put("note", "任务占用明细将在后续版本补充到该校验中");
         return usage;
+    }
+
+    private boolean matchesScope(String itemBookVersion, String itemGrade, String itemSemester, String bookVersion, String grade, String semester) {
+        String bv = safeStr(bookVersion);
+        String g = safeStr(grade);
+        String s = normalizeSemesterTag(semester);
+        return (bv.isBlank() || bv.equals(safeStr(itemBookVersion)))
+                && (g.isBlank() || g.equals(safeStr(itemGrade)))
+                && (s.isBlank() || s.equals(normalizeSemesterTag(itemSemester)));
+    }
+
+    private long asLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = safeStr(value);
+        if (text.isBlank()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException ignore) {
+            return 0L;
+        }
     }
 
     private String safeStr(Object value) {

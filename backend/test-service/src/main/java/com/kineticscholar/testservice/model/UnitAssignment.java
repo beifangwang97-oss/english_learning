@@ -44,6 +44,12 @@ public class UnitAssignment {
     @Column(name = "status", nullable = false, length = 20)
     private String status = "assigned";
 
+    @Column(name = "paper_id")
+    private Long paperId;
+
+    @Column(name = "paper_title", length = 255)
+    private String paperTitle;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
@@ -62,4 +68,3 @@ public class UnitAssignment {
         updatedAt = LocalDateTime.now();
     }
 }
-

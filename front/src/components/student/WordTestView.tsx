@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Volume2, Play, CheckCircle2, XCircle, Award, BookOpen, Clock3, RotateCcw } from 'lucide-react';
+import { Volume2, Play, CheckCircle2, XCircle, Award, BookOpen, Clock3, RotateCcw, ClipboardList, Hourglass } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { StudentWordTestAssignment, WordTestContentItem, wordTestApi } from '../../lib/auth';
 import { lexiconApi } from '../../lib/lexicon';
@@ -63,7 +63,8 @@ export const WordTestView: React.FC = () => {
   const completedTests = tests.filter((t) => t.status === 'completed');
 
   const handleStartTest = (test: StudentWordTestAssignment) => {
-    setActiveTest({ ...test, items: shuffleItems(test.items || []) });
+    const safeItems = Array.isArray(test.items) ? test.items : [];
+    setActiveTest({ ...test, items: shuffleItems(safeItems) });
     setAnswers({});
     setStartedAt(Date.now());
     setSubmitted(false);
@@ -91,11 +92,12 @@ export const WordTestView: React.FC = () => {
 
   const handleSubmit = async () => {
     if (!activeTest || !token || !startedAt) return;
-    const total = activeTest.items.length;
+    const activeItems = Array.isArray(activeTest.items) ? activeTest.items : [];
+    const total = activeItems.length;
     if (total === 0) return;
 
     let correct = 0;
-    const payloadAnswers = activeTest.items.map((item) => {
+    const payloadAnswers = activeItems.map((item) => {
       const input = answers[item.entryId] || '';
       const ok = normalizeAnswer(input) === normalizeAnswer(item.word || '');
       if (ok) correct += 1;
@@ -140,39 +142,69 @@ export const WordTestView: React.FC = () => {
   };
 
   const renderTestCard = (test: StudentWordTestAssignment, completed: boolean) => {
+    const testItems = Array.isArray(test.items) ? test.items : [];
     const passScore = typeof test.passScore === 'number' ? test.passScore : 60;
     const bestScore = typeof test.score === 'number' ? test.score : null;
     const attemptCount = typeof test.attemptCount === 'number' ? test.attemptCount : 0;
     const bestDuration = formatDuration(test.duration);
+    const total = typeof test.totalCount === 'number' && test.totalCount > 0 ? test.totalCount : testItems.length;
+    const correct = typeof test.correctCount === 'number' && test.correctCount > 0 ? test.correctCount : 0;
+    const progress = total > 0 ? Math.max(0, Math.min(100, Math.round((correct / total) * 100))) : completed ? 100 : 0;
 
     return (
-      <div key={test.assignmentId} className="border-2 border-outline-variant/20 rounded-xl p-6 hover:border-primary/50 transition-colors flex flex-col">
-        <div className="flex justify-between items-start mb-4 gap-2">
-          <h3 className="text-xl font-bold text-on-surface">{test.title}</h3>
-          <span className={`px-3 py-1 rounded-full text-xs font-bold ${test.testType === '听写' ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-container text-on-tertiary-container'}`}>
-            {test.testType}
-          </span>
-        </div>
+      <div key={test.assignmentId} className="group relative flex flex-col overflow-hidden rounded-xl bg-surface-container-lowest p-8 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)] transition-all duration-500 hover:-translate-y-2">
+        <div className="absolute inset-0 bg-gradient-to-br from-primary-container/15 opacity-0 transition-opacity group-hover:opacity-100"></div>
+        <div className="relative z-10 flex flex-1 flex-col">
+          <div className="mb-6 flex items-start justify-between gap-2">
+            <div className="rounded-full bg-primary-container px-4 py-1.5 text-xs font-headline font-extrabold tracking-widest text-on-primary-container">
+            单词测试
+            </div>
+            {completed ? <CheckCircle2 className="h-5 w-5 text-secondary-fixed-dim" /> : <Hourglass className="h-5 w-5 text-primary" />}
+          </div>
 
-        <div className="grid grid-cols-2 gap-3 text-sm text-on-surface-variant mb-6">
-          <span className="flex items-center gap-1"><BookOpen className="w-4 h-4" /> {test.items.length} 个单词</span>
-          <span>合格分：{passScore} 分</span>
-          <span>累计完成：{attemptCount} 次</span>
-          <span className="col-span-2 flex items-center gap-1"><Clock3 className="w-4 h-4" /> 最高分/最佳用时：{bestScore === null ? '-' : `${bestScore} 分`} / {bestDuration}</span>
-        </div>
+          <h3 className="mb-2 font-headline text-2xl font-extrabold text-on-surface">{test.title}</h3>
+          <p className="mb-3 text-sm font-bold text-primary/70">{test.testType} · {completed ? '已完成任务' : '待完成任务'}</p>
+          <p className="mb-6 text-sm leading-relaxed text-on-surface-variant">
+            {test.items.length} 个单词 · 合格分 {passScore} 分 · 累计完成 {attemptCount} 次
+          </p>
 
-        <button
-          onClick={() => handleStartTest(test)}
-          className="mt-auto w-full py-3 bg-primary text-on-primary font-bold rounded-lg hover:bg-primary-dim transition-colors flex items-center justify-center gap-2"
-        >
-          {completed ? <RotateCcw className="w-5 h-5" /> : <Play className="w-5 h-5" />} {completed ? '重新测试' : '开始测试'}
-        </button>
+          <div className="mb-4 grid grid-cols-2 gap-3 text-sm text-on-surface-variant">
+            <span className="flex items-center gap-1"><BookOpen className="w-4 h-4" /> {test.items.length} 个单词</span>
+            <span>{completed ? '当前状态：已完成' : '当前状态：待完成'}</span>
+            <span>最高分：{bestScore === null ? '-' : `${bestScore} 分`}</span>
+            <span className="flex items-center gap-1"><Clock3 className="w-4 h-4" /> 最佳用时：{bestDuration}</span>
+          </div>
+
+          <div className="mb-8 space-y-2">
+            <div className="flex justify-between text-xs font-bold font-headline text-primary">
+              <span>当前进度</span>
+              <span>{progress}%</span>
+            </div>
+            <div className="h-3 w-full overflow-hidden rounded-full bg-surface-container-highest">
+              <div className="h-full rounded-full bg-primary-fixed shadow-[0_0_12px_rgba(255,215,9,0.5)]" style={{ width: `${progress}%` }}></div>
+            </div>
+          </div>
+
+          <div className="mt-auto flex items-center justify-between border-t border-outline-variant/10 pt-4">
+            <div className="flex items-center gap-2 text-sm font-bold text-emerald-600">
+              <ClipboardList className="w-4 h-4" />
+              <span>{completed ? '可再次练习' : '等待开始测试'}</span>
+            </div>
+            <button
+              onClick={() => handleStartTest(test)}
+              className="flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 font-bold text-on-primary transition-transform group-hover:scale-110"
+            >
+              {completed ? <RotateCcw className="w-5 h-5" /> : <Play className="w-5 h-5" />} {completed ? '重新测试' : '开始测试'}
+            </button>
+          </div>
+        </div>
       </div>
     );
   };
 
   if (activeTest) {
-    const total = activeTest.items.length;
+    const activeItems = Array.isArray(activeTest.items) ? activeTest.items : [];
+    const total = activeItems.length;
     const passScore = typeof activeTest.passScore === 'number' ? activeTest.passScore : 60;
     return (
       <div className="space-y-8 animate-in fade-in">
@@ -218,7 +250,7 @@ export const WordTestView: React.FC = () => {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {activeTest.items.map((item, index) => {
+          {activeItems.map((item, index) => {
             const studentAnswer = normalizeAnswer(answers[item.entryId] || '');
             const isCorrect = studentAnswer === normalizeAnswer(item.word || '');
 
@@ -285,7 +317,7 @@ export const WordTestView: React.FC = () => {
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
 
-      <div className="bg-surface-container-lowest p-8 rounded-2xl shadow-sm border border-outline-variant/20">
+      <div className="p-0">
         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
           待完成任务 <span className="bg-error text-white text-sm px-2 py-0.5 rounded-full">{pendingTests.length}</span>
         </h2>
@@ -304,7 +336,7 @@ export const WordTestView: React.FC = () => {
         )}
       </div>
 
-      <div className="bg-surface-container-lowest p-8 rounded-2xl shadow-sm border border-outline-variant/20">
+      <div className="p-0">
         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
           已完成任务 <span className="bg-emerald-600 text-white text-sm px-2 py-0.5 rounded-full">{completedTests.length}</span>
         </h2>

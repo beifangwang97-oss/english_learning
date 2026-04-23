@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpenCheck, CheckCircle2, ChevronLeft, ChevronRight, Play, RotateCcw, Volume2, XCircle } from 'lucide-react';
+import { BookOpenCheck, CheckCircle2, ChevronLeft, ChevronRight, Play, RotateCcw, Volume2, XCircle, Hourglass } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import {
   StudentWordReviewAssignment,
@@ -352,41 +352,90 @@ export const WordReviewView: React.FC = () => {
   const renderCard = (task: StudentWordReviewAssignment, completed: boolean) => {
     if (!completed && task.todayDone) {
       return (
-        <div key={task.assignmentId} className="flex flex-col rounded-xl border-2 border-outline-variant/20 p-6 opacity-80">
-          <div className="mb-4 flex items-start justify-between gap-2">
-            <h3 className="text-xl font-bold text-on-surface">{task.title}</h3>
-            <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">今日已完成</span>
+        <div key={task.assignmentId} className="group relative flex flex-col overflow-hidden rounded-xl bg-surface-container-lowest p-8 opacity-90 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)]">
+          <div className="absolute inset-0 bg-gradient-to-br from-secondary-container/15 opacity-0 transition-opacity group-hover:opacity-100"></div>
+          <div className="relative z-10 flex flex-1 flex-col">
+            <div className="mb-6 flex items-start justify-between gap-2">
+              <div className="rounded-full bg-secondary-container px-4 py-1.5 text-xs font-headline font-extrabold tracking-widest text-on-secondary-container">
+                复习完成
+              </div>
+              <CheckCircle2 className="h-5 w-5 text-secondary-fixed-dim" />
+            </div>
+            <h3 className="mb-2 font-headline text-2xl font-extrabold text-on-surface">{task.title}</h3>
+            <p className="mb-3 text-sm font-bold text-secondary/70">今日已完成</p>
+            <p className="mb-6 text-sm leading-relaxed text-on-surface-variant">
+              每日数量 {task.dailyQuota} 个 · 已掌握 {task.masteredWordCount}/{task.totalWordCount}
+            </p>
+            <div className="mb-4 grid grid-cols-2 gap-3 text-sm text-on-surface-variant">
+              <span>每日数量：{task.dailyQuota}</span>
+              <span>进度：{task.masteredWordCount}/{task.totalWordCount}</span>
+              <span className="col-span-2 text-emerald-700 font-bold">今日任务已完成</span>
+              <span className="col-span-2">模式：固定2项{task.enableSpelling ? ' + 补全' : ''}{task.enableZhToEn ? ' + 汉译英' : ''}</span>
+            </div>
+            <div className="mb-8 space-y-2">
+              <div className="flex justify-between text-xs font-bold font-headline text-secondary">
+                <span>总体进度</span>
+                <span>{task.totalWordCount > 0 ? Math.round((task.masteredWordCount / task.totalWordCount) * 100) : 0}%</span>
+              </div>
+              <div className="h-3 w-full overflow-hidden rounded-full bg-surface-container-highest">
+                <div className="h-full rounded-full bg-secondary-fixed-dim shadow-[0_0_12px_rgba(130,204,255,0.5)]" style={{ width: `${task.totalWordCount > 0 ? Math.round((task.masteredWordCount / task.totalWordCount) * 100) : 0}%` }}></div>
+              </div>
+            </div>
+            <div className="mt-auto flex items-center justify-between border-t border-outline-variant/10 pt-4">
+              <div className="flex items-center gap-2 text-sm font-bold text-emerald-600">
+                <BookOpenCheck className="w-4 h-4" />
+                <span>今日任务已完成</span>
+              </div>
+              <button disabled className="cursor-not-allowed rounded-full bg-surface-container-highest px-4 py-2 font-bold text-on-surface-variant">
+                今日复习任务已完成
+              </button>
+            </div>
           </div>
-          <div className="mb-6 grid grid-cols-2 gap-3 text-sm text-on-surface-variant">
-            <span>每日数量：{task.dailyQuota}</span>
-            <span>进度：{task.masteredWordCount}/{task.totalWordCount}</span>
-            <span className="col-span-2 text-emerald-700 font-bold">今日任务已完成</span>
-            <span className="col-span-2">模式：固定2项{task.enableSpelling ? ' + 补全' : ''}{task.enableZhToEn ? ' + 汉译英' : ''}</span>
-          </div>
-          <button disabled className="mt-auto w-full rounded-lg bg-surface-container-highest py-3 font-bold text-on-surface-variant cursor-not-allowed">
-            今日复习任务已完成
-          </button>
         </div>
       );
     }
 
+    const progress = task.totalWordCount > 0 ? Math.max(0, Math.min(100, Math.round((task.masteredWordCount / task.totalWordCount) * 100))) : 0;
     return (
-      <div key={task.assignmentId} className="flex flex-col rounded-xl border-2 border-outline-variant/20 p-6 transition-colors hover:border-primary/50">
-        <div className="mb-4 flex items-start justify-between gap-2">
-          <h3 className="text-xl font-bold text-on-surface">{task.title}</h3>
-          <span className={`rounded-full px-3 py-1 text-xs font-bold ${completed ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-            {completed ? '已完成' : '待完成'}
-          </span>
+      <div key={task.assignmentId} className="group relative flex flex-col overflow-hidden rounded-xl bg-surface-container-lowest p-8 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)] transition-all duration-500 hover:-translate-y-2">
+        <div className="absolute inset-0 bg-gradient-to-br from-tertiary-container/18 opacity-0 transition-opacity group-hover:opacity-100"></div>
+        <div className="relative z-10 flex flex-1 flex-col">
+          <div className="mb-6 flex items-start justify-between gap-2">
+            <div className={`rounded-full px-4 py-1.5 text-xs font-headline font-extrabold tracking-widest ${completed ? 'bg-secondary-container text-on-secondary-container' : 'bg-tertiary-container text-on-tertiary-container'}`}>
+              {completed ? '复习完成' : '单词复习'}
+            </div>
+            {completed ? <CheckCircle2 className="h-5 w-5 text-secondary-fixed-dim" /> : <Hourglass className="h-5 w-5 text-primary" />}
+          </div>
+          <h3 className="mb-2 font-headline text-2xl font-extrabold text-on-surface">{task.title}</h3>
+          <p className={`mb-3 text-sm font-bold ${completed ? 'text-secondary/70' : 'text-tertiary/70'}`}>{completed ? '已完成任务' : '待完成任务'}</p>
+          <p className="mb-6 text-sm leading-relaxed text-on-surface-variant">
+            每日数量 {task.dailyQuota} 个 · 已掌握 {task.masteredWordCount}/{task.totalWordCount}
+          </p>
+          <div className="mb-4 grid grid-cols-2 gap-3 text-sm text-on-surface-variant">
+            <span>每日数量：{task.dailyQuota}</span>
+            <span>进度：{task.masteredWordCount}/{task.totalWordCount}</span>
+            <span className="col-span-2">模式：固定2项{task.enableSpelling ? ' + 补全' : ''}{task.enableZhToEn ? ' + 汉译英' : ''}</span>
+          </div>
+          <div className="mb-8 space-y-2">
+            <div className={`flex justify-between text-xs font-bold font-headline ${completed ? 'text-secondary' : 'text-tertiary'}`}>
+              <span>总体进度</span>
+              <span>{progress}%</span>
+            </div>
+            <div className="h-3 w-full overflow-hidden rounded-full bg-surface-container-highest">
+              <div className={`h-full rounded-full ${completed ? 'bg-secondary-fixed-dim shadow-[0_0_12px_rgba(130,204,255,0.5)]' : 'bg-tertiary-fixed-dim'}`} style={{ width: `${progress}%` }}></div>
+            </div>
+          </div>
+          <div className="mt-auto flex items-center justify-between border-t border-outline-variant/10 pt-4">
+            <div className="flex items-center gap-2 text-sm font-bold text-emerald-600">
+              <BookOpenCheck className="w-4 h-4" />
+              <span>{completed ? '可再次复习' : '等待开始复习'}</span>
+            </div>
+            <button onClick={() => startReview(task)} className="flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 font-bold text-on-primary transition-transform group-hover:scale-110">
+              {completed ? <RotateCcw className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+              {completed ? '再次复习' : '开始今日复习'}
+            </button>
+          </div>
         </div>
-        <div className="mb-6 grid grid-cols-2 gap-3 text-sm text-on-surface-variant">
-          <span>每日数量：{task.dailyQuota}</span>
-          <span>进度：{task.masteredWordCount}/{task.totalWordCount}</span>
-          <span className="col-span-2">模式：固定2项{task.enableSpelling ? ' + 补全' : ''}{task.enableZhToEn ? ' + 汉译英' : ''}</span>
-        </div>
-        <button onClick={() => startReview(task)} className="mt-auto flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-3 font-bold text-on-primary transition-colors hover:bg-primary-dim">
-          {completed ? <RotateCcw className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-          {completed ? '再次复习' : '开始今日复习'}
-        </button>
       </div>
     );
   };
@@ -595,7 +644,7 @@ export const WordReviewView: React.FC = () => {
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>}
 
-      <div className="rounded-2xl border border-outline-variant/20 bg-surface-container-lowest p-8 shadow-sm">
+      <div className="p-0">
         <h2 className="mb-6 flex items-center gap-2 text-2xl font-bold">
           待完成任务 <span className="rounded-full bg-error px-2 py-0.5 text-sm text-white">{pendingReviews.length}</span>
         </h2>
@@ -613,7 +662,7 @@ export const WordReviewView: React.FC = () => {
         )}
       </div>
 
-      <div className="rounded-2xl border border-outline-variant/20 bg-surface-container-lowest p-8 shadow-sm">
+      <div className="p-0">
         <h2 className="mb-6 flex items-center gap-2 text-2xl font-bold">
           已完成任务 <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-sm text-white">{completedReviews.length}</span>
         </h2>

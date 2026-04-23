@@ -12,4 +12,5 @@ import java.util.Optional;
 public interface WordReviewDailySessionRepository extends JpaRepository<WordReviewDailySession, Long> {
     Optional<WordReviewDailySession> findByAssignmentIdAndReviewDate(Long assignmentId, LocalDate reviewDate);
     List<WordReviewDailySession> findByAssignmentId(Long assignmentId);
+    List<WordReviewDailySession> findByAssignmentIdIn(List<Long> assignmentIds);
 }

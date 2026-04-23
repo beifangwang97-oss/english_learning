@@ -59,7 +59,7 @@ export const AdminDashboard: React.FC = () => {
     { key: 'phrases', label: '短语管理', icon: MessageSquare },
     { key: 'passages', label: '课文管理', icon: ScrollText },
     { key: 'units', label: '单元管理', icon: BookOpen },
-    { key: 'exams', label: '同步题库', icon: ClipboardList },
+    { key: 'exams', label: '题库管理', icon: ClipboardList },
     { key: 'phonetics', label: '音标管理', icon: Volume2 },
     { key: 'textbooks', label: '教材范围', icon: BookOpen },
   ];
@@ -70,7 +70,7 @@ export const AdminDashboard: React.FC = () => {
         <div className="p-6 border-b border-outline-variant/30">
           <h2 className="text-xl font-black text-primary flex items-center gap-2">
             <Database className="w-6 h-6" />
-            管理员后台
+            管理员控制台
           </h2>
         </div>
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto custom-scrollbar">
@@ -104,7 +104,7 @@ export const AdminDashboard: React.FC = () => {
         <header className="h-20 bg-surface-container-lowest border-b border-outline-variant/30 flex items-center px-8 shrink-0">
           <div>
             <h1 className="text-2xl font-black text-on-surface">管理员控制台</h1>
-            <p className="text-sm text-on-surface-variant mt-1">统一管理账号、教材、课文、音标和同步题库。</p>
+            <p className="text-sm text-on-surface-variant mt-1">统一管理账号、教材、课文、音标和题库内容。</p>
           </div>
         </header>
 

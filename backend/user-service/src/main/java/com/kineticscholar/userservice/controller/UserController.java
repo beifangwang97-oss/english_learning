@@ -1,8 +1,10 @@
 package com.kineticscholar.userservice.controller;
 
 import com.kineticscholar.userservice.model.User;
+import com.kineticscholar.userservice.model.StudentCheckInCalendarView;
 import com.kineticscholar.userservice.service.SessionAuthException;
 import com.kineticscholar.userservice.service.SessionAuthService;
+import com.kineticscholar.userservice.service.StudentCheckInService;
 import com.kineticscholar.userservice.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -26,6 +28,9 @@ public class UserController {
 
     @Autowired
     private SessionAuthService sessionAuthService;
+
+    @Autowired
+    private StudentCheckInService studentCheckInService;
 
     @PostMapping("/register")
     public ResponseEntity<?> register(@RequestBody User user) {
@@ -329,6 +334,39 @@ public class UserController {
         }
     }
 
+    @GetMapping("/users/students/check-in-calendar")
+    public ResponseEntity<?> getStudentCheckInCalendar(
+            @RequestHeader(value = "Authorization", required = false) String authHeader,
+            @RequestParam int year,
+            @RequestParam int month) {
+        try {
+            User student = requireStudent(authHeader);
+            StudentCheckInCalendarView view = studentCheckInService.getCalendarView(student.getId(), year, month);
+            return new ResponseEntity<>(toCheckInView(view), HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @PostMapping("/users/students/check-in")
+    public ResponseEntity<?> checkInToday(
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
+        try {
+            User student = requireStudent(authHeader);
+            StudentCheckInCalendarView view = studentCheckInService.checkInToday(student.getId());
+            Map<String, Object> body = new HashMap<>(toCheckInView(view));
+            body.put("success", true);
+            body.put("message", "check-in success");
+            return new ResponseEntity<>(body, HttpStatus.OK);
+        } catch (SessionAuthException e) {
+            return authErrorResponse(e);
+        } catch (RuntimeException e) {
+            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
+        }
+    }
+
     private User requireTeacher(String authHeader) {
         User teacher = sessionAuthService.validateAuthorizationHeader(authHeader);
         if (!"teacher".equalsIgnoreCase(teacher.getRole())) {
@@ -338,6 +376,14 @@ public class UserController {
             throw new RuntimeException("Teacher store is not configured");
         }
         return teacher;
+    }
+
+    private User requireStudent(String authHeader) {
+        User student = sessionAuthService.validateAuthorizationHeader(authHeader);
+        if (!"student".equalsIgnoreCase(student.getRole())) {
+            throw new RuntimeException("Student role required");
+        }
+        return student;
     }
 
     private ResponseEntity<Map<String, Object>> authErrorResponse(SessionAuthException e) {
@@ -357,6 +403,16 @@ public class UserController {
         }
         LocalDate today = LocalDate.now();
         return user.getExpireDate() != null && !today.isAfter(user.getExpireDate());
+    }
+
+    private Map<String, Object> toCheckInView(StudentCheckInCalendarView view) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("year", view.getYear());
+        payload.put("month", view.getMonth());
+        payload.put("checkedInDates", view.getCheckedInDates());
+        payload.put("todayCheckedIn", view.isTodayCheckedIn());
+        payload.put("streakDays", view.getStreakDays());
+        return payload;
     }
 
     private Map<String, Object> toSafeUser(User user) {

@@ -210,6 +210,7 @@ public class PassageController {
             }
             if (exists > 0) {
                 passageRepository.deleteByBookVersionAndGradeAndSemester(bv, g, s);
+                passageRepository.flush();
             }
 
             ParseResult parsed = parseJsonl(file, bv, g, s);

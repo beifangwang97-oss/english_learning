@@ -6,6 +6,10 @@ $front = Join-Path $root 'front'
 $logRoot = Join-Path $root 'runlogs'
 $tmpRoot = Join-Path $root 'tmp'
 $managedPorts = @(8888, 8080, 8081, 8082, 8083, 3000)
+$originalPath = $env:PATH
+$originalJavaHome = $env:JAVA_HOME
+$originalTemp = $env:TEMP
+$originalTmp = $env:TMP
 
 New-Item -ItemType Directory -Force -Path $logRoot, $tmpRoot | Out-Null
 
@@ -68,15 +72,15 @@ function Stop-ManagedPorts {
             Write-Host "  - $port already free"
             continue
         }
-        foreach ($pid in $pids) {
-            Write-Host "  - stopping PID $pid on port $port"
+        foreach ($procId in $pids) {
+            Write-Host "  - stopping PID $procId on port $port"
             try {
                 Start-Process -FilePath 'taskkill.exe' `
-                    -ArgumentList '/PID', $pid, '/T', '/F' `
+                    -ArgumentList '/PID', $procId, '/T', '/F' `
                     -NoNewWindow `
                     -Wait | Out-Null
             } catch {
-                Write-Host "    taskkill failed for PID ${pid}: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "    taskkill failed for PID ${procId}: $($_.Exception.Message)" -ForegroundColor Yellow
             }
         }
         if (Wait-PortFree -Port $port -TimeoutSeconds 20) {
@@ -195,6 +199,37 @@ function Start-BackendService {
         -PassThru
 }
 
+function Invoke-NpmTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$OutLog,
+        [Parameter(Mandatory = $true)][string]$ErrLog
+    )
+    Reset-LogFile -Path $OutLog
+    Reset-LogFile -Path $ErrLog
+    Push-Location $WorkingDirectory
+    try {
+        & $npm @Arguments 1> $OutLog 2> $ErrLog
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($exitCode -ne 0) {
+        $errTail = Get-LogTail -Path $ErrLog
+        $outTail = Get-LogTail -Path $OutLog
+        Write-Host "  -> [FAILED] npm $($Arguments -join ' ') exited with code $exitCode" -ForegroundColor Red
+        if ($errTail) {
+            Write-Host '     stderr tail:' -ForegroundColor Yellow
+            Write-Host $errTail
+        } elseif ($outTail) {
+            Write-Host '     stdout tail:' -ForegroundColor Yellow
+            Write-Host $outTail
+        }
+        exit 1
+    }
+}
+
 Stop-ManagedPorts -Ports $managedPorts
 Write-Host ''
 Write-Host 'Starting backend services in dependency order...'
@@ -213,13 +248,24 @@ if (-not (Wait-Listening -Port 8083 -TimeoutSeconds 150 -Name 'test-service' -Pr
 $gatewayProc = Start-BackendService -Name 'api-gateway'
 if (-not (Wait-Listening -Port 8080 -TimeoutSeconds 150 -Name 'api-gateway' -Process $gatewayProc -OutLog (Join-Path $logRoot 'api-gateway.log') -ErrLog (Join-Path $logRoot 'api-gateway.err.log'))) { exit 1 }
 
-Write-Host 'Starting frontend: front'
+if ($originalJavaHome) { $env:JAVA_HOME = $originalJavaHome } else { Remove-Item Env:JAVA_HOME -ErrorAction SilentlyContinue }
+if ($originalPath) { $env:PATH = $originalPath }
+if ($originalTemp) { $env:TEMP = $originalTemp } else { Remove-Item Env:TEMP -ErrorAction SilentlyContinue }
+if ($originalTmp) { $env:TMP = $originalTmp } else { Remove-Item Env:TMP -ErrorAction SilentlyContinue }
+
+$frontDistDir = Join-Path $front 'dist'
+if (-not (Test-Path (Join-Path $frontDistDir 'index.html'))) {
+    Write-Host '[ERROR] Frontend dist is missing. Please run `cd front && npm run build` once before run_all.' -ForegroundColor Red
+    exit 1
+}
+
+Write-Host 'Starting frontend static server: front'
 $frontOutLog = Join-Path $logRoot 'front.log'
 $frontErrLog = Join-Path $logRoot 'front.err.log'
 Reset-LogFile -Path $frontOutLog
 Reset-LogFile -Path $frontErrLog
 $frontProc = Start-Process -FilePath $npm `
-    -ArgumentList 'run', 'dev' `
+    -ArgumentList 'run', 'serve:dist' `
     -WorkingDirectory $front `
     -RedirectStandardOutput $frontOutLog `
     -RedirectStandardError $frontErrLog `

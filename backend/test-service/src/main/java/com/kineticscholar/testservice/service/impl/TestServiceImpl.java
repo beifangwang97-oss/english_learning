@@ -20,6 +20,16 @@ import com.kineticscholar.testservice.dto.StudentExamPracticeQuestionResultView;
 import com.kineticscholar.testservice.dto.StudentExamPracticeResultView;
 import com.kineticscholar.testservice.dto.StudentExamPracticeSubmitRequest;
 import com.kineticscholar.testservice.dto.StudentExamWrongNotebookItemView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamAssignmentView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamResultItemRequest;
+import com.kineticscholar.testservice.dto.StudentTeacherExamResultItemView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamSubmissionResultView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamSubmitRequest;
+import com.kineticscholar.testservice.dto.StudentTeacherExamWrongNotebookGroupView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamWrongNotebookItemView;
+import com.kineticscholar.testservice.dto.TeacherExamPaperDetailView;
+import com.kineticscholar.testservice.dto.TeacherExamPaperSectionItemView;
+import com.kineticscholar.testservice.dto.TeacherExamPaperSectionView;
 import com.kineticscholar.testservice.dto.StudentWordReviewAssignmentView;
 import com.kineticscholar.testservice.dto.StudentWordTestAssignmentView;
 import com.kineticscholar.testservice.dto.SubmitWordReviewSessionRequest;
@@ -37,6 +47,8 @@ import com.kineticscholar.testservice.model.ExamPracticeRecord;
 import com.kineticscholar.testservice.model.ExamQuestion;
 import com.kineticscholar.testservice.model.ExamQuestionOption;
 import com.kineticscholar.testservice.model.ExamWrongNotebookItem;
+import com.kineticscholar.testservice.model.StudentTeacherExamSubmission;
+import com.kineticscholar.testservice.model.StudentTeacherExamWrongNotebookItem;
 import com.kineticscholar.testservice.model.WordTest;
 import com.kineticscholar.testservice.model.WordReviewTask;
 import com.kineticscholar.testservice.model.WordReviewAssignment;
@@ -52,6 +64,8 @@ import com.kineticscholar.testservice.repository.ExamPracticeRecordRepository;
 import com.kineticscholar.testservice.repository.ExamQuestionOptionRepository;
 import com.kineticscholar.testservice.repository.ExamQuestionRepository;
 import com.kineticscholar.testservice.repository.ExamWrongNotebookItemRepository;
+import com.kineticscholar.testservice.repository.StudentTeacherExamSubmissionRepository;
+import com.kineticscholar.testservice.repository.StudentTeacherExamWrongNotebookItemRepository;
 import com.kineticscholar.testservice.repository.WordTestRepository;
 import com.kineticscholar.testservice.repository.WordReviewTaskRepository;
 import com.kineticscholar.testservice.repository.WordReviewAssignmentRepository;
@@ -60,7 +74,9 @@ import com.kineticscholar.testservice.repository.WordReviewWordProgressRepositor
 import com.kineticscholar.testservice.repository.TestAssignmentRepository;
 import com.kineticscholar.testservice.repository.TestAnswerRepository;
 import com.kineticscholar.testservice.repository.UnitAssignmentRepository;
+import com.kineticscholar.testservice.service.StudentLearningStatsService;
 import com.kineticscholar.testservice.service.TestService;
+import com.kineticscholar.testservice.service.TeacherExamPaperService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -81,6 +97,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -138,6 +155,18 @@ public class TestServiceImpl implements TestService {
 
     @Autowired
     private ExamWrongNotebookItemRepository examWrongNotebookItemRepository;
+
+    @Autowired
+    private StudentTeacherExamSubmissionRepository studentTeacherExamSubmissionRepository;
+
+    @Autowired
+    private StudentTeacherExamWrongNotebookItemRepository studentTeacherExamWrongNotebookItemRepository;
+
+    @Autowired
+    private TeacherExamPaperService teacherExamPaperService;
+
+    @Autowired
+    private StudentLearningStatsService studentLearningStatsService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -327,7 +356,7 @@ public class TestServiceImpl implements TestService {
     }
 
     @Override
-    public void assignUnitTasks(Long assignedBy, List<Long> studentIds, List<UnitTaskItem> units) {
+    public void assignUnitTasks(Long assignedBy, List<Long> studentIds, List<UnitTaskItem> units, Long paperId, String paperTitle) {
         List<UnitAssignment> toSave = new ArrayList<>();
         for (Long studentId : studentIds) {
             for (UnitTaskItem unit : units) {
@@ -352,6 +381,8 @@ public class TestServiceImpl implements TestService {
                 assignment.setSemester(semester);
                 assignment.setUnitName(unitName);
                 assignment.setStatus("assigned");
+                assignment.setPaperId(unit.getPaperId() != null ? unit.getPaperId() : paperId);
+                assignment.setPaperTitle(blankToNull(safe(unit.getPaperTitle())) != null ? safe(unit.getPaperTitle()).trim() : blankToNull(paperTitle));
                 toSave.add(assignment);
             }
         }
@@ -371,8 +402,189 @@ public class TestServiceImpl implements TestService {
         unitAssignmentRepository.deleteAllById(assignmentIds);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<StudentTeacherExamAssignmentView> getStudentTeacherExamAssignment(Long assignmentId, Long userId) {
+        if (assignmentId == null || userId == null) return Optional.empty();
+        return unitAssignmentRepository.findById(assignmentId)
+                .filter(assignment -> userId.equals(assignment.getUserId()))
+                .filter(assignment -> assignment.getPaperId() != null)
+                .flatMap(assignment -> teacherExamPaperService.getPaperDetail(assignment.getPaperId())
+                        .map(paper -> {
+                            StudentTeacherExamAssignmentView view = new StudentTeacherExamAssignmentView();
+                            view.setAssignmentId(assignment.getId());
+                            view.setUserId(assignment.getUserId());
+                            view.setTextbookVersion(assignment.getTextbookVersion());
+                            view.setGrade(assignment.getGrade());
+                            view.setSemester(assignment.getSemester());
+                            view.setUnitName(assignment.getUnitName());
+                            view.setPaperId(assignment.getPaperId());
+                            view.setPaperTitle(assignment.getPaperTitle());
+                            view.setPaper(paper);
+                            studentTeacherExamSubmissionRepository
+                                    .findTopByAssignmentIdAndUserIdOrderBySubmittedAtDescIdDesc(assignment.getId(), userId)
+                                    .ifPresent(submission -> view.setLatestSubmission(toStudentTeacherExamSubmissionView(submission)));
+                            return view;
+                        }));
+    }
+
+    @Override
+    @Transactional
+    public StudentTeacherExamSubmissionResultView submitStudentTeacherExam(Long assignmentId, StudentTeacherExamSubmitRequest request) {
+        if (request == null) throw new RuntimeException("request is required");
+        if (request.getUserId() == null) throw new RuntimeException("userId is required");
+
+        UnitAssignment assignment = requireStudentTeacherAssignment(assignmentId, request.getUserId());
+        StudentTeacherExamSubmission existing = studentTeacherExamSubmissionRepository
+                .findTopByAssignmentIdAndUserIdOrderBySubmittedAtDescIdDesc(assignmentId, request.getUserId())
+                .orElse(null);
+        if (existing != null) {
+            return toStudentTeacherExamSubmissionView(existing);
+        }
+
+        TeacherExamPaperDetailView paper = teacherExamPaperService.getPaperDetail(assignment.getPaperId())
+                .orElseThrow(() -> new RuntimeException("Teacher exam paper not found"));
+        List<ResolvedTeacherExamQuestion> expectedQuestions = resolveTeacherExamQuestions(paper);
+        if (expectedQuestions.isEmpty()) throw new RuntimeException("Teacher exam paper has no questions");
+
+        Map<String, ResolvedTeacherExamQuestion> expectedMap = expectedQuestions.stream()
+                .collect(Collectors.toMap(this::teacherExamQuestionKey, row -> row, (left, right) -> left, LinkedHashMap::new));
+
+        List<StudentTeacherExamResultItemView> storedItems = new ArrayList<>();
+        Set<String> seenKeys = new LinkedHashSet<>();
+        int correctCount = 0;
+
+        for (StudentTeacherExamResultItemRequest item : request.getResultItems()) {
+            if (item == null) continue;
+            String key = teacherExamQuestionKey(item.getQuestionUid(), item.getQuestionId());
+            ResolvedTeacherExamQuestion expected = expectedMap.get(key);
+            if (expected == null) {
+                throw new RuntimeException("Submitted question does not belong to this paper");
+            }
+            seenKeys.add(key);
+            boolean actualCorrect = answersEqual(item.getSubmittedAnswer(), expected.correctAnswer(), expected.questionType());
+            if (item.getCorrect() != null && !item.getCorrect().equals(actualCorrect)) {
+                throw new RuntimeException("Submitted result is inconsistent with teacher paper answers");
+            }
+            if (!answersEqual(item.getCorrectAnswer(), expected.correctAnswer(), expected.questionType())) {
+                throw new RuntimeException("Submitted correct answer is inconsistent with teacher paper answers");
+            }
+
+            StudentTeacherExamResultItemView view = new StudentTeacherExamResultItemView();
+            view.setSectionId(expected.sectionId());
+            view.setSectionTitle(expected.sectionTitle());
+            view.setSectionQuestionType(expected.sectionQuestionType());
+            view.setSectionItemId(expected.sectionItemId());
+            view.setItemType(expected.itemType());
+            view.setQuestionId(expected.questionId());
+            view.setQuestionUid(expected.questionUid());
+            view.setQuestionNo(expected.questionNo());
+            view.setQuestionType(expected.questionType());
+            view.setSubmittedAnswer(item.getSubmittedAnswer());
+            view.setCorrectAnswer(expected.correctAnswer());
+            view.setCorrect(actualCorrect);
+            view.setSourceFile(expected.sourceFile());
+            view.setSharedStem(expected.sharedStem());
+            view.setMaterial(expected.material());
+            view.setStem(expected.stem());
+            view.setOptions(expected.options());
+            view.setAnalysis(expected.analysis());
+            storedItems.add(view);
+
+            if (actualCorrect) {
+                correctCount += 1;
+            } else {
+                upsertStudentTeacherWrongNotebook(assignment, paper, expected, item.getSubmittedAnswer());
+            }
+        }
+
+        if (seenKeys.size() != expectedMap.size()) {
+            throw new RuntimeException("Submission is incomplete");
+        }
+
+        int totalCount = expectedMap.size();
+        int score = totalCount == 0 ? 0 : (int) Math.round((correctCount * 100.0) / totalCount);
+
+        StudentTeacherExamSubmission submission = new StudentTeacherExamSubmission();
+        submission.setAssignmentId(assignment.getId());
+        submission.setPaperId(assignment.getPaperId());
+        submission.setUserId(assignment.getUserId());
+        submission.setPaperTitle(blankToNull(assignment.getPaperTitle()) != null ? assignment.getPaperTitle() : safe(paper.getTitle()));
+        submission.setBookVersion(assignment.getTextbookVersion());
+        submission.setGrade(assignment.getGrade());
+        submission.setSemester(assignment.getSemester());
+        submission.setUnitCode(assignment.getUnitName());
+        submission.setDurationSeconds(request.getDurationSeconds());
+        submission.setScore(score);
+        submission.setCorrectCount(correctCount);
+        submission.setTotalCount(totalCount);
+        submission.setAnswersJson(writeJson(request.getAnswers() == null ? Map.of() : request.getAnswers()));
+        submission.setResultJson(writeJson(storedItems));
+        submission = studentTeacherExamSubmissionRepository.save(submission);
+        return toStudentTeacherExamSubmissionView(submission);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StudentTeacherExamWrongNotebookGroupView> getStudentTeacherExamWrongNotebook(Long userId) {
+        if (userId == null) return List.of();
+        Map<String, List<StudentTeacherExamWrongNotebookItem>> groups = studentTeacherExamWrongNotebookItemRepository
+                .findByUserIdOrderByLastWrongAtDescIdDesc(userId)
+                .stream()
+                .collect(Collectors.groupingBy(
+                        row -> blankToNull(row.getSourceFile()) != null ? row.getSourceFile().trim() : "UNCLASSIFIED",
+                        LinkedHashMap::new,
+                        Collectors.toList()
+                ));
+
+        List<StudentTeacherExamWrongNotebookGroupView> views = new ArrayList<>();
+        for (Map.Entry<String, List<StudentTeacherExamWrongNotebookItem>> entry : groups.entrySet()) {
+            StudentTeacherExamWrongNotebookGroupView groupView = new StudentTeacherExamWrongNotebookGroupView();
+            groupView.setSourceKey(entry.getKey());
+            groupView.setSourceLabel("UNCLASSIFIED".equals(entry.getKey()) ? "未分类来源" : entry.getKey());
+            for (StudentTeacherExamWrongNotebookItem row : entry.getValue()) {
+                StudentTeacherExamWrongNotebookItemView itemView = new StudentTeacherExamWrongNotebookItemView();
+                itemView.setId(row.getId());
+                itemView.setAssignmentId(row.getAssignmentId());
+                itemView.setPaperId(row.getPaperId());
+                itemView.setPaperTitle(row.getPaperTitle());
+                itemView.setBookVersion(row.getBookVersion());
+                itemView.setGrade(row.getGrade());
+                itemView.setSemester(row.getSemester());
+                itemView.setUnitCode(row.getUnitCode());
+                itemView.setSectionId(row.getSectionId());
+                itemView.setSectionTitle(row.getSectionTitle());
+                itemView.setSectionQuestionType(row.getSectionQuestionType());
+                itemView.setSectionItemId(row.getSectionItemId());
+                itemView.setQuestionId(row.getQuestionId());
+                itemView.setQuestionUid(row.getQuestionUid());
+                itemView.setQuestionNo(row.getQuestionNo());
+                itemView.setQuestionType(row.getQuestionType());
+                itemView.setSourceFile(row.getSourceFile());
+                itemView.setSourceLabel(row.getSourceLabel());
+                itemView.setSharedStem(row.getSharedStem());
+                itemView.setMaterial(row.getMaterial());
+                itemView.setStem(row.getStem());
+                itemView.setOptions(parseJson(row.getOptionsJson()));
+                itemView.setSubmittedAnswer(parseJson(row.getSubmittedAnswerJson()));
+                itemView.setCorrectAnswer(parseJson(row.getCorrectAnswerJson()));
+                itemView.setAnalysis(row.getAnalysis());
+                itemView.setWrongCount(row.getWrongCount());
+                itemView.setLastWrongAt(row.getLastWrongAt());
+                groupView.getItems().add(itemView);
+            }
+            views.add(groupView);
+        }
+        return views;
+    }
+
     private String safe(Object value) {
         return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    private String blankToNull(String value) {
+        String text = safe(value);
+        return text.isEmpty() ? null : text;
     }
 
     @Override
@@ -809,6 +1021,7 @@ public class TestServiceImpl implements TestService {
         session.setStatus("done");
         session.setFinishedAt(now);
         wordReviewDailySessionRepository.save(session);
+        studentLearningStatsService.recordWordReviewSessionCompletion(assignment.getUserId(), session);
     }
 
     @Override
@@ -1971,6 +2184,227 @@ public class TestServiceImpl implements TestService {
                 .trim();
     }
 
+    private UnitAssignment requireStudentTeacherAssignment(Long assignmentId, Long userId) {
+        if (assignmentId == null) throw new RuntimeException("assignmentId is required");
+        if (userId == null) throw new RuntimeException("userId is required");
+        UnitAssignment assignment = unitAssignmentRepository.findById(assignmentId)
+                .orElseThrow(() -> new RuntimeException("Student teacher exam assignment not found"));
+        if (!userId.equals(assignment.getUserId())) {
+            throw new RuntimeException("Assignment does not belong to this student");
+        }
+        if (assignment.getPaperId() == null) {
+            throw new RuntimeException("Assignment has no linked teacher paper");
+        }
+        return assignment;
+    }
+
+    private StudentTeacherExamSubmissionResultView toStudentTeacherExamSubmissionView(StudentTeacherExamSubmission submission) {
+        StudentTeacherExamSubmissionResultView view = new StudentTeacherExamSubmissionResultView();
+        view.setSubmissionId(submission.getId());
+        view.setAssignmentId(submission.getAssignmentId());
+        view.setPaperId(submission.getPaperId());
+        view.setUserId(submission.getUserId());
+        view.setPaperTitle(submission.getPaperTitle());
+        view.setBookVersion(submission.getBookVersion());
+        view.setGrade(submission.getGrade());
+        view.setSemester(submission.getSemester());
+        view.setUnitCode(submission.getUnitCode());
+        view.setScore(submission.getScore());
+        view.setCorrectCount(submission.getCorrectCount());
+        view.setTotalCount(submission.getTotalCount());
+        view.setDurationSeconds(submission.getDurationSeconds());
+        view.setAnswers(parseJson(submission.getAnswersJson()));
+        view.setSubmittedAt(submission.getSubmittedAt());
+        List<StudentTeacherExamResultItemView> items = parseJson(submission.getResultJson(), new TypeReference<List<StudentTeacherExamResultItemView>>() {});
+        if (items != null) view.setResultItems(items);
+        return view;
+    }
+
+    private List<ResolvedTeacherExamQuestion> resolveTeacherExamQuestions(TeacherExamPaperDetailView paper) {
+        List<ResolvedTeacherExamQuestion> rows = new ArrayList<>();
+        if (paper == null || paper.getSections() == null) return rows;
+        for (TeacherExamPaperSectionView section : paper.getSections()) {
+            if (section == null || section.getItems() == null) continue;
+            for (TeacherExamPaperSectionItemView item : section.getItems()) {
+                if (item == null || !(item.getSnapshot() instanceof Map<?, ?> snapshotMap)) continue;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> snapshot = (Map<String, Object>) snapshotMap;
+                if ("group".equals(item.getItemType())) {
+                    List<Map<String, Object>> questions = castListOfMaps(snapshot.get("questions"));
+                    for (Map<String, Object> question : questions) {
+                        rows.add(new ResolvedTeacherExamQuestion(
+                                section.getId(),
+                                section.getSectionTitle(),
+                                section.getQuestionType(),
+                                item.getId(),
+                                "group",
+                                toLong(question.get("questionId")),
+                                safe(question.get("questionUid")),
+                                toInteger(question.get("questionNo")),
+                                safe(question.get("questionType")),
+                                question.get("answer"),
+                                blankToNull(safe(question.get("sourceFile"))) != null ? safe(question.get("sourceFile")) : safe(snapshot.get("sourceFile")),
+                                blankToNull(safe(snapshot.get("sharedStem"))) != null ? safe(snapshot.get("sharedStem")) : safe(question.get("sharedStem")),
+                                blankToNull(safe(snapshot.get("material"))) != null ? safe(snapshot.get("material")) : safe(question.get("material")),
+                                safe(question.get("stem")),
+                                question.get("options"),
+                                safe(question.get("analysis"))
+                        ));
+                    }
+                } else {
+                    rows.add(new ResolvedTeacherExamQuestion(
+                            section.getId(),
+                            section.getSectionTitle(),
+                            section.getQuestionType(),
+                            item.getId(),
+                            "question",
+                            toLong(snapshot.get("questionId")),
+                            safe(snapshot.get("questionUid")),
+                            toInteger(snapshot.get("questionNo")),
+                            safe(snapshot.get("questionType")),
+                            snapshot.get("answer"),
+                            safe(snapshot.get("sourceFile")),
+                            safe(snapshot.get("sharedStem")),
+                            safe(snapshot.get("material")),
+                            safe(snapshot.get("stem")),
+                            snapshot.get("options"),
+                            safe(snapshot.get("analysis"))
+                    ));
+                }
+            }
+        }
+        return rows;
+    }
+
+    private void upsertStudentTeacherWrongNotebook(UnitAssignment assignment, TeacherExamPaperDetailView paper, ResolvedTeacherExamQuestion question, Object submittedAnswer) {
+        String questionUid = blankToNull(question.questionUid()) != null ? question.questionUid() : teacherExamQuestionKey(question.questionUid(), question.questionId());
+        StudentTeacherExamWrongNotebookItem item = studentTeacherExamWrongNotebookItemRepository
+                .findByUserIdAndQuestionUid(assignment.getUserId(), questionUid)
+                .orElseGet(StudentTeacherExamWrongNotebookItem::new);
+        item.setUserId(assignment.getUserId());
+        item.setAssignmentId(assignment.getId());
+        item.setPaperId(assignment.getPaperId());
+        item.setPaperTitle(blankToNull(assignment.getPaperTitle()) != null ? assignment.getPaperTitle() : safe(paper.getTitle()));
+        item.setBookVersion(assignment.getTextbookVersion());
+        item.setGrade(assignment.getGrade());
+        item.setSemester(assignment.getSemester());
+        item.setUnitCode(assignment.getUnitName());
+        item.setSectionId(question.sectionId());
+        item.setSectionTitle(question.sectionTitle());
+        item.setSectionQuestionType(question.sectionQuestionType());
+        item.setSectionItemId(question.sectionItemId());
+        item.setQuestionId(question.questionId());
+        item.setQuestionUid(questionUid);
+        item.setQuestionNo(question.questionNo());
+        item.setQuestionType(question.questionType());
+        item.setSourceFile(blankToNull(question.sourceFile()));
+        item.setSourceLabel(blankToNull(question.sourceFile()) != null ? question.sourceFile() : "未分类来源");
+        item.setSharedStem(blankToNull(question.sharedStem()));
+        item.setMaterial(blankToNull(question.material()));
+        item.setStem(question.stem());
+        item.setOptionsJson(writeJson(question.options()));
+        item.setSubmittedAnswerJson(writeJson(submittedAnswer));
+        item.setCorrectAnswerJson(writeJson(question.correctAnswer()));
+        item.setAnalysis(question.analysis());
+        item.setWrongCount(Optional.ofNullable(item.getWrongCount()).orElse(0) + 1);
+        item.setLastWrongAt(LocalDateTime.now());
+        studentTeacherExamWrongNotebookItemRepository.save(item);
+    }
+
+    private boolean answersEqual(Object submitted, Object correct, String questionType) {
+        if ("multiple_choice".equalsIgnoreCase(safe(questionType))) {
+            List<String> left = new ArrayList<>(normalizeAnswerList(submitted));
+            List<String> right = new ArrayList<>(normalizeAnswerList(correct));
+            Collections.sort(left);
+            Collections.sort(right);
+            return left.equals(right);
+        }
+        if (submitted instanceof List<?> || correct instanceof List<?>) {
+            return normalizeAnswerList(submitted).equals(normalizeAnswerList(correct));
+        }
+        return normalizeAnswerScalar(submitted).equalsIgnoreCase(normalizeAnswerScalar(correct));
+    }
+
+    private List<String> normalizeAnswerList(Object value) {
+        if (value == null) return List.of();
+        if (value instanceof List<?> list) {
+            return list.stream().map(this::normalizeAnswerScalar).filter(row -> !row.isBlank()).toList();
+        }
+        String normalized = normalizeAnswerScalar(value);
+        if (normalized.isBlank()) return List.of();
+        return List.of(normalized.split("[,|/;]")).stream()
+                .map(String::trim)
+                .filter(row -> !row.isBlank())
+                .toList();
+    }
+
+    private String normalizeAnswerScalar(Object value) {
+        if (value == null) return "";
+        return String.valueOf(value).replaceAll("\\s+", "").trim().toLowerCase();
+    }
+
+    private String teacherExamQuestionKey(ResolvedTeacherExamQuestion question) {
+        return teacherExamQuestionKey(question.questionUid(), question.questionId());
+    }
+
+    private String teacherExamQuestionKey(String questionUid, Long questionId) {
+        String uid = blankToNull(safe(questionUid));
+        if (uid != null) return uid;
+        if (questionId != null) return "qid:" + questionId;
+        return "unknown";
+    }
+
+    private Long toLong(Object value) {
+        if (value == null) return null;
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return Long.parseLong(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private Integer toInteger(Object value) {
+        if (value == null) return null;
+        if (value instanceof Number number) return number.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private List<Map<String, Object>> castListOfMaps(Object value) {
+        if (!(value instanceof List<?> list)) return List.of();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> row = (Map<String, Object>) map;
+                rows.add(row);
+            }
+        }
+        return rows;
+    }
+
+    private Object parseJson(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return objectMapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private <T> T parseJson(String json, TypeReference<T> typeReference) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return objectMapper.readValue(json, typeReference);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private String writeJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -1999,6 +2433,25 @@ public class TestServiceImpl implements TestService {
             Map<String, Object> meta,
             List<Map<String, Object>> materials,
             List<Map<String, Object>> questions
+    ) {}
+
+    private record ResolvedTeacherExamQuestion(
+            Long sectionId,
+            String sectionTitle,
+            String sectionQuestionType,
+            Long sectionItemId,
+            String itemType,
+            Long questionId,
+            String questionUid,
+            Integer questionNo,
+            String questionType,
+            Object correctAnswer,
+            String sourceFile,
+            String sharedStem,
+            String material,
+            String stem,
+            Object options,
+            String analysis
     ) {}
 
     private static class DeleteStats {

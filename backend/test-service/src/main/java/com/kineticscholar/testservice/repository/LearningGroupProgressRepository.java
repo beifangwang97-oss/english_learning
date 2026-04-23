@@ -11,5 +11,5 @@ import java.util.Optional;
 public interface LearningGroupProgressRepository extends JpaRepository<LearningGroupProgress, Long> {
     Optional<LearningGroupProgress> findByUserIdAndUnitIdAndModuleAndGroupNo(Long userId, String unitId, String module, Integer groupNo);
     List<LearningGroupProgress> findByUserIdAndUnitIdAndModuleOrderByGroupNoAsc(Long userId, String unitId, String module);
+    List<LearningGroupProgress> findByUserIdAndCompletedAtIsNotNull(Long userId);
 }
-

@@ -7,6 +7,7 @@ import { GlobalLayout } from './components/layouts/GlobalLayout';
 
 import { Login } from './pages/Login';
 import { StudentDashboard } from './pages/StudentDashboard';
+import { StudentTeacherPaper } from './pages/StudentTeacherPaper';
 import { StudentUnit } from './pages/StudentUnit';
 import { TeacherDashboard } from './pages/TeacherDashboard';
 import { AdminDashboard } from './pages/AdminDashboard';
@@ -32,6 +33,7 @@ export default function App() {
               <Route element={<AuthGuard allowedRoles={['student']} />}>
                 <Route path="/student/dashboard" element={<StudentDashboard />} />
                 <Route path="/student/unit/:id" element={<StudentUnit />} />
+                <Route path="/student/unit-test/:assignmentId" element={<StudentTeacherPaper />} />
               </Route>
 
               {/* Teacher Routes */}

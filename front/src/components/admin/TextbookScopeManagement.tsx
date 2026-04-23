@@ -12,6 +12,25 @@ const normalizeSemester = (v: string) => {
   return s;
 };
 
+type ScopeUsage = {
+  bookVersion?: string;
+  grade?: string;
+  semester?: string;
+  wordLexiconCount?: number;
+  phraseLexiconCount?: number;
+  passageCount?: number;
+  unitCount?: number;
+  userCount?: number;
+  storeCount?: number;
+  users?: Array<Record<string, unknown>>;
+  stores?: Array<Record<string, unknown>>;
+};
+
+type CleanupScope =
+  | { kind: 'book'; bookVersion: string; usage?: ScopeUsage }
+  | { kind: 'grade'; bookVersion: string; grade: string; usage?: ScopeUsage }
+  | { kind: 'semester'; bookVersion: string; grade: string; semester: string; usage?: ScopeUsage };
+
 export const TextbookScopeManagement: React.FC = () => {
   const token = useMemo(() => getSessionToken(), []);
   const [loading, setLoading] = useState(true);
@@ -22,6 +41,7 @@ export const TextbookScopeManagement: React.FC = () => {
   const [grades, setGrades] = useState<string[]>(DEFAULT_GRADES);
   const [newBookVersion, setNewBookVersion] = useState('');
   const [expandedBooks, setExpandedBooks] = useState<Set<string>>(new Set());
+  const [cleanupCandidate, setCleanupCandidate] = useState<CleanupScope | null>(null);
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -54,10 +74,46 @@ export const TextbookScopeManagement: React.FC = () => {
     load();
   }, []);
 
+  const describeUsage = (usage?: ScopeUsage) => {
+    if (!usage) return '';
+    const lines = [
+      `内容占用：单词 ${usage.wordLexiconCount ?? 0}，短语 ${usage.phraseLexiconCount ?? 0}，课文 ${usage.passageCount ?? 0}，单元 ${usage.unitCount ?? 0}`,
+      `业务占用：用户 ${usage.userCount ?? 0}，门店 ${usage.storeCount ?? 0}`,
+    ];
+    const userLines = (usage.users || []).map((u) => {
+      const role = String(u.role || '');
+      const name = String(u.name || u.username || '');
+      const grade = String(u.grade || '');
+      const storeName = String(u.storeName || u.storeCode || '');
+      return `${role} / ${name}${grade ? ` / ${grade}` : ''}${storeName ? ` / ${storeName}` : ''}`;
+    });
+    const storeLines = (usage.stores || []).map((s) => {
+      const code = String(s.storeCode || '');
+      const name = String(s.storeName || '');
+      return `${code}${name ? ` / ${name}` : ''}`;
+    });
+    if (userLines.length) lines.push(`占用用户：${userLines.join('；')}`);
+    if (storeLines.length) lines.push(`占用门店：${storeLines.join('；')}`);
+    return lines.join('\n');
+  };
+
+  const canCascadeDelete = (usage?: ScopeUsage) => {
+    if (!usage) return false;
+    const userCount = usage.userCount ?? 0;
+    const storeCount = usage.storeCount ?? 0;
+    const contentCount =
+      (usage.wordLexiconCount ?? 0) +
+      (usage.phraseLexiconCount ?? 0) +
+      (usage.passageCount ?? 0) +
+      (usage.unitCount ?? 0);
+    return userCount === 0 && storeCount === 0 && contentCount > 0;
+  };
+
   const runAction = async (fn: () => Promise<any>, successMessage: string, reload = true) => {
     setSaving(true);
     setError(null);
     setMessage(null);
+    setCleanupCandidate(null);
     try {
       await fn();
       setMessage(successMessage);
@@ -91,9 +147,28 @@ export const TextbookScopeManagement: React.FC = () => {
     await runAction(() => lexiconApi.renameTextbookScopeTextbook(token, oldName, next), `已重命名：${oldName} -> ${next}`);
   };
 
+  const handleDeleteFailure = (scope: CleanupScope, e: any) => {
+    const usage = e?.usage as ScopeUsage | undefined;
+    const msg = e?.message || '删除失败';
+    setError(msg);
+    setCleanupCandidate(usage ? { ...scope, usage } as CleanupScope : null);
+  };
+
   const deleteBook = async (bookVersion: string) => {
     if (!window.confirm(`确认删除教材版本“${bookVersion}”？\n如有占用会被阻止。`)) return;
-    await runAction(() => lexiconApi.deleteTextbookScopeTextbook(token, bookVersion), `已删除教材版本：${bookVersion}`);
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    setCleanupCandidate(null);
+    try {
+      await lexiconApi.deleteTextbookScopeTextbook(token, bookVersion);
+      setMessage(`已删除教材版本：${bookVersion}`);
+      await load(true);
+    } catch (e: any) {
+      handleDeleteFailure({ kind: 'book', bookVersion }, e);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const addGrade = async (bookVersion: string) => {
@@ -104,7 +179,49 @@ export const TextbookScopeManagement: React.FC = () => {
 
   const deleteGrade = async (bookVersion: string, grade: string) => {
     if (!window.confirm(`确认删除：${bookVersion} / ${grade}？\n如有占用会被阻止。`)) return;
-    await runAction(() => lexiconApi.deleteTextbookScopeGrade(token, bookVersion, grade), `已删除年级：${bookVersion} / ${grade}`);
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    setCleanupCandidate(null);
+    try {
+      await lexiconApi.deleteTextbookScopeGrade(token, bookVersion, grade);
+      setMessage(`已删除年级：${bookVersion} / ${grade}`);
+      await load(true);
+    } catch (e: any) {
+      handleDeleteFailure({ kind: 'grade', bookVersion, grade }, e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cascadeDelete = async (candidate: CleanupScope) => {
+    const scopeLabel =
+      candidate.kind === 'book'
+        ? candidate.bookVersion
+        : candidate.kind === 'grade'
+          ? `${candidate.bookVersion} / ${candidate.grade}`
+          : `${candidate.bookVersion} / ${candidate.grade} / ${candidate.semester}`;
+    if (!window.confirm(`确认清空关联内容并删除：${scopeLabel}？\n\n这会删除该范围下的单词、短语、课文、单元，并自动重试删除教材标签。`)) return;
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await lexiconApi.cascadeDeleteTextbookScope(token, {
+        bookVersion: candidate.bookVersion,
+        grade: candidate.kind === 'book' ? undefined : candidate.grade,
+        semester: candidate.kind === 'semester' ? candidate.semester : undefined,
+      });
+      setCleanupCandidate(null);
+      setMessage(
+        `级联删除完成：单词 ${res.deletedWords}，短语 ${res.deletedPhrases}，课文 ${res.deletedPassages}，单元 ${res.deletedUnits}，教材范围 ${res.deletedScopes}` +
+        (res.deletedTextbookTag ? '，教材标签已删除' : '')
+      );
+      await load(true);
+    } catch (e: any) {
+      handleDeleteFailure(candidate, e);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const setGradeSemesters = async (
@@ -124,7 +241,12 @@ export const TextbookScopeManagement: React.FC = () => {
     await runAction(
       async () => {
         for (const s of toDelete) {
-          await lexiconApi.deleteTextbookScopeSemester(token, bookVersion, grade, s);
+          try {
+            await lexiconApi.deleteTextbookScopeSemester(token, bookVersion, grade, s);
+          } catch (e: any) {
+            handleDeleteFailure({ kind: 'semester', bookVersion, grade, semester: s }, e);
+            throw e;
+          }
         }
         for (const s of toAdd) {
           await lexiconApi.addTextbookScopeSemester(token, bookVersion, grade, s);
@@ -197,8 +319,31 @@ export const TextbookScopeManagement: React.FC = () => {
         </span>
       </div>
 
-      {message && <div className="rounded-lg bg-green-50 text-green-700 px-3 py-2 text-sm">{message}</div>}
-      {error && <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</div>}
+      {message && <div className="rounded-lg bg-green-50 text-green-700 px-3 py-2 text-sm whitespace-pre-line">{message}</div>}
+      {error && (
+        <div className="rounded-lg bg-red-50 text-red-700 px-3 py-3 text-sm space-y-2">
+          <div className="font-bold whitespace-pre-line">{error}</div>
+          {cleanupCandidate?.usage && (
+            <div className="rounded border border-red-200 bg-white/80 p-3 space-y-2">
+              <div className="font-bold">详细占用说明</div>
+              <div className="whitespace-pre-line text-xs leading-6">{describeUsage(cleanupCandidate.usage)}</div>
+              {canCascadeDelete(cleanupCandidate.usage) ? (
+                <button
+                  onClick={() => cascadeDelete(cleanupCandidate)}
+                  disabled={saving}
+                  className="px-3 py-2 rounded-lg border border-red-300 bg-red-600 text-white font-bold disabled:opacity-50"
+                >
+                  清空关联内容并删除教材
+                </button>
+              ) : (
+                <div className="text-xs">
+                  当前仍存在门店或用户占用，暂不支持级联删除。请先解除这些业务占用后再删除。
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-6 text-sm text-on-surface-variant">

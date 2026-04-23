@@ -3,12 +3,12 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useTimer } from '../context/TimerContext';
 import { cn } from '../lib/utils';
-import { examApi, ExamPaperDetail, learningProgressApi, StudentExamPracticeResult } from '../lib/auth';
+import { learningProgressApi, UnitAssignment, unitAssignmentApi } from '../lib/auth';
 import { formatPassageDisplayLabel, formatSourceTagLabel, getTextbookVersionCandidates, lexiconApi, LearningEntry, LearningGroupSummary, LearningSourceGroupSummary, ManagedAudioElement, PassageItem } from '../lib/lexicon';
 import { getSessionToken } from '../lib/session';
 import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileQuestion, HelpCircle, LayoutDashboard, Library, LogOut, MessageCircle, Mic2, NotebookPen, Volume2, XCircle } from 'lucide-react';
 
-type ModuleType = 'vocab' | 'phrase' | 'reading' | 'quiz';
+type ModuleType = 'vocab' | 'phrase' | 'reading';
 type LearnModule = 'vocab' | 'phrase';
 type StepNo = 1 | 2 | 3 | 4;
 
@@ -18,6 +18,9 @@ type LearnItem = {
   en: string;
   cn: string;
   phonetic?: string;
+  syllableText?: string;
+  syllablePronunciation?: string[];
+  memoryTip?: string;
   sentence?: string;
   sentenceCn?: string;
   wordAudio?: string;
@@ -123,6 +126,9 @@ function mapEntryToLearnItem(entry: LearningEntry): LearnItem {
     en: entry.word,
     cn: firstMeaning?.meaning || '',
     phonetic: entry.phonetic,
+    syllableText: entry.syllable_text || '',
+    syllablePronunciation: entry.syllable_pronunciation || [],
+    memoryTip: entry.memory_tip || '',
     sentence: firstMeaning?.example || '',
     sentenceCn: firstMeaning?.example_zh || '',
     wordAudio: entry.word_audio || entry.phrase_audio || '',
@@ -194,6 +200,7 @@ export const StudentUnit: React.FC = () => {
   const [pageError, setPageError] = useState<string | null>(null);
   const [loadingProgress, setLoadingProgress] = useState(true);
   const [resolvedBookVersion, setResolvedBookVersion] = useState('');
+  const [unitAssignments, setUnitAssignments] = useState<UnitAssignment[]>([]);
 
   const [vocabEngine, setVocabEngine] = useState<EngineState>(defaultEngine());
   const [phraseEngine, setPhraseEngine] = useState<EngineState>(defaultEngine());
@@ -222,13 +229,6 @@ export const StudentUnit: React.FC = () => {
   const [sentencePopover, setSentencePopover] = useState<{ idx: number; left: number; top: number } | null>(null);
   const [playingSentenceNo, setPlayingSentenceNo] = useState<number | null>(null);
   const [playingFullPassage, setPlayingFullPassage] = useState(false);
-  const [quizPaper, setQuizPaper] = useState<ExamPaperDetail | null>(null);
-  const [quizLoading, setQuizLoading] = useState(false);
-  const [quizSubmitLoading, setQuizSubmitLoading] = useState(false);
-  const [quizAnswers, setQuizAnswers] = useState<Record<number, string>>({});
-  const [quizResult, setQuizResult] = useState<StudentExamPracticeResult | null>(null);
-  const [quizAnalysisOpen, setQuizAnalysisOpen] = useState<Record<number, boolean>>({});
-
   const recognizeClearTimerRef = useRef<number | null>(null);
   const vocabSessionSaveRef = useRef<number | null>(null);
   const phraseSessionSaveRef = useRef<number | null>(null);
@@ -237,11 +237,11 @@ export const StudentUnit: React.FC = () => {
   const stopReadingAudioRef = useRef<(() => void) | null>(null);
   const readingTextWrapRef = useRef<HTMLDivElement | null>(null);
   const fillInputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const spellInputRef = useRef<HTMLInputElement | null>(null);
   const correctTimerRef = useRef<number | null>(null);
 
   const vocabItemMap = useMemo(() => new Map(Object.values(vocabGroupItems).flat().map((x) => [x.id, x])), [vocabGroupItems]);
   const phraseItemMap = useMemo(() => new Map(Object.values(phraseGroupItems).flat().map((x) => [x.id, x])), [phraseGroupItems]);
-
   const vocabGroups = useMemo(() => vocabGroupSummary.map((x) => x.groupNo), [vocabGroupSummary]);
   const phraseGroups = useMemo(() => phraseGroupSummary.map((x) => x.groupNo), [phraseGroupSummary]);
   const vocabSourceOptions = useMemo(() => vocabSourceGroups.map((row) => row.sourceTag), [vocabSourceGroups]);
@@ -274,10 +274,17 @@ export const StudentUnit: React.FC = () => {
     [readingItems, unitMeta?.unit]
   );
   const currentPassage = readingPassages[readingIndex] || null;
-  const quizMaterialMap = useMemo(
-    () => new Map((quizPaper?.materials || []).map((item) => [item.id, item])),
-    [quizPaper?.materials]
-  );
+  const currentTeacherPaperAssignment = useMemo(() => {
+    if (!unitMeta) return null;
+    return unitAssignments.find((row) =>
+      row.textbookVersion === unitMeta.bookVersion
+      && row.grade === unitMeta.grade
+      && row.semester === unitMeta.semester
+      && row.unitName === unitMeta.unit
+      && typeof row.paperId === 'number'
+      && row.paperId > 0
+    ) || null;
+  }, [unitAssignments, unitMeta]);
 
   const ensureGroupItemsLoaded = async (module: LearnModule, groupNo: number, sourceTagOverride?: string): Promise<LearnItem[]> => {
     if (!token || !unitMeta) return [];
@@ -336,10 +343,30 @@ export const StudentUnit: React.FC = () => {
     return items.map((x) => x.id);
   };
 
+  const getBaseQueueForGroup = (module: LearnModule, groupNo: number, sourceTagOverride?: string): string[] => {
+    const sourceTag = sourceTagOverride || getModuleSourceTag(module);
+    const cacheKey = buildSourceGroupKey(sourceTag, groupNo);
+    const items = module === 'vocab' ? (vocabGroupItems[cacheKey] || []) : (phraseGroupItems[cacheKey] || []);
+    return items.map((x) => x.id);
+  };
+
   useEffect(() => {
     startTimer();
     return () => pauseTimer();
   }, [startTimer, pauseTimer]);
+
+  useEffect(() => {
+    const loadUnitAssignments = async () => {
+      if (!token || !user?.id || user.role !== 'student') return;
+      try {
+        const rows = await unitAssignmentApi.getByStudent(token, Number(user.id));
+        setUnitAssignments(rows || []);
+      } catch {
+        setUnitAssignments([]);
+      }
+    };
+    loadUnitAssignments();
+  }, [token, user?.id, user?.role]);
 
   useEffect(() => {
     const load = async () => {
@@ -441,47 +468,6 @@ export const StudentUnit: React.FC = () => {
     };
     load();
   }, [token, user?.id, unitId, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit]);
-
-  useEffect(() => {
-    const loadQuizPaper = async () => {
-      if (!token || !user?.id || !unitMeta) return;
-      setQuizLoading(true);
-      try {
-        const papers = await examApi.getPapers(token, {
-          bookVersion: resolvedBookVersion || unitMeta.bookVersion,
-          grade: unitMeta.grade,
-          semester: unitMeta.semester,
-          unitCode: unitMeta.unit,
-          paperType: '同步测试题',
-        });
-        const paper = papers[0];
-        if (!paper) {
-          setQuizPaper(null);
-          setQuizResult(null);
-          setQuizAnswers({});
-          return;
-        }
-        const detail = await examApi.getPaperDetail(token, paper.id);
-        setQuizPaper(detail);
-        const latest = await examApi.getLatestPractice(token, paper.id, Number(user.id));
-        setQuizResult(latest);
-        if (latest?.answers?.length) {
-          const nextAnswers: Record<number, string> = {};
-          latest.answers.forEach((row) => {
-            nextAnswers[row.questionId] = row.submittedAnswer || '';
-          });
-          setQuizAnswers(nextAnswers);
-        } else {
-          setQuizAnswers({});
-        }
-      } catch (e: any) {
-        setPageError(e?.message || '单元练习加载失败');
-      } finally {
-        setQuizLoading(false);
-      }
-    };
-    loadQuizPaper();
-  }, [token, user?.id, resolvedBookVersion, unitMeta?.bookVersion, unitMeta?.grade, unitMeta?.semester, unitMeta?.unit]);
 
   useEffect(() => {
     const hydrateModule = async () => {
@@ -700,35 +686,31 @@ export const StudentUnit: React.FC = () => {
   };
 
   const goNext = async (module: LearnModule, wrong: boolean) => {
-    const setEngine = module === 'vocab' ? setVocabEngine : setPhraseEngine;
     const engine = module === 'vocab' ? vocabEngine : phraseEngine;
     const item = module === 'vocab' ? currentVocab : currentPhrase;
     if (!item) return;
 
     const groups = module === 'vocab' ? vocabGroups : phraseGroups;
+    const setEngine = module === 'vocab' ? setVocabEngine : setPhraseEngine;
+    const queue = wrong ? applyWrongWithFuseLimit(engine.queue, engine.index, item.id) : engine.queue;
+    const reachedGroupEnd = engine.index >= queue.length - 1;
+    const doneMap = reachedGroupEnd ? { ...engine.stepDone, [engine.step]: true } : engine.stepDone;
 
-    setEngine((prev) => {
-      let queue = prev.queue;
-      if (wrong) queue = applyWrongWithFuseLimit(prev.queue, prev.index, item.id);
-
-      const reachedGroupEnd = prev.index >= queue.length - 1;
-      if (!reachedGroupEnd) {
-        return {
-          ...prev,
-          queue,
-          index: prev.index + 1,
-          recognizeInput: '',
-          fillSlots: [],
-          fillCursor: 0,
-          spellInput: '',
-          recognizeOk: false,
-        };
-      }
-
-      const doneMap = { ...prev.stepDone, [prev.step]: true };
+    if (!reachedGroupEnd) {
+      setEngine((prev) => ({
+        ...prev,
+        queue,
+        index: prev.index + 1,
+        recognizeInput: '',
+        fillSlots: [],
+        fillCursor: 0,
+        spellInput: '',
+        recognizeOk: false,
+      }));
+    } else {
       const allStepDone = [1, 2, 3, 4].every((s) => Boolean(doneMap[s]));
       if (!allStepDone) {
-        return {
+        setEngine((prev) => ({
           ...prev,
           queue,
           index: 0,
@@ -738,26 +720,30 @@ export const StudentUnit: React.FC = () => {
           fillCursor: 0,
           spellInput: '',
           recognizeOk: false,
-        };
-      }
+        }));
+      } else {
+        const groupIdx = groups.indexOf(engine.groupNo);
+        const nextGroup = groups[groupIdx + 1];
+        const isLastGroup = !nextGroup;
+        const nextQueue = isLastGroup
+          ? getBaseQueueForGroup(module, engine.groupNo)
+          : (await ensureGroupItemsLoaded(module, nextGroup)).map((x) => x.id);
 
-      const groupIdx = groups.indexOf(prev.groupNo);
-      const nextGroup = groups[groupIdx + 1];
-      const isLastGroup = !nextGroup;
-      return {
-        ...prev,
-        groupNo: isLastGroup ? prev.groupNo : nextGroup,
-        step: 1,
-        queue: isLastGroup ? queue : buildQueueForGroup(module, nextGroup),
-        index: 0,
-        stepDone: isLastGroup ? doneMap : {},
-        recognizeInput: '',
-        fillSlots: [],
-        fillCursor: 0,
-        spellInput: '',
-        recognizeOk: false,
-      };
-    });
+        setEngine((prev) => ({
+          ...prev,
+          groupNo: isLastGroup ? prev.groupNo : nextGroup,
+          step: 1,
+          queue: nextQueue,
+          index: 0,
+          stepDone: isLastGroup ? doneMap : {},
+          recognizeInput: '',
+          fillSlots: [],
+          fillCursor: 0,
+          spellInput: '',
+          recognizeOk: false,
+        }));
+      }
+    }
 
     const reachedLastOfStep = engine.index >= engine.queue.length - 1;
     if (!wrong && reachedLastOfStep && engine.step < 4) {
@@ -1054,24 +1040,32 @@ export const StudentUnit: React.FC = () => {
   };
 
   useEffect(() => {
-    if (vocabEngine.groupNo) ensureGroupItemsLoaded('vocab', vocabEngine.groupNo).then(() => {
-      if (!vocabEngine.queue.length) {
-        setVocabEngine((prev) => ({ ...prev, queue: buildQueueForGroup('vocab', prev.groupNo), index: 0 }));
-      }
+    if (vocabEngine.groupNo) ensureGroupItemsLoaded('vocab', vocabEngine.groupNo).then((items) => {
+      if (!items.length || vocabEngine.queue.length) return;
+      setVocabEngine((prev) => ({ ...prev, queue: items.map((x) => x.id), index: 0 }));
     });
   }, [vocabEngine.groupNo, JSON.stringify(vocabGroupSummary)]);
 
   useEffect(() => {
-    if (phraseEngine.groupNo) ensureGroupItemsLoaded('phrase', phraseEngine.groupNo).then(() => {
-      if (!phraseEngine.queue.length) {
-        setPhraseEngine((prev) => ({ ...prev, queue: buildQueueForGroup('phrase', prev.groupNo), index: 0 }));
-      }
+    if (phraseEngine.groupNo) ensureGroupItemsLoaded('phrase', phraseEngine.groupNo).then((items) => {
+      if (!items.length || phraseEngine.queue.length) return;
+      setPhraseEngine((prev) => ({ ...prev, queue: items.map((x) => x.id), index: 0 }));
     });
   }, [phraseEngine.groupNo, JSON.stringify(phraseGroupSummary)]);
 
   const switchStep = (module: LearnModule, step: StepNo) => {
     const setter = module === 'vocab' ? setVocabEngine : setPhraseEngine;
-    setter((prev) => ({ ...prev, step, fillSlots: [], fillCursor: 0, spellInput: '', recognizeInput: '', recognizeOk: false }));
+    setter((prev) => ({
+      ...prev,
+      step,
+      queue: getBaseQueueForGroup(module, prev.groupNo, getModuleSourceTag(module)),
+      index: 0,
+      fillSlots: [],
+      fillCursor: 0,
+      spellInput: '',
+      recognizeInput: '',
+      recognizeOk: false,
+    }));
     if (module === 'vocab') setVocabStepDonePrompt((prev) => (prev === step ? null : prev));
     else setPhraseStepDonePrompt((prev) => (prev === step ? null : prev));
   };
@@ -1233,12 +1227,38 @@ export const StudentUnit: React.FC = () => {
 
         {engine.step === 1 && (
           <div className="bg-surface-container-low p-6 rounded-xl">
-            <div className="flex items-center gap-4 mb-3">
-              <h3 className="text-4xl font-black">{item.en}</h3>
-              <button onClick={() => playAudio(item.wordAudio)} className="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center" title="播放单词录音"><Volume2 className="w-5 h-5" /></button>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="mb-3 flex items-center gap-4">
+                  <h3 className="text-4xl font-black">{item.en}</h3>
+                  <button onClick={() => playAudio(item.wordAudio)} className="flex h-10 w-10 items-center justify-center rounded-full bg-secondary-container" title="播放单词录音"><Volume2 className="w-5 h-5" /></button>
+                </div>
+                <p className="text-lg font-bold">{item.cn}</p>
+                {item.phonetic && <p className="mt-1 text-sm text-on-surface-variant">{item.phonetic}</p>}
+              </div>
+              {module === 'vocab' && (item.syllableText || item.syllablePronunciation?.length || item.memoryTip) && (
+                <div className="grid min-w-0 flex-1 gap-3 sm:grid-cols-2 xl:max-w-[46%]">
+                  {item.syllableText && (
+                    <div className="min-w-0">
+                      <p className="text-xs font-black tracking-[0.18em] text-emerald-700">分音节</p>
+                      <p className="mt-1 break-words text-base font-bold text-on-surface">{item.syllableText}</p>
+                    </div>
+                  )}
+                  {Boolean(item.syllablePronunciation?.length) && (
+                    <div className="min-w-0">
+                      <p className="text-xs font-black tracking-[0.18em] text-emerald-700">分音提示</p>
+                      <p className="mt-1 break-words text-sm text-on-surface-variant">{item.syllablePronunciation?.join(' / ')}</p>
+                    </div>
+                  )}
+                  {item.memoryTip && (
+                    <div className="min-w-0 sm:col-span-2">
+                      <p className="text-xs font-black tracking-[0.18em] text-emerald-700">记忆提示</p>
+                      <p className="mt-1 break-words text-sm text-on-surface-variant">{item.memoryTip}</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <p className="text-lg font-bold">{item.cn}</p>
-            {item.phonetic && <p className="text-sm text-on-surface-variant mt-1">{item.phonetic}</p>}
             {item.sentence && (
               <div className="mt-4 flex items-center gap-2">
                 <p className="text-base">{item.sentence}</p>
@@ -1344,6 +1364,7 @@ export const StudentUnit: React.FC = () => {
               </button>
             </div>
             <input
+              ref={spellInputRef}
               value={engine.spellInput}
               onChange={(e) => (module === 'vocab' ? setVocabEngine((p) => ({ ...p, spellInput: e.target.value })) : setPhraseEngine((p) => ({ ...p, spellInput: e.target.value })))}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleStep4Submit(module); } }}
@@ -1531,137 +1552,21 @@ export const StudentUnit: React.FC = () => {
     );
   };
 
-  const toggleQuizAnalysis = (questionId: number) => {
-    setQuizAnalysisOpen((prev) => ({ ...prev, [questionId]: !prev[questionId] }));
-  };
+  useEffect(() => {
+    if (currentModuleEngine.step !== 3 || !currentModuleItem || !currentBlankIndexes.length) return;
+    const timer = window.setTimeout(() => {
+      fillInputRefs.current[0]?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [currentModule, currentModuleEngine.step, currentModuleItem?.id, currentBlankIndexes.length]);
 
-  const updateQuizAnswer = (questionId: number, answer: string) => {
-    setQuizAnswers((prev) => ({ ...prev, [questionId]: answer }));
-  };
-
-  const submitQuiz = async () => {
-    if (!token || !user?.id || !quizPaper) return;
-    setQuizSubmitLoading(true);
-    try {
-      const result = await examApi.submitPractice(token, quizPaper.id, {
-        userId: Number(user.id),
-        answers: quizPaper.questions.map((question) => ({
-          questionId: question.id,
-          answerText: quizAnswers[question.id] || '',
-        })),
-      });
-      setQuizResult(result);
-    } catch (e: any) {
-      setPageError(e?.message || '提交单元练习失败');
-    } finally {
-      setQuizSubmitLoading(false);
-    }
-  };
-
-  const renderQuizModule = () => {
-    if (quizLoading) return <div className="text-sm text-on-surface-variant">正在加载单元练习...</div>;
-    if (!quizPaper) return <div className="text-sm text-on-surface-variant">当前单元暂未配置同步测试题。</div>;
-
-    let lastMaterialId: number | null = null;
-    return (
-      <div className="space-y-6">
-        <div className="rounded-2xl border border-emerald-200/70 bg-gradient-to-br from-emerald-50 via-white to-cyan-50 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-xs font-bold tracking-[0.18em] text-emerald-700">UNIT PRACTICE</div>
-              <h3 className="mt-2 text-2xl font-black text-slate-900">{quizPaper.paperName}</h3>
-              <p className="mt-2 text-sm text-slate-600">{quizPaper.bookVersion} · {quizPaper.grade} · {quizPaper.semester} · {quizPaper.unitCode}</p>
-            </div>
-            {quizResult && (
-              <div className="rounded-2xl bg-white/90 px-4 py-3 text-right shadow-sm">
-                <div className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">最近成绩</div>
-                <div className="mt-1 text-3xl font-black text-emerald-700">{quizResult.score}</div>
-                <div className="text-sm text-slate-600">{quizResult.correctCount} / {quizResult.totalCount} 题答对</div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {quizPaper.questions.map((question) => {
-          const material = question.materialId ? quizMaterialMap.get(question.materialId) : null;
-          const shouldShowMaterial = Boolean(material && material.id !== lastMaterialId);
-          if (material) lastMaterialId = material.id;
-          const resultRow = quizResult?.answers?.find((row) => row.questionId === question.id);
-          const answeredCorrect = Boolean(resultRow?.correct);
-          return (
-            <div key={question.id} className="space-y-4">
-              {shouldShowMaterial && material && (
-                <section className="rounded-2xl border border-amber-200/70 bg-amber-50/70 p-5">
-                  <div className="text-xs font-black tracking-[0.2em] text-amber-700">{material.materialLabel || 'MATERIAL'}</div>
-                  {material.title ? <h4 className="mt-2 text-lg font-black text-slate-900">{material.title}</h4> : null}
-                  <div className="mt-3 whitespace-pre-wrap text-[15px] leading-7 text-slate-700">{material.content}</div>
-                </section>
-              )}
-
-              <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="text-lg font-black text-slate-900">第 {question.questionNo} 题</div>
-                  {resultRow && (
-                    <span className={cn('rounded-full px-3 py-1 text-xs font-black', answeredCorrect ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
-                      {answeredCorrect ? '回答正确' : '回答错误'}
-                    </span>
-                  )}
-                </div>
-
-                <div className="mt-3 whitespace-pre-wrap text-[16px] leading-7 text-slate-800">{question.stem}</div>
-
-                {!!question.options?.length ? (
-                  <div className="mt-4 space-y-3">
-                    {question.options.map((option) => (
-                      <label key={`${question.id}-${option.key}`} className={cn('flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3', quizAnswers[question.id] === option.key ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-slate-50/60')}>
-                        <input
-                          type="radio"
-                          name={`question-${question.id}`}
-                          checked={quizAnswers[question.id] === option.key}
-                          onChange={() => updateQuizAnswer(question.id, option.key)}
-                          className="mt-1"
-                        />
-                        <div className="text-sm leading-6 text-slate-700"><span className="font-black mr-2">{option.key}.</span>{option.text}</div>
-                      </label>
-                    ))}
-                  </div>
-                ) : (
-                  <textarea
-                    value={quizAnswers[question.id] || ''}
-                    onChange={(e) => updateQuizAnswer(question.id, e.target.value)}
-                    className="mt-4 min-h-[96px] w-full rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3"
-                    placeholder="请输入你的答案"
-                  />
-                )}
-
-                {quizResult && (
-                  <div className="mt-4 space-y-3 rounded-xl bg-slate-50 p-4">
-                    <div className="text-sm text-slate-700">你的答案：<span className={cn('font-black', answeredCorrect ? 'text-emerald-700' : 'text-red-700')}>{resultRow?.submittedAnswer || '未作答'}</span></div>
-                    <div className="text-sm text-slate-700">正确答案：<span className="font-black text-emerald-700">{resultRow?.correctAnswer || question.answerText || '-'}</span></div>
-                    <button onClick={() => toggleQuizAnalysis(question.id)} className="text-sm font-bold text-sky-700 hover:text-sky-900">
-                      {quizAnalysisOpen[question.id] ? '收起解析' : '查看解析'}
-                    </button>
-                    {quizAnalysisOpen[question.id] && (
-                      <div className="space-y-3 text-sm leading-7 text-slate-700">
-                        {question.analysis ? <div className="whitespace-pre-wrap">{question.analysis}</div> : <div>暂无解析</div>}
-                        {material?.analysis ? <div className="rounded-lg bg-amber-50 px-3 py-2 whitespace-pre-wrap text-amber-900">材料解析：{material.analysis}</div> : null}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </article>
-            </div>
-          );
-        })}
-
-        <div className="sticky bottom-6 flex justify-end">
-          <button onClick={submitQuiz} disabled={quizSubmitLoading} className="rounded-full bg-emerald-600 px-6 py-3 text-sm font-black text-white shadow-lg disabled:opacity-50">
-            {quizSubmitLoading ? '提交中...' : quizResult ? '重新提交并核对' : '提交并核对答案'}
-          </button>
-        </div>
-      </div>
-    );
-  };
+  useEffect(() => {
+    if (currentModuleEngine.step !== 4 || !currentModuleItem) return;
+    const timer = window.setTimeout(() => {
+      spellInputRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [currentModule, currentModuleEngine.step, currentModuleItem?.id]);
 
   const handleLogout = () => {
     logout();
@@ -1688,7 +1593,6 @@ export const StudentUnit: React.FC = () => {
             <div onClick={() => setCurrentModule('vocab')} className={cn('rounded-lg px-3 py-2 text-sm font-semibold cursor-pointer flex items-center gap-2', currentModule === 'vocab' ? 'bg-emerald-200/50 text-emerald-900' : 'text-emerald-700/70 hover:bg-emerald-100/50')}><BookOpen className="w-4 h-4" />单词闯关</div>
             <div onClick={() => setCurrentModule('phrase')} className={cn('rounded-lg px-3 py-2 text-sm font-semibold cursor-pointer flex items-center gap-2', currentModule === 'phrase' ? 'bg-emerald-200/50 text-emerald-900' : 'text-emerald-700/70 hover:bg-emerald-100/50')}><MessageCircle className="w-4 h-4" />短语闯关</div>
             <div onClick={() => setCurrentModule('reading')} className={cn('rounded-lg px-3 py-2 text-sm font-semibold cursor-pointer flex items-center gap-2', currentModule === 'reading' ? 'bg-emerald-200/50 text-emerald-900' : 'text-emerald-700/70 hover:bg-emerald-100/50')}><Library className="w-4 h-4" />课文阅读</div>
-            <div onClick={() => setCurrentModule('quiz')} className={cn('rounded-lg px-3 py-2 text-sm font-semibold cursor-pointer flex items-center gap-2', currentModule === 'quiz' ? 'bg-emerald-200/50 text-emerald-900' : 'text-emerald-700/70 hover:bg-emerald-100/50')}><FileQuestion className="w-4 h-4" />单元练习</div>
           </div>
           <div onClick={() => { navigate('/student/dashboard'); setTimeout(() => window.dispatchEvent(new CustomEvent('change-tab', { detail: 'word-tests' })), 100); }} className="text-emerald-800 hover:bg-emerald-100 rounded-full mx-4 mb-2 flex items-center gap-3 px-4 py-3 font-semibold cursor-pointer"><ClipboardList className="w-5 h-5" /><span>单词测试</span></div>
           <div onClick={() => { navigate('/student/dashboard'); setTimeout(() => window.dispatchEvent(new CustomEvent('change-tab', { detail: 'notebook' })), 100); }} className="text-emerald-800 hover:bg-emerald-100 rounded-full mx-4 mb-2 flex items-center gap-3 px-4 py-3 font-semibold cursor-pointer"><NotebookPen className="w-5 h-5" /><span>错题本</span></div>
@@ -1704,9 +1608,18 @@ export const StudentUnit: React.FC = () => {
             <div>
               <div className="flex items-center gap-2 text-sm font-bold text-emerald-700 mb-3 cursor-pointer" onClick={() => navigate('/student/dashboard')}><ArrowRight className="w-4 h-4 rotate-180" />返回控制面板</div>
               <h1 className="text-xl font-bold text-yellow-600 mb-2">Unit: {unitMeta?.unit || unitId}</h1>
-              <h2 className="text-4xl font-black text-on-background">{currentModule === 'vocab' ? '单词闯关' : currentModule === 'phrase' ? '短语闯关' : currentModule === 'reading' ? '课文阅读' : '单元练习'}</h2>
+              <h2 className="text-4xl font-black text-on-background">{currentModule === 'vocab' ? '单词闯关' : currentModule === 'phrase' ? '短语闯关' : '课文阅读'}</h2>
               {unitMeta && <p className="mt-2 text-sm text-on-surface-variant">{unitMeta.bookVersion} · {unitMeta.grade} · {unitMeta.semester}</p>}
             </div>
+            {currentTeacherPaperAssignment?.id && (
+              <button
+                onClick={() => navigate(`/student/unit-test/${currentTeacherPaperAssignment.id}`)}
+                className="inline-flex items-center gap-2 rounded-xl bg-amber-100 px-4 py-3 text-sm font-black text-amber-700 transition hover:scale-105"
+              >
+                <FileQuestion className="h-4 w-4" />
+                {currentTeacherPaperAssignment.paperTitle || '进入单元测试'}
+              </button>
+            )}
           </div>
 
           {pageError && <div className="mb-4 rounded-lg bg-red-50 text-red-700 px-4 py-2 text-sm">{pageError}</div>}
@@ -1715,7 +1628,6 @@ export const StudentUnit: React.FC = () => {
             {currentModule === 'vocab' && renderLearnModule('vocab')}
             {currentModule === 'phrase' && renderLearnModule('phrase')}
             {currentModule === 'reading' && renderReadingModule()}
-            {currentModule === 'quiz' && renderQuizModule()}
           </div>
         </div>
         {showError && (

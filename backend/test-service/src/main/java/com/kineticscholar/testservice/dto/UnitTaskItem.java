@@ -8,5 +8,6 @@ public class UnitTaskItem {
     private String grade;
     private String semester;
     private String unitName;
+    private Long paperId;
+    private String paperTitle;
 }
-

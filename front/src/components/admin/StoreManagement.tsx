@@ -80,14 +80,12 @@ export const StoreManagement: React.FC = () => {
   const [stores, setStores] = useState<EditableStore[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [bookOptions, setBookOptions] = useState<string[]>([]);
-  const [gradeOptions, setGradeOptions] = useState<string[]>([]);
 
-  const [newStore, setNewStore] = useState<Omit<AdminStore, 'storeCode'>>({
+  const [newStore, setNewStore] = useState<Pick<AdminStore, 'storeName' | 'teacherMax' | 'studentMax' | 'textbookPermissions'>>({
     storeName: '',
     teacherMax: 5,
     studentMax: 200,
     textbookPermissions: [],
-    gradePermissions: [],
   });
 
   const [loading, setLoading] = useState(true);
@@ -107,15 +105,13 @@ export const StoreManagement: React.FC = () => {
       ]);
 
       const books = unique(optionData.bookVersions || []);
-      const grades = unique(optionData.grades || []);
       setBookOptions(books);
-      setGradeOptions(grades);
       setUsers(userData || []);
 
       const normalizedStores = (storeData || []).map((s) => ({
         ...s,
         textbookPermissions: keepOnlyDbValues(s.textbookPermissions || [], books),
-        gradePermissions: keepOnlyDbValues(s.gradePermissions || [], grades),
+        gradePermissions: [],
         editing: false,
       }));
       setStores(normalizedStores);
@@ -165,7 +161,7 @@ export const StoreManagement: React.FC = () => {
       return;
     }
     if (!row.teacherMax || row.teacherMax <= 0 || !row.studentMax || row.studentMax <= 0) {
-      setError('老师上限和学生上限必须大于 0');
+      setError('教师上限和学生上限必须大于 0');
       return;
     }
     setSavingCode(row.storeCode);
@@ -177,10 +173,9 @@ export const StoreManagement: React.FC = () => {
         teacherMax: Number(row.teacherMax),
         studentMax: Number(row.studentMax),
         textbookPermissions: keepOnlyDbValues(row.textbookPermissions || [], bookOptions),
-        gradePermissions: keepOnlyDbValues(row.gradePermissions || [], gradeOptions),
       });
-      setStores((prev) => prev.map((s) => (s.storeCode === row.storeCode ? { ...saved, editing: false } : s)));
-      setMessage(`门店 ${row.storeCode} 保存成功`);
+      setStores((prev) => prev.map((s) => (s.storeCode === row.storeCode ? { ...saved, gradePermissions: [], editing: false } : s)));
+      setMessage(`门店 ${row.storeCode} 已保存`);
     } catch (e: any) {
       setError(e?.message || '保存门店失败');
     } finally {
@@ -194,7 +189,7 @@ export const StoreManagement: React.FC = () => {
       return;
     }
     if (!newStore.teacherMax || newStore.teacherMax <= 0 || !newStore.studentMax || newStore.studentMax <= 0) {
-      setError('老师上限和学生上限必须大于 0');
+      setError('教师上限和学生上限必须大于 0');
       return;
     }
     setCreating(true);
@@ -206,19 +201,17 @@ export const StoreManagement: React.FC = () => {
         teacherMax: Number(newStore.teacherMax),
         studentMax: Number(newStore.studentMax),
         textbookPermissions: keepOnlyDbValues(newStore.textbookPermissions || [], bookOptions),
-        gradePermissions: keepOnlyDbValues(newStore.gradePermissions || [], gradeOptions),
       });
-      setStores((prev) => [{ ...created, editing: false }, ...prev]);
+      setStores((prev) => [{ ...created, gradePermissions: [], editing: false }, ...prev]);
       setNewStore({
         storeName: '',
         teacherMax: 5,
         studentMax: 200,
         textbookPermissions: [],
-        gradePermissions: [],
       });
-      setMessage(`门店 ${created.storeCode} 新增成功`);
+      setMessage(`门店 ${created.storeCode} 已创建`);
     } catch (e: any) {
-      setError(e?.message || '新增门店失败');
+      setError(e?.message || '创建门店失败');
     } finally {
       setCreating(false);
     }
@@ -231,7 +224,7 @@ export const StoreManagement: React.FC = () => {
 
       <div className="rounded-xl border border-outline-variant/30 p-3 bg-surface-container-lowest">
         <div className="text-sm font-bold mb-2">新增门店</div>
-        <div className="grid grid-cols-1 md:grid-cols-7 gap-2 items-start">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-2 items-start">
           <input
             className="border rounded px-2 py-2 text-sm"
             placeholder="门店名称"
@@ -242,7 +235,7 @@ export const StoreManagement: React.FC = () => {
             type="number"
             min={1}
             className="border rounded px-2 py-2 text-sm"
-            placeholder="老师上限"
+            placeholder="教师上限"
             value={newStore.teacherMax}
             onChange={(e) => setNewStore((p) => ({ ...p, teacherMax: Number(e.target.value) }))}
           />
@@ -254,47 +247,41 @@ export const StoreManagement: React.FC = () => {
             value={newStore.studentMax}
             onChange={(e) => setNewStore((p) => ({ ...p, studentMax: Number(e.target.value) }))}
           />
-
           <CheckboxMultiSelect
             options={bookOptions}
             value={newStore.textbookPermissions || []}
             onChange={(next) => setNewStore((p) => ({ ...p, textbookPermissions: keepOnlyDbValues(next, bookOptions) }))}
-            placeholder="选择教材版本"
+            placeholder="选择教材版本权限"
           />
-          <CheckboxMultiSelect
-            options={gradeOptions}
-            value={newStore.gradePermissions || []}
-            onChange={(next) => setNewStore((p) => ({ ...p, gradePermissions: keepOnlyDbValues(next, gradeOptions) }))}
-            placeholder="选择年级范围"
-          />
-          <div className="text-sm text-on-surface-variant px-2 py-2" />
+          <div className="text-sm text-on-surface-variant px-2 py-2">
+            开通教材版本后，自动拥有该版本下全部年级册次权限。
+          </div>
           <button
             onClick={createStore}
             disabled={creating}
             className="px-3 py-2 rounded-lg bg-primary text-on-primary text-sm font-bold disabled:opacity-40"
           >
-            {creating ? '新增中...' : '新增门店'}
+            {creating ? '创建中...' : '创建门店'}
           </button>
         </div>
       </div>
 
       <div className="overflow-auto max-h-[62vh] border border-outline-variant/30 rounded-xl">
-        <table className="w-full min-w-[1550px] text-left border-collapse">
+        <table className="w-full min-w-[1360px] text-left border-collapse">
           <thead>
             <tr className="bg-surface-container-low border-b border-outline-variant/30">
               <th className="p-3 font-bold">门店编码</th>
               <th className="p-3 font-bold">门店名称</th>
-              <th className="p-3 font-bold">老师上限</th>
+              <th className="p-3 font-bold">教师上限</th>
               <th className="p-3 font-bold">学生上限</th>
-              <th className="p-3 font-bold">权限-教材版本</th>
-              <th className="p-3 font-bold">权限-年级范围</th>
-              <th className="p-3 font-bold">当前老师人数</th>
-              <th className="p-3 font-bold">当前学生人数</th>
+              <th className="p-3 font-bold">教材版本权限</th>
+              <th className="p-3 font-bold">当前教师数</th>
+              <th className="p-3 font-bold">当前学生数</th>
               <th className="p-3 font-bold text-right">操作</th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={9} className="p-4 text-sm text-on-surface-variant">加载中...</td></tr>}
+            {loading && <tr><td colSpan={8} className="p-4 text-sm text-on-surface-variant">加载中...</td></tr>}
             {!loading && stores.map((s) => {
               const count = storeCounts.get(s.storeCode) || { teacher: 0, student: 0 };
               return (
@@ -327,25 +314,11 @@ export const StoreManagement: React.FC = () => {
                         options={bookOptions}
                         value={s.textbookPermissions || []}
                         onChange={(next) => updateStore(s.storeCode, 'textbookPermissions', keepOnlyDbValues(next, bookOptions))}
-                        placeholder="选择教材版本"
+                        placeholder="选择教材版本权限"
                       />
                     ) : (
-                      <span className="text-sm block truncate max-w-[220px]" title={(s.textbookPermissions || []).join('、')}>
+                      <span className="text-sm block truncate max-w-[260px]" title={(s.textbookPermissions || []).join('、')}>
                         {(s.textbookPermissions || []).join('、') || '-'}
-                      </span>
-                    )}
-                  </td>
-                  <td className="p-3">
-                    {s.editing ? (
-                      <CheckboxMultiSelect
-                        options={gradeOptions}
-                        value={s.gradePermissions || []}
-                        onChange={(next) => updateStore(s.storeCode, 'gradePermissions', keepOnlyDbValues(next, gradeOptions))}
-                        placeholder="选择年级范围"
-                      />
-                    ) : (
-                      <span className="text-sm block truncate max-w-[220px]" title={(s.gradePermissions || []).join('、')}>
-                        {(s.gradePermissions || []).join('、') || '-'}
                       </span>
                     )}
                   </td>
@@ -371,4 +344,3 @@ export const StoreManagement: React.FC = () => {
     </div>
   );
 };
-

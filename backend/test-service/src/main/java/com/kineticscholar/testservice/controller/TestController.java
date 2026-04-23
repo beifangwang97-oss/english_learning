@@ -4,16 +4,14 @@ import com.kineticscholar.testservice.dto.BatchAssignUnitTasksRequest;
 import com.kineticscholar.testservice.dto.BatchDeleteUnitAssignmentsRequest;
 import com.kineticscholar.testservice.dto.BatchDeleteWordReviewAssignmentsRequest;
 import com.kineticscholar.testservice.dto.BatchDeleteWordTestAssignmentsRequest;
-import com.kineticscholar.testservice.dto.ExamImportResult;
-import com.kineticscholar.testservice.dto.ExamMaterialUpsertRequest;
-import com.kineticscholar.testservice.dto.ExamPaperUpdateRequest;
-import com.kineticscholar.testservice.dto.ExamQuestionUpsertRequest;
 import com.kineticscholar.testservice.dto.PublishWordReviewRequest;
 import com.kineticscholar.testservice.dto.PublishWordTestRequest;
-import com.kineticscholar.testservice.dto.StudentExamPracticeSubmitRequest;
+import com.kineticscholar.testservice.dto.StudentLearningStatsView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamSubmitRequest;
 import com.kineticscholar.testservice.model.TestAnswer;
 import com.kineticscholar.testservice.model.TestAssignment;
 import com.kineticscholar.testservice.model.WordTest;
+import com.kineticscholar.testservice.service.StudentLearningStatsService;
 import com.kineticscholar.testservice.service.TestService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -27,7 +25,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,6 +38,9 @@ public class TestController {
 
     @Autowired
     private TestService testService;
+
+    @Autowired
+    private StudentLearningStatsService studentLearningStatsService;
 
     @PostMapping("/word-tests")
     public ResponseEntity<?> createWordTest(@RequestBody WordTest wordTest) {
@@ -148,6 +148,11 @@ public class TestController {
     @GetMapping("/word-reviews/student-assignments")
     public ResponseEntity<?> getStudentWordReviews(@RequestParam("userId") Long userId) {
         return new ResponseEntity<>(testService.getStudentWordReviews(userId), HttpStatus.OK);
+    }
+
+    @GetMapping("/student-learning-stats")
+    public ResponseEntity<StudentLearningStatsView> getStudentLearningStats(@RequestParam("userId") Long userId) {
+        return new ResponseEntity<>(studentLearningStatsService.getStudentLearningStats(userId), HttpStatus.OK);
     }
 
     @PostMapping("/word-reviews/assignments/{assignmentId}/start-daily-session")
@@ -291,7 +296,13 @@ public class TestController {
             return new ResponseEntity<>(Map.of("error", "units is required"), HttpStatus.BAD_REQUEST);
         }
 
-        testService.assignUnitTasks(request.getAssignedBy(), request.getStudentIds(), request.getUnits());
+        testService.assignUnitTasks(
+                request.getAssignedBy(),
+                request.getStudentIds(),
+                request.getUnits(),
+                request.getPaperId(),
+                request.getPaperTitle()
+        );
         return new ResponseEntity<>(Map.of("message", "Unit tasks assigned successfully"), HttpStatus.OK);
     }
 
@@ -310,195 +321,31 @@ public class TestController {
         return new ResponseEntity<>(Map.of("message", "Unit assignments deleted"), HttpStatus.OK);
     }
 
-    @PostMapping("/exam-papers/import")
-    public ResponseEntity<?> importExamPaperJsonl(
-            @RequestParam("file") MultipartFile file,
-            @RequestParam("bookVersion") String bookVersion,
-            @RequestParam("grade") String grade,
-            @RequestParam("semester") String semester,
-            @RequestParam("unitCode") String unitCode,
-            @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite,
-            @RequestParam(value = "createdBy", required = false) Long createdBy
+    @GetMapping("/student-teacher-papers/unit-assignment/{assignmentId}")
+    public ResponseEntity<?> getStudentTeacherExamAssignment(
+            @PathVariable Long assignmentId,
+            @RequestParam("userId") Long userId
+    ) {
+        return testService.getStudentTeacherExamAssignment(assignmentId, userId)
+                .<ResponseEntity<?>>map(view -> new ResponseEntity<>(view, HttpStatus.OK))
+                .orElseGet(() -> new ResponseEntity<>(Map.of("error", "Student teacher exam assignment not found"), HttpStatus.NOT_FOUND));
+    }
+
+    @PostMapping("/student-teacher-papers/unit-assignment/{assignmentId}/submit")
+    public ResponseEntity<?> submitStudentTeacherExam(
+            @PathVariable Long assignmentId,
+            @RequestBody StudentTeacherExamSubmitRequest request
     ) {
         try {
-            ExamImportResult result = testService.importExamPaperJsonl(
-                    file,
-                    bookVersion,
-                    grade,
-                    semester,
-                    unitCode,
-                    overwrite,
-                    createdBy
-            );
-            return new ResponseEntity<>(result, HttpStatus.CREATED);
+            return new ResponseEntity<>(testService.submitStudentTeacherExam(assignmentId, request), HttpStatus.OK);
         } catch (RuntimeException e) {
             return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
         }
     }
 
-    @GetMapping("/exam-papers")
-    public ResponseEntity<?> getExamPapers(
-            @RequestParam("bookVersion") String bookVersion,
-            @RequestParam("grade") String grade,
-            @RequestParam("semester") String semester,
-            @RequestParam(value = "unitCode", required = false) String unitCode,
-            @RequestParam(value = "paperType", required = false) String paperType
-    ) {
-        return new ResponseEntity<>(testService.getExamPapers(bookVersion, grade, semester, unitCode, paperType), HttpStatus.OK);
-    }
-
-    @GetMapping("/exam-papers/count")
-    public ResponseEntity<?> countExamPapers(
-            @RequestParam("bookVersion") String bookVersion,
-            @RequestParam("grade") String grade,
-            @RequestParam("semester") String semester,
-            @RequestParam(value = "unitCode", required = false) String unitCode,
-            @RequestParam(value = "paperType", required = false) String paperType
-    ) {
-        return new ResponseEntity<>(Map.of("count", testService.countExamPapers(bookVersion, grade, semester, unitCode, paperType)), HttpStatus.OK);
-    }
-
-    @GetMapping("/exam-papers/{paperId}")
-    public ResponseEntity<?> getExamPaperDetail(@PathVariable Long paperId) {
-        Optional<?> detail = testService.getExamPaperDetail(paperId);
-        if (detail.isPresent()) {
-            return new ResponseEntity<>(detail.get(), HttpStatus.OK);
-        }
-        return new ResponseEntity<>(Map.of("error", "Exam paper not found"), HttpStatus.NOT_FOUND);
-    }
-
-    @PutMapping("/exam-papers/{paperId}")
-    public ResponseEntity<?> updateExamPaper(@PathVariable Long paperId, @RequestBody ExamPaperUpdateRequest request) {
-        try {
-            return new ResponseEntity<>(testService.updateExamPaper(paperId, request), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @PostMapping("/exam-papers/{paperId}/materials")
-    public ResponseEntity<?> createExamMaterial(@PathVariable Long paperId, @RequestBody ExamMaterialUpsertRequest request) {
-        try {
-            return new ResponseEntity<>(testService.createExamMaterial(paperId, request), HttpStatus.CREATED);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @PutMapping("/exam-papers/{paperId}/materials/{materialId}")
-    public ResponseEntity<?> updateExamMaterial(
-            @PathVariable Long paperId,
-            @PathVariable Long materialId,
-            @RequestBody ExamMaterialUpsertRequest request
-    ) {
-        try {
-            return new ResponseEntity<>(testService.updateExamMaterial(paperId, materialId, request), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @DeleteMapping("/exam-papers/{paperId}/materials/{materialId}")
-    public ResponseEntity<?> deleteExamMaterial(@PathVariable Long paperId, @PathVariable Long materialId) {
-        try {
-            testService.deleteExamMaterial(paperId, materialId);
-            return new ResponseEntity<>(Map.of("message", "Exam material deleted"), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @PostMapping("/exam-papers/{paperId}/questions")
-    public ResponseEntity<?> createExamQuestion(@PathVariable Long paperId, @RequestBody ExamQuestionUpsertRequest request) {
-        try {
-            return new ResponseEntity<>(testService.createExamQuestion(paperId, request), HttpStatus.CREATED);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @PutMapping("/exam-papers/{paperId}/questions/{questionId}")
-    public ResponseEntity<?> updateExamQuestion(
-            @PathVariable Long paperId,
-            @PathVariable Long questionId,
-            @RequestBody ExamQuestionUpsertRequest request
-    ) {
-        try {
-            return new ResponseEntity<>(testService.updateExamQuestion(paperId, questionId, request), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @DeleteMapping("/exam-papers/{paperId}/questions/{questionId}")
-    public ResponseEntity<?> deleteExamQuestion(@PathVariable Long paperId, @PathVariable Long questionId) {
-        try {
-            testService.deleteExamQuestion(paperId, questionId);
-            return new ResponseEntity<>(Map.of("message", "Exam question deleted"), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @DeleteMapping("/exam-papers/{paperId}")
-    public ResponseEntity<?> deleteExamPaper(@PathVariable Long paperId) {
-        try {
-            return new ResponseEntity<>(testService.deleteExamPaper(paperId), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @DeleteMapping("/exam-papers/scope/unit")
-    public ResponseEntity<?> deleteExamPapersByUnit(
-            @RequestParam("bookVersion") String bookVersion,
-            @RequestParam("grade") String grade,
-            @RequestParam("semester") String semester,
-            @RequestParam("unitCode") String unitCode,
-            @RequestParam(value = "paperType", required = false) String paperType
-    ) {
-        try {
-            return new ResponseEntity<>(testService.deleteExamPapersByUnit(bookVersion, grade, semester, unitCode, paperType), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @DeleteMapping("/exam-papers/scope/semester")
-    public ResponseEntity<?> deleteExamPapersBySemester(
-            @RequestParam("bookVersion") String bookVersion,
-            @RequestParam("grade") String grade,
-            @RequestParam("semester") String semester,
-            @RequestParam(value = "paperType", required = false) String paperType
-    ) {
-        try {
-            return new ResponseEntity<>(testService.deleteExamPapersBySemester(bookVersion, grade, semester, paperType), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @PostMapping("/student-exam-practices/papers/{paperId}/submit")
-    public ResponseEntity<?> submitStudentExamPractice(@PathVariable Long paperId, @RequestBody StudentExamPracticeSubmitRequest request) {
-        try {
-            return new ResponseEntity<>(testService.submitStudentExamPractice(paperId, request), HttpStatus.OK);
-        } catch (RuntimeException e) {
-            return new ResponseEntity<>(Map.of("error", e.getMessage()), HttpStatus.BAD_REQUEST);
-        }
-    }
-
-    @GetMapping("/student-exam-practices/papers/{paperId}/latest")
-    public ResponseEntity<?> getLatestStudentExamPractice(@PathVariable Long paperId, @RequestParam("userId") Long userId) {
-        Optional<?> result = testService.getLatestStudentExamPractice(paperId, userId);
-        if (result.isPresent()) {
-            return new ResponseEntity<>(result.get(), HttpStatus.OK);
-        }
-        return new ResponseEntity<>(Map.of("error", "Practice result not found"), HttpStatus.NOT_FOUND);
-    }
-
-    @GetMapping("/student-exam-practices/wrong-notebook")
-    public ResponseEntity<?> getStudentExamWrongNotebook(@RequestParam("userId") Long userId) {
-        return new ResponseEntity<>(testService.getStudentExamWrongNotebook(userId), HttpStatus.OK);
+    @GetMapping("/student-teacher-papers/wrong-notebook/{userId}")
+    public ResponseEntity<?> getStudentTeacherExamWrongNotebook(@PathVariable Long userId) {
+        return new ResponseEntity<>(testService.getStudentTeacherExamWrongNotebook(userId), HttpStatus.OK);
     }
 
     private List<TestAnswer> parseAnswers(Object rawAnswers) {

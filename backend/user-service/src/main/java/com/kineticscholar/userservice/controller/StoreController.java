@@ -47,11 +47,9 @@ public class StoreController {
             store.setStoreName(storeName);
             store.setTeacherMax(parsePositiveInt(body.get("teacherMax"), 10));
             store.setStudentMax(parsePositiveInt(body.get("studentMax"), 200));
-            List<String> textbookPermissions = parseValues(body.get("textbookPermissions"));
-            List<String> gradePermissions = parseValues(body.get("gradePermissions"));
-            List<List<String>> normalizedPermissions = normalizePermissionPair(textbookPermissions, gradePermissions);
-            store.setTextbookPermissions(joinValues(normalizedPermissions.get(0)));
-            store.setGradePermissions(joinValues(normalizedPermissions.get(1)));
+            List<String> textbookPermissions = normalizeTextbookPermissions(parseValues(body.get("textbookPermissions")));
+            store.setTextbookPermissions(joinValues(textbookPermissions));
+            store.setGradePermissions("");
 
             Store saved = storeRepository.save(store);
             return new ResponseEntity<>(toStoreResponse(saved), HttpStatus.CREATED);
@@ -104,14 +102,10 @@ public class StoreController {
             }
             if (body.containsKey("textbookPermissions") || body.containsKey("gradePermissions")) {
                 List<String> textbookPermissions = body.containsKey("textbookPermissions")
-                        ? parseValues(body.get("textbookPermissions"))
-                        : parseValues(store.getTextbookPermissions());
-                List<String> gradePermissions = body.containsKey("gradePermissions")
-                        ? parseValues(body.get("gradePermissions"))
-                        : parseValues(store.getGradePermissions());
-                List<List<String>> normalizedPermissions = normalizePermissionPair(textbookPermissions, gradePermissions);
-                store.setTextbookPermissions(joinValues(normalizedPermissions.get(0)));
-                store.setGradePermissions(joinValues(normalizedPermissions.get(1)));
+                        ? normalizeTextbookPermissions(parseValues(body.get("textbookPermissions")))
+                        : normalizeTextbookPermissions(parseValues(store.getTextbookPermissions()));
+                store.setTextbookPermissions(joinValues(textbookPermissions));
+                store.setGradePermissions("");
             }
 
             Store saved = storeRepository.save(store);
@@ -149,12 +143,8 @@ public class StoreController {
         data.put("storeName", store.getStoreName());
         data.put("teacherMax", store.getTeacherMax());
         data.put("studentMax", store.getStudentMax());
-        List<List<String>> normalizedPermissions = normalizePermissionPair(
-                parseValues(store.getTextbookPermissions()),
-                parseValues(store.getGradePermissions())
-        );
-        data.put("textbookPermissions", normalizedPermissions.get(0));
-        data.put("gradePermissions", normalizedPermissions.get(1));
+        data.put("textbookPermissions", normalizeTextbookPermissions(parseValues(store.getTextbookPermissions())));
+        data.put("gradePermissions", List.of());
         data.put("createdAt", store.getCreatedAt());
         data.put("updatedAt", store.getUpdatedAt());
         return data;
@@ -243,13 +233,15 @@ public class StoreController {
         }
     }
 
-    private List<List<String>> normalizePermissionPair(List<String> textbookPermissions, List<String> gradePermissions) {
-        List<String> textbooks = textbookPermissions == null ? new ArrayList<>() : new ArrayList<>(textbookPermissions);
-        List<String> grades = gradePermissions == null ? new ArrayList<>() : new ArrayList<>(gradePermissions);
-        // 权限必须“教材+年级”同时存在才生效；只配置一侧时按“无权限”处理。
-        if (textbooks.isEmpty() || grades.isEmpty()) {
-            return List.of(new ArrayList<>(), new ArrayList<>());
+    private List<String> normalizeTextbookPermissions(List<String> textbookPermissions) {
+        if (textbookPermissions == null) {
+            return new ArrayList<>();
         }
-        return List.of(textbooks, grades);
+        return textbookPermissions.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(v -> !v.isEmpty())
+                .distinct()
+                .toList();
     }
 }

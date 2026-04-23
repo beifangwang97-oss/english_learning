@@ -4,6 +4,7 @@ import com.kineticscholar.testservice.model.LearningGroupProgress;
 import com.kineticscholar.testservice.model.LearningSessionState;
 import com.kineticscholar.testservice.repository.LearningGroupProgressRepository;
 import com.kineticscholar.testservice.repository.LearningSessionStateRepository;
+import com.kineticscholar.testservice.service.StudentLearningStatsService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,13 +20,16 @@ public class LearningProgressController {
 
     private final LearningSessionStateRepository sessionRepo;
     private final LearningGroupProgressRepository progressRepo;
+    private final StudentLearningStatsService studentLearningStatsService;
 
     public LearningProgressController(
             LearningSessionStateRepository sessionRepo,
-            LearningGroupProgressRepository progressRepo
+            LearningGroupProgressRepository progressRepo,
+            StudentLearningStatsService studentLearningStatsService
     ) {
         this.sessionRepo = sessionRepo;
         this.progressRepo = progressRepo;
+        this.studentLearningStatsService = studentLearningStatsService;
     }
 
     @GetMapping("/learning/session")
@@ -111,6 +115,9 @@ public class LearningProgressController {
 
         LearningGroupProgress row = progressRepo.findByUserIdAndUnitIdAndModuleAndGroupNo(userId, unitId, module, groupNo)
                 .orElseGet(LearningGroupProgress::new);
+        boolean wasCompletedBefore = row.getCompletedAt() != null;
+        Integer previousLearnedCount = row.getLearnedCount();
+        Integer previousItemTotal = row.getItemTotal();
         row.setUserId(userId);
         row.setUnitId(unitId);
         row.setModule(module);
@@ -125,6 +132,12 @@ public class LearningProgressController {
         if (itemTotal != null && itemTotal >= 0) row.setItemTotal(itemTotal);
         if (learnedCount != null && learnedCount >= 0) row.setLearnedCount(learnedCount);
         LearningGroupProgress saved = progressRepo.save(row);
+        studentLearningStatsService.recordLearningGroupCompletion(
+                saved,
+                wasCompletedBefore,
+                previousLearnedCount,
+                previousItemTotal
+        );
         return new ResponseEntity<>(saved, HttpStatus.OK);
     }
 
@@ -150,4 +163,3 @@ public class LearningProgressController {
         }
     }
 }
-

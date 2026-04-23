@@ -21,6 +21,8 @@ public class LexiconSchemaMigrationRunner {
     public void ensureLexiconTextColumns() {
         ensureOidColumnConvertedToText("lexicon_entries", "syllable_pronunciation");
         ensureOidColumnConvertedToText("lexicon_entries", "memory_tip");
+        repairNumericOidTextValues("lexicon_entries", "syllable_pronunciation");
+        repairNumericOidTextValues("lexicon_entries", "memory_tip");
         log.info("Schema check complete: lexicon_entries text columns are ready.");
     }
 
@@ -66,6 +68,49 @@ public class LexiconSchemaMigrationRunner {
                 columnName,
                 columnName,
                 tableName,
+                columnName,
+                columnName
+        ));
+    }
+
+    private void repairNumericOidTextValues(String tableName, String columnName) {
+        jdbcTemplate.execute("""
+                DO $$
+                DECLARE
+                    column_udt text;
+                BEGIN
+                    SELECT c.udt_name
+                      INTO column_udt
+                      FROM information_schema.columns c
+                     WHERE c.table_name = '%s'
+                       AND c.column_name = '%s';
+
+                    IF column_udt IS NULL OR column_udt <> 'text' THEN
+                        RETURN;
+                    END IF;
+
+                    EXECUTE format(
+                        'UPDATE %%I ' ||
+                        'SET %%I = CASE ' ||
+                        '  WHEN %%I ~ ''^[0-9]{4,}$'' THEN convert_from(lo_get((%%I)::oid), ''UTF8'') ' ||
+                        '  ELSE %%I ' ||
+                        'END ' ||
+                        'WHERE %%I ~ ''^[0-9]{4,}$''',
+                        '%s',
+                        '%s',
+                        '%s',
+                        '%s',
+                        '%s',
+                        '%s'
+                    );
+                END $$;
+                """.formatted(
+                tableName,
+                columnName,
+                tableName,
+                columnName,
+                columnName,
+                columnName,
                 columnName,
                 columnName
         ));

@@ -69,6 +69,32 @@ const statusLabel: Record<ImportStatus, string> = {
 
 const resolveSourceTag = (value?: string) => normalizeSourceTagToken(value);
 
+const renderInfoCell = (label: string, value?: string) => {
+  const text = (value || '').trim();
+  if (!text) {
+    return <span className="text-on-surface-variant">-</span>;
+  }
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] font-black tracking-[0.18em] text-emerald-700">{label}</p>
+      <p className="mt-1 break-words text-sm text-on-surface-variant">{text}</p>
+    </div>
+  );
+};
+
+const renderStrongInfoCell = (label: string, value?: string) => {
+  const text = (value || '').trim();
+  if (!text) {
+    return <span className="text-on-surface-variant">-</span>;
+  }
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] font-black tracking-[0.18em] text-emerald-700">{label}</p>
+      <p className="mt-1 break-words text-sm font-bold text-on-surface">{text}</p>
+    </div>
+  );
+};
+
 export const LexiconManagement: React.FC<Props> = ({ type }) => {
   const token = useMemo(() => getSessionToken(), []);
   const [loading, setLoading] = useState(true);
@@ -631,9 +657,9 @@ export const LexiconManagement: React.FC<Props> = ({ type }) => {
                 {first && <td className="p-3" rowSpan={rowSpan}>{item.group_no ? `\u7b2c${item.group_no}\u7ec4` : '-'}</td>}
                 {first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={item.word} onChange={(e) => updateItem(item.id, { word: e.target.value })} /> : <span className="font-bold">{item.word}</span>}</td>}
                 {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={item.phonetic || ''} onChange={(e) => updateItem(item.id, { phonetic: e.target.value })} /> : (item.phonetic || '-')}</td>}
-                {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={item.syllable_text || ''} onChange={(e) => updateItem(item.id, { syllable_text: e.target.value })} /> : (item.syllable_text || '-')}</td>}
-                {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={syllablePronunciationText} onChange={(e) => updateItem(item.id, { syllable_pronunciation: e.target.value.split('/').map((x) => x.trim()).filter(Boolean) })} placeholder="\u02c8la\u026a / \u0259n" /> : (syllablePronunciationText || '-')}</td>}
-                {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={item.memory_tip || ''} onChange={(e) => updateItem(item.id, { memory_tip: e.target.value })} /> : (item.memory_tip || '-')}</td>}
+                {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={item.syllable_text || ''} onChange={(e) => updateItem(item.id, { syllable_text: e.target.value })} /> : renderStrongInfoCell('分音节', item.syllable_text || '')}</td>}
+                {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={syllablePronunciationText} onChange={(e) => updateItem(item.id, { syllable_pronunciation: e.target.value.split('/').map((x) => x.trim()).filter(Boolean) })} placeholder="\u02c8la\u026a / \u0259n" /> : renderInfoCell('分音提示', syllablePronunciationText)}</td>}
+                {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={item.memory_tip || ''} onChange={(e) => updateItem(item.id, { memory_tip: e.target.value })} /> : renderInfoCell('记忆提示', item.memory_tip || '')}</td>}
                 {type === 'word' && first && <td className="p-3" rowSpan={rowSpan}>{isEditing ? <input className="w-full border rounded px-2 py-1" value={item.proper_noun_type || ''} onChange={(e) => updateItem(item.id, { proper_noun_type: e.target.value })} /> : (item.proper_noun_type || '-')}</td>}
                 {type === 'word' && <td className="p-3">{isEditing ? <input className="w-full border rounded px-2 py-1" value={m.pos || ''} onChange={(e) => updateMeaning(item.id, idx, 'pos', e.target.value)} /> : (m.pos || '-')}</td>}
                 <td className="p-3">{isEditing ? <input className="w-full border rounded px-2 py-1" value={m.meaning || ''} onChange={(e) => updateMeaning(item.id, idx, 'meaning', e.target.value)} /> : (m.meaning || '-')}</td>

@@ -1,5 +1,22 @@
 ﻿const API_BASE_URL = 'http://localhost:8080';
 
+type ApiErrorWithUsage = Error & {
+  usage?: {
+    bookVersion?: string;
+    grade?: string;
+    semester?: string;
+    wordLexiconCount?: number;
+    phraseLexiconCount?: number;
+    passageCount?: number;
+    unitCount?: number;
+    userCount?: number;
+    storeCount?: number;
+    users?: Array<Record<string, unknown>>;
+    stores?: Array<Record<string, unknown>>;
+    blocked?: boolean;
+  };
+};
+
 export type LexiconMeaning = {
   pos: string;
   meaning: string;
@@ -58,6 +75,38 @@ export type TextbookScopeGradeRow = {
 export type TextbookScopeBookRow = {
   bookVersion: string;
   grades: TextbookScopeGradeRow[];
+};
+
+const formatScopeUsageMessage = (
+  fallback: string,
+  usage?: {
+    wordLexiconCount?: number;
+    phraseLexiconCount?: number;
+    passageCount?: number;
+    unitCount?: number;
+    userCount?: number;
+    storeCount?: number;
+  }
+) => {
+  if (!usage) return fallback;
+  const parts = [
+    `单词 ${usage.wordLexiconCount ?? 0}`,
+    `短语 ${usage.phraseLexiconCount ?? 0}`,
+    `课文 ${usage.passageCount ?? 0}`,
+    `单元 ${usage.unitCount ?? 0}`,
+    `用户 ${usage.userCount ?? 0}`,
+    `门店 ${usage.storeCount ?? 0}`,
+  ];
+  return `${fallback}\n占用明细：${parts.join('，')}`;
+};
+
+const createApiError = (
+  fallback: string,
+  payload?: { error?: string; usage?: ApiErrorWithUsage['usage'] }
+) => {
+  const err = new Error(formatScopeUsageMessage(payload?.error || fallback, payload?.usage)) as ApiErrorWithUsage;
+  if (payload?.usage) err.usage = payload.usage;
+  return err;
 };
 
 export type LearningGroupSummary = {
@@ -299,7 +348,7 @@ export const lexiconApi = {
       headers: { Authorization: `Bearer ${token}` },
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || '删除年级失败');
+    if (!response.ok) throw createApiError('删除年级失败', payload);
     return payload as { message: string };
   },
 
@@ -324,7 +373,7 @@ export const lexiconApi = {
       headers: { Authorization: `Bearer ${token}` },
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || '删除册数失败');
+    if (!response.ok) throw createApiError('删除册数失败', payload);
     return payload as { message: string };
   },
 
@@ -335,8 +384,36 @@ export const lexiconApi = {
       headers: { Authorization: `Bearer ${token}` },
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || '删除教材版本失败');
+    if (!response.ok) throw createApiError('删除教材版本失败', payload);
     return payload as { message: string };
+  },
+
+  async cascadeDeleteTextbookScope(
+    token: string,
+    params: { bookVersion: string; grade?: string; semester?: string }
+  ) {
+    const response = await fetch(`${API_BASE_URL}/api/lexicon/tags/textbook-scopes/cascade-delete`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(params),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw createApiError('级联删除教材失败', payload);
+    return payload as {
+      message: string;
+      deletedWords: number;
+      deletedPhrases: number;
+      deletedPassages: number;
+      deletedUnits: number;
+      deletedScopes: number;
+      deletedTextbookTag: boolean;
+      bookVersion: string;
+      grade?: string;
+      semester?: string;
+    };
   },
 
   async getItems(

@@ -14,6 +14,10 @@ import com.kineticscholar.testservice.dto.PublishWordTestRequest;
 import com.kineticscholar.testservice.dto.StudentExamPracticeResultView;
 import com.kineticscholar.testservice.dto.StudentExamPracticeSubmitRequest;
 import com.kineticscholar.testservice.dto.StudentExamWrongNotebookItemView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamAssignmentView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamSubmissionResultView;
+import com.kineticscholar.testservice.dto.StudentTeacherExamSubmitRequest;
+import com.kineticscholar.testservice.dto.StudentTeacherExamWrongNotebookGroupView;
 import com.kineticscholar.testservice.dto.StudentWordReviewAssignmentView;
 import com.kineticscholar.testservice.dto.StudentWordTestAssignmentView;
 import com.kineticscholar.testservice.dto.SubmitWordReviewSessionRequest;
@@ -56,7 +60,7 @@ public interface TestService {
 
     List<UnitAssignment> getUnitAssignmentsByUserId(Long userId);
     List<UnitAssignment> getUnitAssignmentsByUserIds(List<Long> userIds);
-    void assignUnitTasks(Long assignedBy, List<Long> studentIds, List<UnitTaskItem> units);
+    void assignUnitTasks(Long assignedBy, List<Long> studentIds, List<UnitTaskItem> units, Long paperId, String paperTitle);
     void deleteUnitAssignment(Long assignmentId);
     void deleteUnitAssignments(List<Long> assignmentIds);
 
@@ -100,4 +104,8 @@ public interface TestService {
     Optional<StudentExamPracticeResultView> getLatestStudentExamPractice(Long paperId, Long userId);
     StudentExamPracticeResultView submitStudentExamPractice(Long paperId, StudentExamPracticeSubmitRequest request);
     List<StudentExamWrongNotebookItemView> getStudentExamWrongNotebook(Long userId);
+
+    Optional<StudentTeacherExamAssignmentView> getStudentTeacherExamAssignment(Long assignmentId, Long userId);
+    StudentTeacherExamSubmissionResultView submitStudentTeacherExam(Long assignmentId, StudentTeacherExamSubmitRequest request);
+    List<StudentTeacherExamWrongNotebookGroupView> getStudentTeacherExamWrongNotebook(Long userId);
 }
